@@ -149,3 +149,39 @@ impl Default for Encoding {
         Encoding::Ascii
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::ui::components::data_inspector::format_hex_values;
+
+    #[test]
+    fn test_format_hex_values() {
+        let (h8, h16, h32, h64) = format_hex_values(&[], false);
+        assert_eq!(h8, "--");
+        assert_eq!(h16, "--");
+        assert_eq!(h32, "--");
+        assert_eq!(h64, "--");
+
+        let (h8_p, h16_p, h32_p, h64_p) = format_hex_values(&[0x12, 0x34], false);
+        assert_eq!(h8_p, "0x12");
+        assert_eq!(h16_p, "0x3412");
+        assert_eq!(h32_p, "--");
+        assert_eq!(h64_p, "--");
+
+        let bytes = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+
+        // Little Endian
+        let (h8, h16, h32, h64) = format_hex_values(&bytes, false);
+        assert_eq!(h8, "0x01");
+        assert_eq!(h16, "0x2301");
+        assert_eq!(h32, "0x67452301");
+        assert_eq!(h64, "0xEFCDAB8967452301");
+
+        // Big Endian
+        let (h8_be, h16_be, h32_be, h64_be) = format_hex_values(&bytes, true);
+        assert_eq!(h8_be, "0x01");
+        assert_eq!(h16_be, "0x0123");
+        assert_eq!(h32_be, "0x01234567");
+        assert_eq!(h64_be, "0x0123456789ABCDEF");
+    }
+}

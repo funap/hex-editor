@@ -2,6 +2,7 @@ use crate::core::editor::Editor;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme as _, button::Button, button::ButtonVariants, h_flex, v_flex};
 pub struct DataInspector {
     pub editor: Option<Entity<Editor>>,
@@ -116,6 +117,37 @@ impl DataInspector {
     }
 }
 
+pub fn format_hex_values(bytes: &[u8], is_big_endian: bool) -> (String, String, String, String) {
+    let mut hex8 = "--".to_string();
+    let mut hex16 = "--".to_string();
+    let mut hex32 = "--".to_string();
+    let mut hex64 = "--".to_string();
+
+    if !bytes.is_empty() {
+        hex8 = format!("0x{:02X}", bytes[0]);
+    }
+
+    if bytes.len() >= 2 {
+        let arr: [u8; 2] = bytes[0..2].try_into().unwrap();
+        let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
+        hex16 = format!("0x{:04X}", val);
+    }
+
+    if bytes.len() >= 4 {
+        let arr: [u8; 4] = bytes[0..4].try_into().unwrap();
+        let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
+        hex32 = format!("0x{:08X}", val);
+    }
+
+    if bytes.len() >= 8 {
+        let arr: [u8; 8] = bytes[0..8].try_into().unwrap();
+        let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
+        hex64 = format!("0x{:016X}", val);
+    }
+
+    (hex8, hex16, hex32, hex64)
+}
+
 impl Render for DataInspector {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -128,6 +160,8 @@ impl Render for DataInspector {
         };
 
         let is_big_endian = self.is_big_endian;
+
+        let (hex8_val, hex16_val, hex32_val, hex64_val) = format_hex_values(&bytes_at_cursor, is_big_endian);
 
         // Data conversion logic
         let mut i8_val = "--".to_string();
@@ -261,21 +295,47 @@ impl Render for DataInspector {
                             .child("DATA INSPECTOR"),
                     )
                     .child(
-                        Button::new("endian_toggle")
-                            .label(if is_big_endian { "BE" } else { "LE" })
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.is_big_endian = !this.is_big_endian;
-                                cx.notify();
-                            })),
+                        h_flex()
+                            .items_center()
+                            .child(
+                                if !is_big_endian {
+                                    Button::new("endian_little").label("Little").primary()
+                                } else {
+                                    Button::new("endian_little").label("Little").ghost()
+                                }
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.is_big_endian {
+                                        this.is_big_endian = false;
+                                        cx.notify();
+                                    }
+                                })),
+                            )
+                            .child(
+                                if is_big_endian {
+                                    Button::new("endian_big").label("Big").primary()
+                                } else {
+                                    Button::new("endian_big").label("Big").ghost()
+                                }
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if !this.is_big_endian {
+                                        this.is_big_endian = true;
+                                        cx.notify();
+                                    }
+                                })),
+                            ),
                     ),
             )
             .child(
                 v_flex()
                     .size_full()
                     .min_w_0()
-                    .overflow_hidden()
+                    .overflow_y_scrollbar()
                     .p_2()
+                    .child(self.render_section_header("HEXADECIMAL", theme))
+                    .child(self.render_row("Hex (1 byte)", hex8_val, theme))
+                    .child(self.render_row("Hex (2 bytes)", hex16_val, theme))
+                    .child(self.render_row("Hex (4 bytes)", hex32_val, theme))
+                    .child(self.render_row("Hex (8 bytes)", hex64_val, theme))
                     .child(self.render_section_header("INTEGERS", theme))
                     .child(self.render_row("Int8", i8_val, theme))
                     .child(self.render_row("UInt8", u8_val, theme))
@@ -304,3 +364,5 @@ impl Focusable for DataInspector {
         self.focus_handle.clone()
     }
 }
+
+

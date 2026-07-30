@@ -1301,6 +1301,32 @@ mod tests {
         assert_eq!(editor2.line_starts(), vec![0, 18]);
         assert_eq!(editor2.line_starts().len(), 2);
     }
+
+    #[test]
+    fn test_editor_empty_lines_and_breaks() {
+        use std::path::PathBuf;
+        use crate::core::buffer::Buffer;
+        let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 100]))));
+        let mut editor = Editor::new(doc);
+
+        editor.add_empty_line(10);
+        assert_eq!(editor.empty_lines.get(&10), Some(&1));
+
+        editor.add_empty_line(10);
+        assert_eq!(editor.empty_lines.get(&10), Some(&2));
+
+        assert!(editor.remove_empty_line(10));
+        assert_eq!(editor.empty_lines.get(&10), Some(&1));
+
+        assert!(editor.remove_empty_line(10));
+        assert_eq!(editor.empty_lines.get(&10), None);
+
+        editor.toggle_custom_break(20);
+        assert!(editor.custom_breaks.contains(&20));
+
+        editor.toggle_custom_break(20);
+        assert!(!editor.custom_breaks.contains(&20));
+    }
 }
 
 impl Editor {

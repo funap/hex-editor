@@ -280,4 +280,31 @@ seq:
         let res = stream.read_bytes_term(0x00, false, true, true);
         assert_eq!(res, None); // terminator not found, and eos_error is true
     }
+
+    #[test]
+    fn test_expression_zero_division() {
+        use crate::core::structure::expression::{EvalContext, ExprEvaluator};
+        use std::collections::HashMap;
+
+        let values = HashMap::new();
+        let string_values = HashMap::new();
+        let base_path = vec![];
+        let enums = HashMap::new();
+        let errors = std::cell::RefCell::new(Vec::new());
+
+        let ctx = EvalContext {
+            values: &values,
+            string_values: &string_values,
+            base_path: &base_path,
+            stream_eof: false,
+            stream_size: 0,
+            stream_pos: 0,
+            enums: &enums,
+            errors: Some(&errors),
+        };
+
+        let res = ExprEvaluator::eval_i64("10 / 0", &ctx);
+        assert_eq!(res, 0);
+        assert!(!errors.borrow().is_empty());
+    }
 }

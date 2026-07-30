@@ -669,12 +669,12 @@ impl Editor {
                 }
             }
 
-            LineMap::Sparse(SparseLineMap {
+            LineMap::Sparse(Arc::new(SparseLineMap {
                 segments,
                 total_lines,
                 total_size,
                 max_bytes_per_row,
-            })
+            }))
         };
 
         *self.cached_line_map.borrow_mut() = Some(map.clone());

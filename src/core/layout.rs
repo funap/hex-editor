@@ -5,7 +5,7 @@ pub const BYTES_PER_ROW: usize = 16;
 #[derive(Clone, Debug)]
 pub enum LineMap {
     Standard { total_size: usize },
-    Sparse(SparseLineMap),
+    Sparse(Arc<SparseLineMap>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -314,7 +314,7 @@ impl Render for VisualMapPanel {
         };
 
         let buffer_len = self.buffer_len(cx);
-        let total_rows = (buffer_len + self.cols - 1) / self.cols;
+        let total_rows = buffer_len.div_ceil(self.cols);
         let total_height = total_rows as f32 * self.pixel_size as f32;
 
         // Sync scroll offset from scroll handle (e.g. if changed by scrollbar drag)
@@ -564,7 +564,7 @@ impl Element for VisualMapElement {
         let pixel_size = self.pixel_size as f32;
         let cols = self.cols;
 
-        let total_rows = (buffer_len + cols - 1) / cols;
+        let total_rows = buffer_len.div_ceil(cols);
         let visible_rows = (bounds.size.height.as_f32() / pixel_size).ceil() as usize + 1;
         let max_visible_cols = (bounds.size.width.as_f32() / pixel_size).ceil() as usize + 1;
 
@@ -593,21 +593,15 @@ impl Element for VisualMapElement {
             );
 
             let mut cache = panel_ref.cached_image.borrow_mut();
-            if let Some((img, key)) = &*cache {
-                if key == &cache_key {
-                    cached_image = Some(img.clone());
-                }
+            if let Some((img, key)) = &*cache
+                && key == &cache_key
+            {
+                cached_image = Some(img.clone());
             }
 
             if cached_image.is_none() {
-                // Pre-calculate color Lookup Table (LUT) for all 256 possible bytes
-                let default_color = Hsla {
-                    h: 0.0,
-                    s: 0.0,
-                    l: 0.0,
-                    a: 1.0,
-                };
-                let mut color_lut = [default_color; 256];
+                // Pre-calculate RGBA color Lookup Table (LUT) for all 256 possible bytes directly
+                let mut rgba_lut = [[0u8; 4]; 256];
                 for byte in 0..=255 {
                     let color = match self.color_mode {
                         ColorMode::Grayscale => {
@@ -637,7 +631,13 @@ impl Element for VisualMapElement {
                             }
                         }
                     };
-                    color_lut[byte as usize] = color;
+                    let rgb = color.to_rgb();
+                    rgba_lut[byte as usize] = [
+                        (rgb.r * 255.0).clamp(0.0, 255.0) as u8,
+                        (rgb.g * 255.0).clamp(0.0, 255.0) as u8,
+                        (rgb.b * 255.0).clamp(0.0, 255.0) as u8,
+                        (rgb.a * 255.0).clamp(0.0, 255.0) as u8,
+                    ];
                 }
 
                 if physical_width > 0 && physical_height > 0 {
@@ -653,15 +653,8 @@ impl Element for VisualMapElement {
                         }
 
                         let chunk = buffer.get_range(row_offset, chunk_len);
-                        for c in 0..chunk_len {
-                            let byte = chunk[c];
-                            let color = color_lut[byte as usize];
-                            let rgb = color.to_rgb();
-
-                            let r_val = (rgb.r * 255.0).clamp(0.0, 255.0) as u8;
-                            let g_val = (rgb.g * 255.0).clamp(0.0, 255.0) as u8;
-                            let b_val = (rgb.b * 255.0).clamp(0.0, 255.0) as u8;
-                            let a_val = (rgb.a * 255.0).clamp(0.0, 255.0) as u8;
+                        for (c, &byte) in chunk.iter().take(chunk_len).enumerate() {
+                            let [r_val, g_val, b_val, a_val] = rgba_lut[byte as usize];
 
                             for dy in 0..cell_height {
                                 let py = row_y * cell_height + dy;

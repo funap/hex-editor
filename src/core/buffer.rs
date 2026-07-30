@@ -133,4 +133,16 @@ mod tests {
         // Empty range
         assert_eq!(buffer.get_range(0, 0), &[] as &[u8]);
     }
+
+    #[test]
+    fn test_buffer_insert_remove() {
+        let mut buffer = Buffer::new(vec![1, 3]);
+        buffer.insert(1, 2);
+        assert_eq!(buffer.data(), &[1, 2, 3]);
+
+        assert_eq!(buffer.remove(1), Some(2));
+        assert_eq!(buffer.data(), &[1, 3]);
+
+        assert_eq!(buffer.remove(10), None);
+    }
 }

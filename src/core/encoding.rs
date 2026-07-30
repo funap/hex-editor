@@ -184,4 +184,26 @@ mod tests {
         assert_eq!(h32_be, "0x01234567");
         assert_eq!(h64_be, "0x0123456789ABCDEF");
     }
+
+    #[test]
+    fn test_encoding_decode_char_at() {
+        use super::Encoding;
+
+        let ascii_bytes = b"Hello World";
+        assert_eq!(Encoding::Ascii.decode_char_at(ascii_bytes, 0), Some(('H', 1)));
+
+        let utf8_bytes = "こんにちは".as_bytes();
+        assert_eq!(Encoding::Utf8.decode_char_at(utf8_bytes, 0), Some(('こ', 3)));
+
+        let invalid_utf8 = vec![0xFF, 0xFE];
+        assert_eq!(Encoding::Utf8.decode_char_at(&invalid_utf8, 0), None);
+
+        let utf16le = vec![0x41, 0x00, 0x42, 0x00];
+        assert_eq!(Encoding::Utf16Le.decode_char_at(&utf16le, 0), Some(('A', 2)));
+        assert_eq!(Encoding::Utf16Le.decode_char_at(&utf16le, 2), Some(('B', 2)));
+
+        let utf16be = vec![0x00, 0x41, 0x00, 0x42];
+        assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 0), Some(('A', 2)));
+        assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 2), Some(('B', 2)));
+    }
 }

@@ -25,8 +25,11 @@ pub struct ChecksumResults {
     pub adler32: u32,
     pub md5: [u8; 16],
     pub sha256: [u8; 32],
+    #[allow(dead_code)]
     pub data_len: usize,
+    #[allow(dead_code)]
     pub range_start: usize,
+    #[allow(dead_code)]
     pub range_end: usize,
 }
 

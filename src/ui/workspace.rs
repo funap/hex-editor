@@ -64,7 +64,7 @@ impl Workspace {
 
         let file_tree = cx.new(|cx| FileTreeView::new("FILES", cx));
         let left_panel = cx.new(|cx| LeftPanel::new(file_tree.clone(), cx));
-        let activity_bar = cx.new(|cx| ActivityBar::new(cx));
+        let activity_bar = cx.new(ActivityBar::new);
 
         cx.subscribe_in(&activity_bar, window, |this, _, event: &ActivityBarEvent, window, cx| match event {
             ActivityBarEvent::Select(activity) => {
@@ -81,7 +81,7 @@ impl Workspace {
         })
         .detach();
 
-        let status_bar = cx.new(|cx| StatusBar::new(cx));
+        let status_bar = cx.new(StatusBar::new);
         cx.subscribe(&status_bar, |this, _, event, cx| match event {
             crate::ui::components::status_bar::StatusBarEvent::ToggleLeftPanel => {
                 this.is_left_panel_visible = !this.is_left_panel_visible;
@@ -141,10 +141,10 @@ impl Workspace {
     }
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
-        if let Some(active_panel) = &self.active_panel {
-            if active_panel.panel_name(cx) == "EditorPanel" {
-                return self.open_file_manager.read(cx).active_editor();
-            }
+        if let Some(active_panel) = &self.active_panel
+            && active_panel.panel_name(cx) == "EditorPanel"
+        {
+            return self.open_file_manager.read(cx).active_editor();
         }
         None
     }
@@ -796,11 +796,11 @@ impl Workspace {
             gpui_component::dock::DockItem::Tabs { items, .. } => {
                 for panel in items {
                     if let Ok(p) = panel.view().downcast::<EditorPanel>() {
-                        let _ = p.update(cx, |_, cx| cx.notify());
+                        p.update(cx, |_, cx| cx.notify());
                     } else if let Ok(p) = panel.view().downcast::<crate::ui::panels::diff_panel::DiffPanel>() {
-                        let _ = p.update(cx, |_, cx| cx.notify());
+                        p.update(cx, |_, cx| cx.notify());
                     } else if let Ok(p) = panel.view().downcast::<crate::ui::panels::settings_panel::SettingsPanel>() {
-                        let _ = p.update(cx, |_, cx| cx.notify());
+                        p.update(cx, |_, cx| cx.notify());
                     }
                 }
             }
@@ -811,11 +811,11 @@ impl Workspace {
             }
             gpui_component::dock::DockItem::Panel { view, .. } => {
                 if let Ok(p) = view.view().downcast::<EditorPanel>() {
-                    let _ = p.update(cx, |_, cx| cx.notify());
+                    p.update(cx, |_, cx| cx.notify());
                 } else if let Ok(p) = view.view().downcast::<crate::ui::panels::diff_panel::DiffPanel>() {
-                    let _ = p.update(cx, |_, cx| cx.notify());
+                    p.update(cx, |_, cx| cx.notify());
                 } else if let Ok(p) = view.view().downcast::<crate::ui::panels::settings_panel::SettingsPanel>() {
-                    let _ = p.update(cx, |_, cx| cx.notify());
+                    p.update(cx, |_, cx| cx.notify());
                 }
             }
             _ => {}

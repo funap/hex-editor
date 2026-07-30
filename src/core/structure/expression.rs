@@ -375,6 +375,12 @@ impl<'a> Parser<'a> {
         self.current_token = self.lexer.next_token();
     }
 
+    fn take_token(&mut self) -> Token {
+        let tok = std::mem::replace(&mut self.current_token, Token::EOF);
+        self.advance();
+        tok
+    }
+
     fn parse_ternary(&mut self) -> ExprValue {
         let val = self.parse_or();
         if self.current_token == Token::Question {
@@ -457,8 +463,7 @@ impl<'a> Parser<'a> {
             self.current_token,
             Token::Equal | Token::NotEqual | Token::Greater | Token::GreaterEqual | Token::Less | Token::LessEqual
         ) {
-            let op = self.current_token.clone();
-            self.advance();
+            let op = self.take_token();
             let right = self.parse_shift();
             // String comparison
             if matches!(val, ExprValue::Str(_)) || matches!(right, ExprValue::Str(_)) {
@@ -501,8 +506,7 @@ impl<'a> Parser<'a> {
     fn parse_shift(&mut self) -> ExprValue {
         let mut val = self.parse_term();
         while matches!(self.current_token, Token::Shl | Token::Shr) {
-            let op = self.current_token.clone();
-            self.advance();
+            let op = self.take_token();
             let right = self.parse_term();
             match op {
                 Token::Shl => val = ExprValue::Int(val.to_i64().wrapping_shl(right.to_i64() as u32)),
@@ -516,8 +520,7 @@ impl<'a> Parser<'a> {
     fn parse_term(&mut self) -> ExprValue {
         let mut val = self.parse_factor();
         while matches!(self.current_token, Token::Plus | Token::Minus) {
-            let op = self.current_token.clone();
-            self.advance();
+            let op = self.take_token();
             let right = self.parse_factor();
             if val.is_float() || right.is_float() {
                 match op {
@@ -539,8 +542,7 @@ impl<'a> Parser<'a> {
     fn parse_factor(&mut self) -> ExprValue {
         let mut val = self.parse_unary();
         while matches!(self.current_token, Token::Star | Token::Slash | Token::Percent) {
-            let op = self.current_token.clone();
-            self.advance();
+            let op = self.take_token();
             let right = self.parse_unary();
             if val.is_float() || right.is_float() {
                 match op {
@@ -624,25 +626,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> ExprValue {
-        match self.current_token.clone() {
-            Token::Number(n) => {
-                self.advance();
-                ExprValue::Int(n)
-            }
-            Token::Float(f) => {
-                self.advance();
-                ExprValue::Float(f)
-            }
-            Token::Identifier(id) => {
-                self.advance();
-                self.resolve_identifier(&id)
-            }
-            Token::String(s) => {
-                self.advance();
-                ExprValue::Str(s)
-            }
+        match self.take_token() {
+            Token::Number(n) => ExprValue::Int(n),
+            Token::Float(f) => ExprValue::Float(f),
+            Token::Identifier(id) => self.resolve_identifier(&id),
+            Token::String(s) => ExprValue::Str(s),
             Token::LParen => {
-                self.advance();
                 let val = self.parse_ternary();
                 if self.current_token == Token::RParen {
                     self.advance();
@@ -651,10 +640,8 @@ impl<'a> Parser<'a> {
                 }
                 val
             }
-            _ => {
-                let tok = self.current_token.clone();
+            tok => {
                 self.record_error(format!("Unexpected token in expression: {:?}", tok));
-                self.advance();
                 ExprValue::Int(0)
             }
         }

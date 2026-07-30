@@ -201,3 +201,53 @@ impl LineMap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_standard_linemap() {
+        let map = LineMap::Standard { total_size: 32 };
+        assert_eq!(map.len(), 2);
+        assert!(!map.is_empty());
+        assert_eq!(map.get(0), Some(0));
+        assert_eq!(map.get(1), Some(16));
+        assert_eq!(map.get(2), None);
+        assert_eq!(map.binary_search(&0), Ok(0));
+        assert_eq!(map.binary_search(&16), Ok(1));
+        assert_eq!(map.binary_search(&8), Err(1));
+        assert_eq!(map.max_bytes_per_row(), 16);
+    }
+
+    #[test]
+    fn test_standard_linemap_empty() {
+        let map = LineMap::Standard { total_size: 0 };
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(0), Some(0));
+        assert_eq!(map.binary_search(&0), Ok(0));
+        assert_eq!(map.binary_search(&10), Err(1));
+    }
+
+    #[test]
+    fn test_sparse_linemap() {
+        let seg = LayoutSegment {
+            start_offset: 0,
+            start_line: 0,
+            byte_len: 10,
+            line_count: 1,
+            kind: SegmentKind::Standard,
+        };
+        let sparse = SparseLineMap {
+            segments: vec![seg],
+            total_lines: 1,
+            total_size: 10,
+            max_bytes_per_row: 10,
+        };
+        let map = LineMap::Sparse(Arc::new(sparse));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(0), Some(0));
+        assert_eq!(map.binary_search(&0), Ok(0));
+        assert_eq!(map.max_bytes_per_row(), 10);
+    }
+}

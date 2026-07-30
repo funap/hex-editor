@@ -53,3 +53,35 @@ impl History {
         self.undo_stack.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyCommand;
+    impl Command for DummyCommand {
+        fn execute(&mut self, _: &mut crate::core::editor::Editor) {}
+        fn undo(&mut self, _: &mut crate::core::editor::Editor) {}
+    }
+
+    #[test]
+    fn test_history_push_pop() {
+        let mut history = History::new();
+        assert_eq!(history.version(), 0);
+
+        history.push(Box::new(DummyCommand));
+        assert_eq!(history.version(), 1);
+
+        history.push_redo(Box::new(DummyCommand));
+        assert!(history.pop_redo().is_some());
+
+        history.push(Box::new(DummyCommand));
+        assert!(history.pop_redo().is_none()); // push clears redo stack
+
+        assert!(history.pop_undo().is_some());
+        assert_eq!(history.version(), 1);
+
+        history.clear();
+        assert_eq!(history.version(), 0);
+    }
+}

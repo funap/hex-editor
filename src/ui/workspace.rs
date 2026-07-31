@@ -141,12 +141,7 @@ impl Workspace {
     }
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
-        if let Some(active_panel) = &self.active_panel
-            && active_panel.panel_name(cx) == "EditorPanel"
-        {
-            return self.open_file_manager.read(cx).active_editor();
-        }
-        None
+        self.open_file_manager.read(cx).active_editor()
     }
 
     fn sync_active_editor(&self, cx: &mut Context<Self>) {

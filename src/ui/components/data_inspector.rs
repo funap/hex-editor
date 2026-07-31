@@ -364,5 +364,3 @@ impl Focusable for DataInspector {
         self.focus_handle.clone()
     }
 }
-
-

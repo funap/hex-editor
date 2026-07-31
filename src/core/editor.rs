@@ -1304,8 +1304,8 @@ mod tests {
 
     #[test]
     fn test_editor_empty_lines_and_breaks() {
-        use std::path::PathBuf;
         use crate::core::buffer::Buffer;
+        use std::path::PathBuf;
         let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 100]))));
         let mut editor = Editor::new(doc);
 

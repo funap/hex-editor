@@ -1,14 +1,30 @@
 use crate::core::editor::Editor;
 use crate::core::structure::ParsedField;
 use crate::ui::style::StyleExt as _;
+use gpui::prelude::*;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, h_flex, list::ListItem, v_flex};
+
+actions!(struct_tree, [MoveUp, MoveDown,]);
+
+const CONTEXT: &str = "StructTreeView";
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
+        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
+        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
+        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
+    ]);
+}
+
 pub struct StructTreeView {
     pub fields: Vec<crate::core::structure::ParsedField>,
     pub flattened_fields: Vec<FlattenedField>,
     pub editor: Option<Entity<Editor>>,
     pub list_state: ListState,
     pub focus_handle: FocusHandle,
+    pub selected_index: Option<usize>,
     last_parse_id: Option<String>,
     _editor_subscription: Option<Subscription>,
 }
@@ -18,6 +34,7 @@ pub struct FlattenedField {
     pub id: String,
     pub _field_type: String,
     pub offset: usize,
+    pub size: usize,
     pub value_str: String,
     pub color: Hsla,
     pub depth: usize,
@@ -36,6 +53,7 @@ impl StructTreeView {
             editor: editor.clone(),
             list_state,
             focus_handle,
+            selected_index: None,
             last_parse_id: None,
             _editor_subscription: None,
         };
@@ -67,19 +85,71 @@ impl StructTreeView {
     }
 
     fn sync_fields(&mut self, editor: &Entity<Editor>, cx: &mut Context<Self>) {
-        let editor_lock = editor.read(cx);
-        let doc_version = editor_lock.document.read().ok().map(|d| d.history.version()).unwrap_or(0);
-        let current_parse_id = editor_lock
-            .parse_result
-            .as_ref()
-            .map(|r| format!("{}-{}-{}-{}", r.definition_id, r.total_parsed_bytes, r.fields.len(), doc_version));
+        let (current_parse_id, cursor_offset) = {
+            let editor_lock = editor.read(cx);
+            let doc_version = editor_lock.document.read().ok().map(|d| d.history.version()).unwrap_or(0);
+            let parse_id = editor_lock
+                .parse_result
+                .as_ref()
+                .map(|r| format!("{}-{}-{}-{}", r.definition_id, r.total_parsed_bytes, r.fields.len(), doc_version));
+            (parse_id, editor_lock.cursor_offset)
+        };
 
         if current_parse_id != self.last_parse_id {
-            let fields = editor_lock.parse_result.as_ref().map(|res| res.fields.clone()).unwrap_or_default();
-
+            let fields = editor.read(cx).parse_result.as_ref().map(|res| res.fields.clone()).unwrap_or_default();
             self.set_fields(fields, cx);
             self.last_parse_id = current_parse_id;
-            cx.notify();
+        }
+
+        self.sync_selected_index_from_cursor(cursor_offset, cx);
+    }
+
+    fn sync_selected_index_from_cursor(&mut self, cursor_offset: usize, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+
+        // If current selection is valid for this cursor_offset, keep it
+        if let Some(curr_idx) = self.selected_index {
+            if curr_idx < self.flattened_fields.len() {
+                let field = &self.flattened_fields[curr_idx];
+                let end = field.offset + field.size;
+                if cursor_offset >= field.offset && (cursor_offset < end || (field.size == 0 && cursor_offset == field.offset)) {
+                    return;
+                }
+            }
+        }
+
+        // Find best match in flattened fields
+        let mut best_match: Option<(usize, usize, usize)> = None; // (index, depth, size)
+        for (i, field) in self.flattened_fields.iter().enumerate() {
+            let end = field.offset + field.size;
+            let matches = if field.size > 0 {
+                cursor_offset >= field.offset && cursor_offset < end
+            } else {
+                cursor_offset == field.offset
+            };
+
+            if matches {
+                match best_match {
+                    None => {
+                        best_match = Some((i, field.depth, field.size));
+                    }
+                    Some((_, best_depth, best_size)) => {
+                        if field.depth > best_depth || (field.depth == best_depth && field.size < best_size) {
+                            best_match = Some((i, field.depth, field.size));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((idx, _, _)) = best_match {
+            if self.selected_index != Some(idx) {
+                self.selected_index = Some(idx);
+                self.list_state.scroll_to_reveal_item(idx);
+                cx.notify();
+            }
         }
     }
 
@@ -88,6 +158,7 @@ impl StructTreeView {
         Self::flatten_fields(&fields, 0, &mut flattened);
         self.fields = fields;
         self.flattened_fields = flattened;
+        self.selected_index = None;
         self.list_state.reset(self.flattened_fields.len());
         cx.notify();
     }
@@ -104,6 +175,7 @@ impl StructTreeView {
                 id: field.id.clone(),
                 _field_type: field.field_type.clone(),
                 offset: field.offset,
+                size: field.size,
                 value_str: val_str,
                 color: field.color,
                 depth,
@@ -115,11 +187,71 @@ impl StructTreeView {
         }
     }
 
-    fn render_list_item(ix: usize, field: &FlattenedField, editor: Option<Entity<Editor>>, focus_handle: FocusHandle, cx: &mut App) -> AnyElement {
+    fn select_item(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx >= self.flattened_fields.len() {
+            return;
+        }
+
+        self.selected_index = Some(idx);
+        self.list_state.scroll_to_reveal_item(idx);
+
+        let offset = self.flattened_fields[idx].offset;
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| {
+                editor.set_cursor_offset(offset);
+                cx.notify();
+            });
+        }
+
+        cx.notify();
+    }
+
+    fn move_up(&mut self, _: &MoveUp, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+
+        let next_idx = match self.selected_index {
+            Some(idx) => idx.saturating_sub(1),
+            None => 0,
+        };
+
+        self.select_item(next_idx, cx);
+    }
+
+    fn move_down(&mut self, _: &MoveDown, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+
+        let max_idx = self.flattened_fields.len() - 1;
+        let next_idx = match self.selected_index {
+            Some(idx) => (idx + 1).min(max_idx),
+            None => 0,
+        };
+
+        self.select_item(next_idx, cx);
+    }
+
+    fn render_list_item(
+        ix: usize,
+        field: &FlattenedField,
+        is_selected: bool,
+        is_focused: bool,
+        view: Entity<Self>,
+        focus_handle: FocusHandle,
+        cx: &mut App,
+    ) -> AnyElement {
         let padding_left = px(16.0 * field.depth as f32 + 12.0);
-        let offset = field.offset;
+        let selection_bg = if is_focused {
+            cx.theme().selection
+        } else {
+            cx.theme().muted_foreground.opacity(0.3)
+        };
 
         ListItem::new(ix)
+            .selected(is_selected)
+            .when(is_selected, |this| this.bg(selection_bg))
             .w_full()
             .rounded(cx.theme().radius)
             .px_3()
@@ -141,18 +273,11 @@ impl StructTreeView {
             )
             .on_click(move |_, window, cx| {
                 focus_handle.focus(window);
-                this_on_field_click(offset, cx, editor.clone());
+                view.update(cx, |this, cx| {
+                    this.select_item(ix, cx);
+                });
             })
             .into_any_element()
-    }
-}
-
-fn this_on_field_click(offset: usize, cx: &mut App, editor: Option<Entity<Editor>>) {
-    if let Some(editor) = editor {
-        editor.update(cx, |editor, cx| {
-            editor.set_cursor_offset(offset);
-            cx.notify();
-        });
     }
 }
 
@@ -169,7 +294,10 @@ impl Render for StructTreeView {
 
         container
             .id("struct-tree-view")
+            .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::move_up))
+            .on_action(cx.listener(Self::move_down))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
@@ -192,19 +320,19 @@ impl Render for StructTreeView {
                     .into_any_element()
             } else {
                 list(self.list_state.clone(), move |ix, _window, cx| {
-                    let (item, focus_handle) = {
+                    let (item, is_selected, focus_handle) = {
                         let this = view.read(cx);
                         let item = if ix < this.flattened_fields.len() {
                             Some(this.flattened_fields[ix].clone())
                         } else {
                             None
                         };
-                        (item, this.focus_handle.clone())
+                        let is_selected = this.selected_index == Some(ix);
+                        (item, is_selected, this.focus_handle.clone())
                     };
-                    let editor = view.read(cx).editor.clone();
 
                     if let Some(field) = item {
-                        Self::render_list_item(ix, &field, editor, focus_handle, cx)
+                        Self::render_list_item(ix, &field, is_selected, is_focused, view.clone(), focus_handle, cx)
                     } else {
                         div().into_any_element()
                     }

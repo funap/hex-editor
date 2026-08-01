@@ -483,17 +483,17 @@ impl Workspace {
                                         let ksy_arc = Arc::new(ksy);
                                         this.ksy_definition = Some(ksy_arc.clone());
 
-                                        if let Some(editor_entity) = this.active_editor(cx) {
+                                        let editors: Vec<_> = this.open_file_manager.read(cx).entries().iter().map(|e| e.editor.clone()).collect();
+                                        for editor_entity in editors {
                                             editor_entity.update(cx, |editor, cx| {
                                                 editor.set_kaitai_definition(ksy_arc.clone());
                                                 cx.notify();
                                             });
                                         }
 
+                                        let active_editor = this.active_editor(cx);
                                         this.left_panel.update(cx, |p, cx| {
-                                            if let Some(editor_entity) = this.active_editor(cx) {
-                                                p.set_editor(Some(editor_entity.clone()), cx);
-                                            }
+                                            p.set_editor(active_editor, cx);
                                             p.set_tab(crate::ui::panels::left_panel::LeftPanelTab::Structure, cx);
                                         });
                                         this.is_left_panel_visible = true;
@@ -517,15 +517,17 @@ impl Workspace {
 
     fn on_action_clear_structure_definition(&mut self, _: &ClearStructureDefinition, _: &mut Window, cx: &mut Context<Self>) {
         self.ksy_definition = None;
-        if let Some(editor_entity) = self.active_editor(cx) {
+        let editors: Vec<_> = self.open_file_manager.read(cx).entries().iter().map(|e| e.editor.clone()).collect();
+        for editor_entity in editors {
             editor_entity.update(cx, |editor, cx| {
                 editor.clear_structure_definition();
                 cx.notify();
             });
-            self.left_panel.update(cx, |p, cx| {
-                p.set_editor(Some(editor_entity.clone()), cx);
-            });
         }
+        let active_editor = self.active_editor(cx);
+        self.left_panel.update(cx, |p, cx| {
+            p.set_editor(active_editor, cx);
+        });
         cx.notify();
     }
 

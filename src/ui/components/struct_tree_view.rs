@@ -109,16 +109,6 @@ impl StructTreeView {
             return;
         }
 
-        if let Some(curr_idx) = self.selected_index {
-            if curr_idx < self.flattened_fields.len() {
-                let field = &self.flattened_fields[curr_idx];
-                let end = field.offset + field.size;
-                if cursor_offset >= field.offset && (cursor_offset < end || (field.size == 0 && cursor_offset == field.offset)) {
-                    return;
-                }
-            }
-        }
-
         let upper_bound = self.flattened_fields.partition_point(|f| f.offset <= cursor_offset);
         if upper_bound == 0 {
             return;

@@ -161,14 +161,23 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
         return Vec::new();
     }
 
+    use bstr::ByteSlice as _;
+
     let search_end = end - pattern_len;
     let mut first_match: Option<usize> = None;
+    let mut i = start.min(search_end + 1);
 
-    // Ensure start is within bounds for the loop
-    let start = start.min(search_end + 1);
-
-    for i in start..=search_end {
-        if !pattern[0].matches(data[i]) {
+    while i <= search_end {
+        if pattern[0].mask == 0xFF {
+            let target = pattern[0].value;
+            match data[i..=search_end].find_byte(target) {
+                Some(pos) => {
+                    i += pos;
+                }
+                None => break,
+            }
+        } else if !pattern[0].matches(data[i]) {
+            i += 1;
             continue;
         }
 
@@ -189,10 +198,10 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
             // Check limit
             match limit {
                 SearchLimit::Count(max) => {
+                    results.push(i);
                     if results.len() >= max {
                         break;
                     }
-                    results.push(i);
                 }
                 SearchLimit::Range(range_bytes) => {
                     if let Some(first) = first_match {
@@ -207,6 +216,8 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
                 }
             }
         }
+
+        i += 1;
     }
 
     results

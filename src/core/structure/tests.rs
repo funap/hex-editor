@@ -307,4 +307,34 @@ seq:
         assert_eq!(res, 0);
         assert!(!errors.borrow().is_empty());
     }
+
+    #[test]
+    fn test_expr_ast_compilation_and_evaluation() {
+        use crate::core::structure::expression::{EvalContext, ExprAST, ExprEvaluator};
+        use std::collections::HashMap;
+
+        let mut values = HashMap::new();
+        values.insert("header.len".to_string(), 16);
+        values.insert("flags".to_string(), 0x05);
+
+        let string_values = HashMap::new();
+        let base_path = vec!["header".to_string()];
+        let enums = HashMap::new();
+        let errors = std::cell::RefCell::new(Vec::new());
+
+        let ctx = EvalContext {
+            values: &values,
+            string_values: &string_values,
+            base_path: &base_path,
+            stream_eof: false,
+            stream_size: 100,
+            stream_pos: 0,
+            enums: &enums,
+            errors: Some(&errors),
+        };
+
+        let ast = ExprAST::compile("flags & 0x01 != 0 ? len * 2 : 0").expect("Failed to compile AST");
+        let val = ExprEvaluator::eval_ast_i64(&ast, &ctx);
+        assert_eq!(val, 32);
+    }
 }

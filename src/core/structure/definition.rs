@@ -1,3 +1,4 @@
+use crate::core::structure::expression::ExprAST;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -49,6 +50,15 @@ pub struct KsyAttr {
     pub value: Option<String>,
     pub valid: Option<serde_yaml::Value>,
     pub process: Option<serde_yaml::Value>,
+
+    #[serde(skip)]
+    pub compiled_condition: Option<ExprAST>,
+    #[serde(skip)]
+    pub compiled_repeat_expr: Option<ExprAST>,
+    #[serde(skip)]
+    pub compiled_repeat_until: Option<ExprAST>,
+    #[serde(skip)]
+    pub compiled_value: Option<ExprAST>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -68,4 +78,49 @@ pub struct KsyType {
     pub instances: HashMap<String, KsyAttr>,
     #[serde(default)]
     pub enums: HashMap<String, HashMap<String, serde_yaml::Value>>,
+}
+
+impl KsyAttr {
+    pub fn compile_expressions(&mut self) {
+        if let Some(ref cond) = self.condition {
+            self.compiled_condition = ExprAST::compile(cond);
+        }
+        if let Some(ref expr) = self.repeat_expr {
+            self.compiled_repeat_expr = ExprAST::compile(expr);
+        }
+        if let Some(ref until) = self.repeat_until {
+            self.compiled_repeat_until = ExprAST::compile(until);
+        }
+        if let Some(ref val) = self.value {
+            self.compiled_value = ExprAST::compile(val);
+        }
+    }
+}
+
+impl KsyDefinition {
+    pub fn compile_expressions(&mut self) {
+        for attr in &mut self.seq {
+            attr.compile_expressions();
+        }
+        for attr in self.instances.values_mut() {
+            attr.compile_expressions();
+        }
+        for t in self.types.values_mut() {
+            t.compile_expressions();
+        }
+    }
+}
+
+impl KsyType {
+    pub fn compile_expressions(&mut self) {
+        for attr in &mut self.seq {
+            attr.compile_expressions();
+        }
+        for attr in self.instances.values_mut() {
+            attr.compile_expressions();
+        }
+        for t in self.types.values_mut() {
+            t.compile_expressions();
+        }
+    }
 }

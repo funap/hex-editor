@@ -349,6 +349,26 @@ impl ExprEvaluator {
     pub fn eval_string(expr: &str, ctx: &EvalContext) -> String {
         Self::evaluate_rich(expr, ctx).to_string_val()
     }
+
+    /// Evaluate pre-compiled AST returning ExprValue
+    pub fn eval_ast_rich(ast: &ExprAST, ctx: &EvalContext) -> ExprValue {
+        ast.eval(ctx)
+    }
+
+    /// Evaluate pre-compiled AST returning i64
+    pub fn eval_ast_i64(ast: &ExprAST, ctx: &EvalContext) -> i64 {
+        ast.eval(ctx).to_i64()
+    }
+
+    /// Evaluate pre-compiled AST returning bool
+    pub fn eval_ast_bool(ast: &ExprAST, ctx: &EvalContext) -> bool {
+        ast.eval(ctx).to_bool()
+    }
+
+    /// Evaluate pre-compiled AST returning string
+    pub fn eval_ast_string(ast: &ExprAST, ctx: &EvalContext) -> String {
+        ast.eval(ctx).to_string_val()
+    }
 }
 
 struct Parser<'a> {
@@ -777,5 +797,650 @@ impl<'a> Parser<'a> {
             }
         }
         ExprValue::Int(0)
+    }
+}
+
+/// Abstract Syntax Tree (AST) for pre-compiled Kaitai Struct expressions
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprAST {
+    Number(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Identifier(String),
+    MemberAccess {
+        base: Box<ExprAST>,
+        member: String,
+        is_enum: bool,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Box<ExprAST>,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Box<ExprAST>,
+        right: Box<ExprAST>,
+    },
+    Ternary {
+        cond: Box<ExprAST>,
+        then_branch: Box<ExprAST>,
+        else_branch: Box<ExprAST>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+    BitNot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Shl,
+    Shr,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    BitAnd,
+    BitOr,
+    BitXor,
+    LogicalAnd,
+    LogicalOr,
+}
+
+impl ExprAST {
+    pub fn compile(expr: &str) -> Option<ExprAST> {
+        let trimmed = expr.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut parser = ASTParser::new(trimmed);
+        Some(parser.parse_expression())
+    }
+
+    pub fn eval(&self, ctx: &EvalContext) -> ExprValue {
+        match self {
+            ExprAST::Number(n) => ExprValue::Int(*n),
+            ExprAST::Float(f) => ExprValue::Float(*f),
+            ExprAST::Str(s) => ExprValue::Str(s.clone()),
+            ExprAST::Bool(b) => ExprValue::Bool(*b),
+            ExprAST::Identifier(id) => self.eval_identifier(id, ctx),
+            ExprAST::MemberAccess { base, member, is_enum } => self.eval_member_access(base, member, *is_enum, ctx),
+            ExprAST::Unary { op, operand } => {
+                let val = operand.eval(ctx);
+                match op {
+                    UnaryOp::Not => ExprValue::Bool(!val.to_bool()),
+                    UnaryOp::Neg => {
+                        if val.is_float() {
+                            ExprValue::Float(-val.to_f64())
+                        } else {
+                            ExprValue::Int(-val.to_i64())
+                        }
+                    }
+                    UnaryOp::BitNot => ExprValue::Int(!val.to_i64()),
+                }
+            }
+            ExprAST::Ternary {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                if cond.eval(ctx).to_bool() {
+                    then_branch.eval(ctx)
+                } else {
+                    else_branch.eval(ctx)
+                }
+            }
+            ExprAST::Binary { op, left, right } => match op {
+                BinaryOp::LogicalAnd => {
+                    let l = left.eval(ctx);
+                    if !l.to_bool() {
+                        return ExprValue::Bool(false);
+                    }
+                    let r = right.eval(ctx);
+                    ExprValue::Bool(r.to_bool())
+                }
+                BinaryOp::LogicalOr => {
+                    let l = left.eval(ctx);
+                    if l.to_bool() {
+                        return ExprValue::Bool(true);
+                    }
+                    let r = right.eval(ctx);
+                    ExprValue::Bool(r.to_bool())
+                }
+                _ => {
+                    let l = left.eval(ctx);
+                    let r = right.eval(ctx);
+                    match op {
+                        BinaryOp::Add => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Float(l.to_f64() + r.to_f64())
+                            } else {
+                                ExprValue::Int(l.to_i64().wrapping_add(r.to_i64()))
+                            }
+                        }
+                        BinaryOp::Sub => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Float(l.to_f64() - r.to_f64())
+                            } else {
+                                ExprValue::Int(l.to_i64().wrapping_sub(r.to_i64()))
+                            }
+                        }
+                        BinaryOp::Mul => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Float(l.to_f64() * r.to_f64())
+                            } else {
+                                ExprValue::Int(l.to_i64().wrapping_mul(r.to_i64()))
+                            }
+                        }
+                        BinaryOp::Div => {
+                            if l.is_float() || r.is_float() {
+                                let r_val = r.to_f64();
+                                if r_val == 0.0 {
+                                    if let Some(err_cell) = ctx.errors {
+                                        err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                                            message: "Division by zero in float expression".to_string(),
+                                            offset: ctx.stream_pos,
+                                        });
+                                    }
+                                    ExprValue::Float(0.0)
+                                } else {
+                                    ExprValue::Float(l.to_f64() / r_val)
+                                }
+                            } else {
+                                let r_val = r.to_i64();
+                                if r_val == 0 {
+                                    if let Some(err_cell) = ctx.errors {
+                                        err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                                            message: "Division by zero in integer expression".to_string(),
+                                            offset: ctx.stream_pos,
+                                        });
+                                    }
+                                    ExprValue::Int(0)
+                                } else {
+                                    ExprValue::Int(l.to_i64() / r_val)
+                                }
+                            }
+                        }
+                        BinaryOp::Mod => {
+                            let r_val = r.to_i64();
+                            if r_val == 0 {
+                                if let Some(err_cell) = ctx.errors {
+                                    err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                                        message: "Modulo by zero in expression".to_string(),
+                                        offset: ctx.stream_pos,
+                                    });
+                                }
+                                ExprValue::Int(0)
+                            } else {
+                                ExprValue::Int(l.to_i64() % r_val)
+                            }
+                        }
+                        BinaryOp::Shl => ExprValue::Int(l.to_i64().wrapping_shl(r.to_i64() as u32)),
+                        BinaryOp::Shr => ExprValue::Int(l.to_i64().wrapping_shr(r.to_i64() as u32)),
+                        BinaryOp::BitAnd => ExprValue::Int(l.to_i64() & r.to_i64()),
+                        BinaryOp::BitOr => ExprValue::Int(l.to_i64() | r.to_i64()),
+                        BinaryOp::BitXor => ExprValue::Int(l.to_i64() ^ r.to_i64()),
+                        BinaryOp::Equal => {
+                            if matches!(l, ExprValue::Str(_)) || matches!(r, ExprValue::Str(_)) {
+                                ExprValue::Bool(l.to_string_val() == r.to_string_val())
+                            } else if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() == r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() == r.to_i64())
+                            }
+                        }
+                        BinaryOp::NotEqual => {
+                            if matches!(l, ExprValue::Str(_)) || matches!(r, ExprValue::Str(_)) {
+                                ExprValue::Bool(l.to_string_val() != r.to_string_val())
+                            } else if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() != r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() != r.to_i64())
+                            }
+                        }
+                        BinaryOp::Greater => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() > r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() > r.to_i64())
+                            }
+                        }
+                        BinaryOp::GreaterEqual => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() >= r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() >= r.to_i64())
+                            }
+                        }
+                        BinaryOp::Less => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() < r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() < r.to_i64())
+                            }
+                        }
+                        BinaryOp::LessEqual => {
+                            if l.is_float() || r.is_float() {
+                                ExprValue::Bool(l.to_f64() <= r.to_f64())
+                            } else {
+                                ExprValue::Bool(l.to_i64() <= r.to_i64())
+                            }
+                        }
+                        BinaryOp::LogicalAnd | BinaryOp::LogicalOr => unreachable!(),
+                    }
+                }
+            },
+        }
+    }
+
+    fn eval_identifier(&self, id: &str, ctx: &EvalContext) -> ExprValue {
+        match id {
+            "true" => return ExprValue::Bool(true),
+            "false" => return ExprValue::Bool(false),
+            _ => {}
+        }
+
+        let mut path_parts: Vec<String>;
+
+        if id == "_io" {
+            return ExprValue::Int(0);
+        }
+
+        if id == "_root" {
+            path_parts = Vec::new();
+        } else if id == "_parent" {
+            let mut p = ctx.base_path.to_vec();
+            if !p.is_empty() {
+                p.pop();
+            }
+            path_parts = p;
+        } else if id == "_" {
+            path_parts = ctx.base_path.to_vec();
+            path_parts.push("_".to_string());
+        } else {
+            path_parts = ctx.base_path.to_vec();
+            path_parts.push(id.to_string());
+        }
+
+        let full_id = path_parts.join(".");
+        if let Some(val) = ctx.values.get(&full_id) {
+            return ExprValue::Int(*val);
+        }
+        if let Some(val) = ctx.string_values.get(&full_id) {
+            return ExprValue::Str(val.clone());
+        }
+
+        if path_parts.len() == 1 {
+            let mut sibling_path = ctx.base_path.to_vec();
+            sibling_path.push(path_parts[0].clone());
+            let sibling_id = sibling_path.join(".");
+            if let Some(val) = ctx.values.get(&sibling_id) {
+                return ExprValue::Int(*val);
+            }
+            if let Some(val) = ctx.string_values.get(&sibling_id) {
+                return ExprValue::Str(val.clone());
+            }
+        }
+
+        if let Some(last) = path_parts.last() {
+            if let Some(val) = ctx.values.get(last) {
+                return ExprValue::Int(*val);
+            }
+            if let Some(val) = ctx.string_values.get(last) {
+                return ExprValue::Str(val.clone());
+            }
+        }
+
+        if !id.starts_with('_') && id != "true" && id != "false" {
+            if let Some(err_cell) = ctx.errors {
+                err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                    message: format!("Unresolved identifier: {}", full_id),
+                    offset: ctx.stream_pos,
+                });
+            }
+        }
+
+        ExprValue::Int(0)
+    }
+
+    fn eval_member_access(&self, base: &ExprAST, member: &str, is_enum: bool, ctx: &EvalContext) -> ExprValue {
+        if is_enum {
+            if let ExprAST::Identifier(enum_name) = base {
+                if let Some(enum_def) = ctx.enums.get(enum_name) {
+                    for (key, label) in enum_def {
+                        if label == member {
+                            if let Ok(v) = key.parse::<i64>() {
+                                return ExprValue::Int(v);
+                            }
+                        }
+                    }
+                }
+            }
+            return ExprValue::Int(0);
+        }
+
+        if let ExprAST::Identifier(id) = base {
+            if id == "_io" {
+                return match member {
+                    "eof" => ExprValue::Bool(ctx.stream_eof),
+                    "size" => ExprValue::Int(ctx.stream_size as i64),
+                    "pos" => ExprValue::Int(ctx.stream_pos as i64),
+                    _ => ExprValue::Int(0),
+                };
+            }
+        }
+
+        if member == "to_i" {
+            return base.eval(ctx);
+        }
+
+        let base_val = base.eval(ctx);
+        let base_str = base_val.to_string_val();
+        let path = if base_str.is_empty() {
+            member.to_string()
+        } else {
+            format!("{}.{}", base_str, member)
+        };
+
+        if let Some(val) = ctx.values.get(&path) {
+            return ExprValue::Int(*val);
+        }
+        if let Some(val) = ctx.string_values.get(&path) {
+            return ExprValue::Str(val.clone());
+        }
+
+        ExprValue::Int(0)
+    }
+}
+
+pub struct ASTParser<'a> {
+    lexer: Lexer<'a>,
+    current_token: Token,
+}
+
+impl<'a> ASTParser<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut lexer = Lexer::new(input);
+        let current_token = lexer.next_token();
+        Self { lexer, current_token }
+    }
+
+    fn advance(&mut self) {
+        self.current_token = self.lexer.next_token();
+    }
+
+    fn take_token(&mut self) -> Token {
+        let tok = std::mem::replace(&mut self.current_token, Token::EOF);
+        self.advance();
+        tok
+    }
+
+    pub fn parse_expression(&mut self) -> ExprAST {
+        self.parse_ternary()
+    }
+
+    fn parse_ternary(&mut self) -> ExprAST {
+        let cond = self.parse_or();
+        if self.current_token == Token::Question {
+            self.advance();
+            let then_branch = self.parse_ternary();
+            if self.current_token == Token::Colon {
+                self.advance();
+            }
+            let else_branch = self.parse_ternary();
+            ExprAST::Ternary {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            }
+        } else {
+            cond
+        }
+    }
+
+    fn parse_or(&mut self) -> ExprAST {
+        let mut left = self.parse_and();
+        while matches!(self.current_token, Token::Or) || matches!(self.current_token, Token::Identifier(ref s) if s == "or") {
+            self.advance();
+            let right = self.parse_and();
+            left = ExprAST::Binary {
+                op: BinaryOp::LogicalOr,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_and(&mut self) -> ExprAST {
+        let mut left = self.parse_bit_or();
+        while matches!(self.current_token, Token::And) || matches!(self.current_token, Token::Identifier(ref s) if s == "and") {
+            self.advance();
+            let right = self.parse_bit_or();
+            left = ExprAST::Binary {
+                op: BinaryOp::LogicalAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_bit_or(&mut self) -> ExprAST {
+        let mut left = self.parse_bit_xor();
+        while matches!(self.current_token, Token::Pipe) {
+            self.advance();
+            let right = self.parse_bit_xor();
+            left = ExprAST::Binary {
+                op: BinaryOp::BitOr,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_bit_xor(&mut self) -> ExprAST {
+        let mut left = self.parse_bit_and();
+        while matches!(self.current_token, Token::Caret) {
+            self.advance();
+            let right = self.parse_bit_and();
+            left = ExprAST::Binary {
+                op: BinaryOp::BitXor,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_bit_and(&mut self) -> ExprAST {
+        let mut left = self.parse_comparison();
+        while matches!(self.current_token, Token::Amp) {
+            self.advance();
+            let right = self.parse_comparison();
+            left = ExprAST::Binary {
+                op: BinaryOp::BitAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_comparison(&mut self) -> ExprAST {
+        let mut left = self.parse_shift();
+        while matches!(
+            self.current_token,
+            Token::Equal | Token::NotEqual | Token::Greater | Token::GreaterEqual | Token::Less | Token::LessEqual
+        ) {
+            let tok = self.take_token();
+            let op = match tok {
+                Token::Equal => BinaryOp::Equal,
+                Token::NotEqual => BinaryOp::NotEqual,
+                Token::Greater => BinaryOp::Greater,
+                Token::GreaterEqual => BinaryOp::GreaterEqual,
+                Token::Less => BinaryOp::Less,
+                Token::LessEqual => BinaryOp::LessEqual,
+                _ => unreachable!(),
+            };
+            let right = self.parse_shift();
+            left = ExprAST::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_shift(&mut self) -> ExprAST {
+        let mut left = self.parse_term();
+        while matches!(self.current_token, Token::Shl | Token::Shr) {
+            let tok = self.take_token();
+            let op = match tok {
+                Token::Shl => BinaryOp::Shl,
+                Token::Shr => BinaryOp::Shr,
+                _ => unreachable!(),
+            };
+            let right = self.parse_term();
+            left = ExprAST::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_term(&mut self) -> ExprAST {
+        let mut left = self.parse_factor();
+        while matches!(self.current_token, Token::Plus | Token::Minus) {
+            let tok = self.take_token();
+            let op = match tok {
+                Token::Plus => BinaryOp::Add,
+                Token::Minus => BinaryOp::Sub,
+                _ => unreachable!(),
+            };
+            let right = self.parse_factor();
+            left = ExprAST::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_factor(&mut self) -> ExprAST {
+        let mut left = self.parse_unary();
+        while matches!(self.current_token, Token::Star | Token::Slash | Token::Percent) {
+            let tok = self.take_token();
+            let op = match tok {
+                Token::Star => BinaryOp::Mul,
+                Token::Slash => BinaryOp::Div,
+                Token::Percent => BinaryOp::Mod,
+                _ => unreachable!(),
+            };
+            let right = self.parse_unary();
+            left = ExprAST::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_unary(&mut self) -> ExprAST {
+        match &self.current_token {
+            Token::Bang => {
+                self.advance();
+                let operand = self.parse_unary();
+                ExprAST::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(operand),
+                }
+            }
+            Token::Minus => {
+                self.advance();
+                let operand = self.parse_unary();
+                ExprAST::Unary {
+                    op: UnaryOp::Neg,
+                    operand: Box::new(operand),
+                }
+            }
+            Token::Tilde => {
+                self.advance();
+                let operand = self.parse_unary();
+                ExprAST::Unary {
+                    op: UnaryOp::BitNot,
+                    operand: Box::new(operand),
+                }
+            }
+            Token::Identifier(s) if s == "not" => {
+                self.advance();
+                let operand = self.parse_unary();
+                ExprAST::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(operand),
+                }
+            }
+            _ => self.parse_primary(),
+        }
+    }
+
+    fn parse_primary(&mut self) -> ExprAST {
+        let mut node = match self.take_token() {
+            Token::Number(n) => ExprAST::Number(n),
+            Token::Float(f) => ExprAST::Float(f),
+            Token::String(s) => ExprAST::Str(s),
+            Token::Identifier(id) => {
+                if id == "true" {
+                    ExprAST::Bool(true)
+                } else if id == "false" {
+                    ExprAST::Bool(false)
+                } else {
+                    ExprAST::Identifier(id)
+                }
+            }
+            Token::LParen => {
+                let inner = self.parse_expression();
+                if self.current_token == Token::RParen {
+                    self.advance();
+                }
+                inner
+            }
+            _ => ExprAST::Number(0),
+        };
+
+        while self.current_token == Token::Dot || self.current_token == Token::ColonColon {
+            let is_enum = self.current_token == Token::ColonColon;
+            self.advance();
+            if let Token::Identifier(member) = &self.current_token {
+                let member = member.clone();
+                self.advance();
+                node = ExprAST::MemberAccess {
+                    base: Box::new(node),
+                    member,
+                    is_enum,
+                };
+            } else {
+                break;
+            }
+        }
+
+        node
     }
 }

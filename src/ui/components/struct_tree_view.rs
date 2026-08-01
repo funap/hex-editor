@@ -3,7 +3,7 @@ use crate::core::structure::ParsedField;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, h_flex, list::ListItem, v_flex};
+use gpui_component::{ActiveTheme as _, v_flex};
 
 actions!(struct_tree, [MoveUp, MoveDown,]);
 
@@ -22,20 +22,20 @@ pub struct StructTreeView {
     pub fields: Vec<crate::core::structure::ParsedField>,
     pub flattened_fields: Vec<FlattenedField>,
     pub editor: Option<Entity<Editor>>,
-    pub list_state: ListState,
+    pub scroll_handle: UniformListScrollHandle,
     pub focus_handle: FocusHandle,
     pub selected_index: Option<usize>,
-    last_parse_id: Option<String>,
+    last_parse_id: Option<(String, usize, usize, usize)>,
     _editor_subscription: Option<Subscription>,
 }
 
 #[derive(Clone)]
 pub struct FlattenedField {
-    pub id: String,
-    pub _field_type: String,
+    pub id: SharedString,
+    pub _field_type: SharedString,
     pub offset: usize,
     pub size: usize,
-    pub value_str: String,
+    pub value_str: SharedString,
     pub color: Hsla,
     pub depth: usize,
 }
@@ -44,14 +44,14 @@ impl StructTreeView {
     pub fn new(fields: Vec<crate::core::structure::ParsedField>, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) -> Self {
         let mut flattened = Vec::new();
         Self::flatten_fields(&fields, 0, &mut flattened);
-        let list_state = ListState::new(flattened.len(), ListAlignment::Top, px(24.0));
+        let scroll_handle = UniformListScrollHandle::new();
         let focus_handle = cx.focus_handle();
 
         let mut this = Self {
             fields,
             flattened_fields: flattened,
             editor: editor.clone(),
-            list_state,
+            scroll_handle,
             focus_handle,
             selected_index: None,
             last_parse_id: None,
@@ -91,7 +91,7 @@ impl StructTreeView {
             let parse_id = editor_lock
                 .parse_result
                 .as_ref()
-                .map(|r| format!("{}-{}-{}-{}", r.definition_id, r.total_parsed_bytes, r.fields.len(), doc_version));
+                .map(|r| (r.definition_id.clone(), r.total_parsed_bytes, r.fields.len(), doc_version));
             (parse_id, editor_lock.cursor_offset)
         };
 
@@ -109,7 +109,6 @@ impl StructTreeView {
             return;
         }
 
-        // If current selection is valid for this cursor_offset, keep it
         if let Some(curr_idx) = self.selected_index {
             if curr_idx < self.flattened_fields.len() {
                 let field = &self.flattened_fields[curr_idx];
@@ -120,9 +119,14 @@ impl StructTreeView {
             }
         }
 
-        // Find best match in flattened fields
-        let mut best_match: Option<(usize, usize, usize)> = None; // (index, depth, size)
-        for (i, field) in self.flattened_fields.iter().enumerate() {
+        let upper_bound = self.flattened_fields.partition_point(|f| f.offset <= cursor_offset);
+        if upper_bound == 0 {
+            return;
+        }
+
+        let mut best_match: Option<(usize, usize, usize)> = None;
+        for i in (0..upper_bound).rev() {
+            let field = &self.flattened_fields[i];
             let end = field.offset + field.size;
             let matches = if field.size > 0 {
                 cursor_offset >= field.offset && cursor_offset < end
@@ -141,13 +145,15 @@ impl StructTreeView {
                         }
                     }
                 }
+            } else if field.offset + field.size < cursor_offset && best_match.is_some() {
+                break;
             }
         }
 
         if let Some((idx, _, _)) = best_match {
             if self.selected_index != Some(idx) {
                 self.selected_index = Some(idx);
-                self.list_state.scroll_to_reveal_item(idx);
+                self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
                 cx.notify();
             }
         }
@@ -159,21 +165,21 @@ impl StructTreeView {
         self.fields = fields;
         self.flattened_fields = flattened;
         self.selected_index = None;
-        self.list_state.reset(self.flattened_fields.len());
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
     fn flatten_fields(fields: &[ParsedField], depth: usize, results: &mut Vec<FlattenedField>) {
         for field in fields {
             let val_str = if let Some(label) = &field.enum_label {
-                format!("{} ({})", field.value, label)
+                SharedString::from(format!("{} ({})", field.value, label))
             } else {
-                format!("{}", field.value)
+                SharedString::from(format!("{}", field.value))
             };
 
             results.push(FlattenedField {
-                id: field.id.clone(),
-                _field_type: field.field_type.clone(),
+                id: SharedString::from(field.id.clone()),
+                _field_type: SharedString::from(field.field_type.clone()),
                 offset: field.offset,
                 size: field.size,
                 value_str: val_str,
@@ -193,7 +199,7 @@ impl StructTreeView {
         }
 
         self.selected_index = Some(idx);
-        self.list_state.scroll_to_reveal_item(idx);
+        self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
 
         let offset = self.flattened_fields[idx].offset;
         if let Some(editor) = &self.editor {
@@ -239,38 +245,40 @@ impl StructTreeView {
         is_selected: bool,
         is_focused: bool,
         view: Entity<Self>,
-        focus_handle: FocusHandle,
-        cx: &mut App,
+        focus_handle: &FocusHandle,
+        cx: &App,
     ) -> AnyElement {
         let padding_left = px(16.0 * field.depth as f32 + 12.0);
-        let selection_bg = if is_focused {
-            cx.theme().selection
+        let theme = cx.theme();
+        let bg_color = if is_selected {
+            if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) }
         } else {
-            cx.theme().muted_foreground.opacity(0.3)
+            hsla(0.0, 0.0, 0.0, 0.0)
         };
 
-        ListItem::new(ix)
-            .selected(is_selected)
-            .when(is_selected, |this| this.bg(selection_bg))
+        let focus_handle = focus_handle.clone();
+        div()
+            .id(ix)
+            .flex()
+            .flex_row()
+            .items_center()
             .w_full()
-            .rounded(cx.theme().radius)
+            .h(px(24.0))
+            .bg(bg_color)
             .px_3()
             .pl(padding_left)
+            .gap_2()
             .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .w(px(12.0))
-                            .h(px(12.0))
-                            .bg(field.color)
-                            .border_1()
-                            .border_color(cx.theme().border),
-                    )
-                    .child(div().text_color(cx.theme().foreground).child(field.id.clone()))
-                    .child(div().ml_auto().text_color(cx.theme().muted_foreground).child(field.value_str.clone())),
+                div()
+                    .flex_shrink_0()
+                    .w(px(10.0))
+                    .h(px(10.0))
+                    .bg(field.color)
+                    .border_1()
+                    .border_color(theme.border),
             )
+            .child(div().text_sm().text_color(theme.foreground).child(field.id.clone()))
+            .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(field.value_str.clone()))
             .on_click(move |_, window, cx| {
                 focus_handle.focus(window);
                 view.update(cx, |this, cx| {
@@ -289,7 +297,6 @@ impl Render for StructTreeView {
         let theme = cx.theme();
 
         let container = v_flex().size_full().flex_shrink_0().bg(theme.sidebar);
-
         let container = container.focus_indicator(is_focused, theme);
 
         container
@@ -319,24 +326,21 @@ impl Render for StructTreeView {
                     .child(div().text_color(theme.muted_foreground).child("No structure loaded"))
                     .into_any_element()
             } else {
-                list(self.list_state.clone(), move |ix, _window, cx| {
-                    let (item, is_selected, focus_handle) = {
-                        let this = view.read(cx);
-                        let item = if ix < this.flattened_fields.len() {
-                            Some(this.flattened_fields[ix].clone())
-                        } else {
-                            None
-                        };
-                        let is_selected = this.selected_index == Some(ix);
-                        (item, is_selected, this.focus_handle.clone())
-                    };
-
-                    if let Some(field) = item {
-                        Self::render_list_item(ix, &field, is_selected, is_focused, view.clone(), focus_handle, cx)
-                    } else {
-                        div().into_any_element()
-                    }
+                let focus_handle = self.focus_handle.clone();
+                uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, _window, cx| {
+                    let this = view.read(cx);
+                    range
+                        .map(|ix| {
+                            if let Some(field) = this.flattened_fields.get(ix) {
+                                let is_selected = this.selected_index == Some(ix);
+                                Self::render_list_item(ix, field, is_selected, is_focused, view.clone(), &focus_handle, cx)
+                            } else {
+                                div().into_any_element()
+                            }
+                        })
+                        .collect::<Vec<_>>()
                 })
+                .track_scroll(self.scroll_handle.clone())
                 .size_full()
                 .into_any_element()
             })

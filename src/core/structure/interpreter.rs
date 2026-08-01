@@ -90,7 +90,8 @@ fn collect_enums(ksy: &KsyDefinition) -> HashMap<String, HashMap<String, String>
 }
 
 impl KaitaiInterpreter {
-    pub fn new(ksy: KsyDefinition) -> Self {
+    pub fn new(mut ksy: KsyDefinition) -> Self {
+        ksy.compile_expressions();
         let global_endian = ksy.meta.endian.clone().unwrap_or_else(|| "le".to_string());
         let all_enums = collect_enums(&ksy);
         Self {
@@ -162,7 +163,11 @@ impl KaitaiInterpreter {
         // Handle value instances (computed fields, no stream reading)
         if let Some(value_expr) = &attr.value {
             let ctx = self.make_eval_ctx(stream);
-            let val = ExprEvaluator::eval_i64(value_expr, &ctx);
+            let val = if let Some(ref ast) = attr.compiled_value {
+                ExprEvaluator::eval_ast_i64(ast, &ctx)
+            } else {
+                ExprEvaluator::eval_i64(value_expr, &ctx)
+            };
             let field_id = attr.id.clone().unwrap_or_else(|| format!("value_{}", self.field_count));
             let full_id = if self.id_stack.is_empty() {
                 field_id.clone()
@@ -177,7 +182,11 @@ impl KaitaiInterpreter {
             match repeat.as_str() {
                 "expr" => {
                     if let Some(expr) = &attr.repeat_expr {
-                        let count = self.resolve_count(expr, stream);
+                        let count = if let Some(ref ast) = attr.compiled_repeat_expr {
+                            self.resolve_count_ast(ast, stream)
+                        } else {
+                            self.resolve_count(expr, stream)
+                        };
                         for i in 0..count {
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
                                 results.push(field);
@@ -210,7 +219,12 @@ impl KaitaiInterpreter {
                                 i += 1;
                                 // Evaluate until condition
                                 let ctx = self.make_eval_ctx(stream);
-                                if ExprEvaluator::eval_bool(expr, &ctx) {
+                                let stop = if let Some(ref ast) = attr.compiled_repeat_until {
+                                    ExprEvaluator::eval_ast_bool(ast, &ctx)
+                                } else {
+                                    ExprEvaluator::eval_bool(expr, &ctx)
+                                };
+                                if stop {
                                     break;
                                 }
                             } else {
@@ -244,7 +258,12 @@ impl KaitaiInterpreter {
         // Condition check
         if let Some(cond) = &attr.condition {
             let ctx = self.make_eval_ctx(stream);
-            if !ExprEvaluator::eval_bool(cond, &ctx) {
+            let cond_holds = if let Some(ref ast) = attr.compiled_condition {
+                ExprEvaluator::eval_ast_bool(ast, &ctx)
+            } else {
+                ExprEvaluator::eval_bool(cond, &ctx)
+            };
+            if !cond_holds {
                 return None;
             }
         }
@@ -688,6 +707,12 @@ impl KaitaiInterpreter {
     fn resolve_count(&self, expr: &str, stream: &KaitaiStream) -> usize {
         let ctx = self.make_eval_ctx(stream);
         let val = ExprEvaluator::eval_i64(expr, &ctx);
+        (if val < 0 { 0 } else { val as usize }).min(MAX_FIELDS)
+    }
+
+    fn resolve_count_ast(&self, ast: &crate::core::structure::expression::ExprAST, stream: &KaitaiStream) -> usize {
+        let ctx = self.make_eval_ctx(stream);
+        let val = ExprEvaluator::eval_ast_i64(ast, &ctx);
         (if val < 0 { 0 } else { val as usize }).min(MAX_FIELDS)
     }
 

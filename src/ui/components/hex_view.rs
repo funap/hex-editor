@@ -58,6 +58,46 @@ pub const OFFSET_WIDTH: f32 = 80.0;
 pub const HEX_BYTE_WIDTH: f32 = 22.0;
 pub const HEX_GAP: f32 = 4.0;
 pub const SECTION_GAP: f32 = 16.0;
+
+const HEX_STR_LUT: [&str; 256] = [
+    "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0a", "0b", "0c", "0d", "0e", "0f", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+    "1a", "1b", "1c", "1d", "1e", "1f", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "2a", "2b", "2c", "2d", "2e", "2f", "30", "31", "32", "33",
+    "34", "35", "36", "37", "38", "39", "3a", "3b", "3c", "3d", "3e", "3f", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "4a", "4b", "4c", "4d",
+    "4e", "4f", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "5a", "5b", "5c", "5d", "5e", "5f", "60", "61", "62", "63", "64", "65", "66", "67",
+    "68", "69", "6a", "6b", "6c", "6d", "6e", "6f", "70", "71", "72", "73", "74", "75", "76", "77", "78", "79", "7a", "7b", "7c", "7d", "7e", "7f", "80", "81",
+    "82", "83", "84", "85", "86", "87", "88", "89", "8a", "8b", "8c", "8d", "8e", "8f", "90", "91", "92", "93", "94", "95", "96", "97", "98", "99", "9a", "9b",
+    "9c", "9d", "9e", "9f", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "aa", "ab", "ac", "ad", "ae", "af", "b0", "b1", "b2", "b3", "b4", "b5",
+    "b6", "b7", "b8", "b9", "ba", "bb", "bc", "bd", "be", "bf", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "ca", "cb", "cc", "cd", "ce", "cf",
+    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "da", "db", "dc", "dd", "de", "df", "e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9",
+    "ea", "eb", "ec", "ed", "ee", "ef", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "fa", "fb", "fc", "fd", "fe", "ff",
+];
+
+const ASCII_STR_LUT: [&str; 128] = [
+    ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".",
+    ".", " ", "!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=",
+    ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\",
+    "]", "^", "_", "`", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "{",
+    "|", "}", "~", ".",
+];
+
+const HEADER_COL_LUT: [&str; 32] = [
+    "+0", "+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8", "+9", "+A", "+B", "+C", "+D", "+E", "+F", "+10", "+11", "+12", "+13", "+14", "+15", "+16", "+17",
+    "+18", "+19", "+1A", "+1B", "+1C", "+1D", "+1E", "+1F",
+];
+
+const HEX_DIGITS_LOWER: &[u8; 16] = b"0123456789abcdef";
+
+#[inline]
+fn format_offset_08(offset: usize) -> SharedString {
+    let mut buf = [b'0'; 8];
+    let mut v = offset;
+    for i in (0..8).rev() {
+        buf[i] = HEX_DIGITS_LOWER[v & 0xF];
+        v >>= 4;
+    }
+    SharedString::from(String::from_utf8(buf.to_vec()).unwrap())
+}
+
 pub const OFFSET_X_START: f32 = 4.0;
 pub const SELECTION_PADDING: f32 = 2.0;
 // pub const FONT_FAMILY: &str = "Menlo"; // Removed in favor of global Appearance
@@ -122,7 +162,7 @@ pub struct HexView {
     scroll_handle: ScrollHandle,
     horizontal_scroll_handle: ScrollHandle,
     scroll_offset_x: Pixels,
-    highlights: Vec<(Range<usize>, Hsla)>,
+    highlights: Arc<Vec<(Range<usize>, Hsla)>>,
     max_highlight_len: usize,
     show_offset: bool,
     show_header: bool,
@@ -153,7 +193,7 @@ impl HexView {
             scroll_handle: ScrollHandle::new(),
             horizontal_scroll_handle: ScrollHandle::new(),
             scroll_offset_x: px(0.),
-            highlights: Vec::new(),
+            highlights: Arc::new(Vec::new()),
             max_highlight_len: 0,
             show_offset: true,
             show_header: true,
@@ -217,7 +257,7 @@ impl HexView {
     pub fn set_highlights(&mut self, mut highlights: Vec<(Range<usize>, Hsla)>, cx: &mut Context<Self>) {
         highlights.sort_by_key(|(range, _)| range.start);
         self.max_highlight_len = highlights.iter().map(|(r, _)| r.end.saturating_sub(r.start)).max().unwrap_or(0);
-        self.highlights = highlights;
+        self.highlights = Arc::new(highlights);
         cx.notify();
     }
 
@@ -227,7 +267,7 @@ impl HexView {
         let mut highlights: Vec<_> = ranges.into_iter().map(|range| (range, highlight_color)).collect();
         highlights.sort_by_key(|(range, _)| range.start);
         self.max_highlight_len = highlights.iter().map(|(r, _)| r.end.saturating_sub(r.start)).max().unwrap_or(0);
-        self.highlights = highlights;
+        self.highlights = Arc::new(highlights);
         cx.notify();
     }
 
@@ -994,7 +1034,7 @@ struct HexViewElement {
     scroll_offset: usize,
     scroll_offset_x: Pixels,
     focus_handle: FocusHandle,
-    highlights: Vec<(Range<usize>, Hsla)>,
+    highlights: Arc<Vec<(Range<usize>, Hsla)>>,
     max_highlight_len: usize,
     show_offset: bool,
     show_header: bool,
@@ -1252,7 +1292,7 @@ impl Element for HexViewElement {
                 }
             }
 
-            let offset_str = format!("{:08x}", offset);
+            let offset_str = format_offset_08(offset);
             let offset_run = TextRun {
                 len: offset_str.len(),
                 font: text_style.font(),
@@ -1262,7 +1302,7 @@ impl Element for HexViewElement {
                 strikethrough: None,
             };
             let offset_line = if self.show_offset {
-                window.text_system().shape_line(offset_str.into(), font_size, &[offset_run], None)
+                window.text_system().shape_line(offset_str, font_size, &[offset_run], None)
             } else {
                 window.text_system().shape_line("".into(), font_size, &[], None)
             };
@@ -1271,9 +1311,9 @@ impl Element for HexViewElement {
             for (_byte_idx, byte) in chunk.iter().enumerate() {
                 let color = if *byte == 0 { hex_null_color } else { hex_byte_color };
 
-                let hex_str = format!("{:02x}", byte);
+                let hex_str = HEX_STR_LUT[*byte as usize];
                 let hex_run = TextRun {
-                    len: hex_str.len(),
+                    len: 2,
                     font: text_style.font(),
                     color: color.into(),
                     background_color: None,
@@ -1294,10 +1334,15 @@ impl Element for HexViewElement {
                         continue;
                     }
 
-                    let (char_str, color, len) = if let Some((c, char_len)) = self.encoding.decode_char_at(buffer.data(), global_offset) {
-                        (c.to_string(), ascii_printable_color, char_len)
+                    let (char_str, color, len): (SharedString, _, _) = if let Some((c, char_len)) = self.encoding.decode_char_at(buffer.data(), global_offset) {
+                        let str_val = if (c as u32) < 128 {
+                            SharedString::from(ASCII_STR_LUT[c as usize])
+                        } else {
+                            SharedString::from(c.to_string())
+                        };
+                        (str_val, ascii_printable_color, char_len)
                     } else {
-                        (".".to_string(), ascii_non_printable_color, 1)
+                        (SharedString::from("."), ascii_non_printable_color, 1)
                     };
 
                     let ascii_run = TextRun {
@@ -1309,7 +1354,7 @@ impl Element for HexViewElement {
                         strikethrough: None,
                     };
 
-                    let shaped = window.text_system().shape_line(char_str.into(), font_size, &[ascii_run], None);
+                    let shaped = window.text_system().shape_line(char_str, font_size, &[ascii_run], None);
                     ascii_chars.push((shaped, byte_idx, len));
                 }
             }
@@ -1389,7 +1434,11 @@ impl Element for HexViewElement {
             let mut hex_bytes = Vec::new();
             let header_cols = self.max_bytes_per_row;
             for i in 0..header_cols {
-                let s = format!("+{:X}", i);
+                let s: SharedString = if i < HEADER_COL_LUT.len() {
+                    SharedString::from(HEADER_COL_LUT[i])
+                } else {
+                    SharedString::from(format!("+{:X}", i))
+                };
                 let run = TextRun {
                     len: s.len(),
                     font: font.clone(),
@@ -1398,7 +1447,7 @@ impl Element for HexViewElement {
                     underline: None,
                     strikethrough: None,
                 };
-                hex_bytes.push(window.text_system().shape_line(s.into(), font_size, &[run], None));
+                hex_bytes.push(window.text_system().shape_line(s, font_size, &[run], None));
             }
 
             let encoding_name = match self.encoding {

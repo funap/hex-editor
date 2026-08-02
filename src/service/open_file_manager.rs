@@ -128,6 +128,68 @@ impl OpenFileManager {
     pub fn entries(&self) -> &[OpenEntry] {
         &self.entries
     }
+
+    pub fn active_index(&self) -> Option<usize> {
+        let active_id = self.active_id?;
+        self.entries.iter().position(|e| e.id == active_id)
+    }
+
+    pub fn activate_next(&mut self, cx: &mut Context<Self>) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let current = self.active_index().unwrap_or(0);
+        let next = (current + 1) % self.entries.len();
+        let id = self.entries[next].id;
+        self.activate(id, cx);
+    }
+
+    pub fn activate_previous(&mut self, cx: &mut Context<Self>) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let current = self.active_index().unwrap_or(0);
+        let prev = if current == 0 { self.entries.len() - 1 } else { current - 1 };
+        let id = self.entries[prev].id;
+        self.activate(id, cx);
+    }
+
+    pub fn activate_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let target = index.min(self.entries.len() - 1);
+        let id = self.entries[target].id;
+        self.activate(id, cx);
+    }
+
+    pub fn close_others(&mut self, cx: &mut Context<Self>) -> Vec<PathBuf> {
+        let active_id = self.active_id;
+        let mut closed_paths = Vec::new();
+        if let Some(active_id) = active_id {
+            let (keep, remove): (Vec<_>, Vec<_>) = self.entries.drain(..).partition(|e| e.id == active_id);
+            self.entries = keep;
+            for entry in remove {
+                closed_paths.push(entry.path);
+                cx.emit(OpenFileEvent::Closed(entry.id));
+            }
+            cx.notify();
+        }
+        closed_paths
+    }
+
+    pub fn close_all(&mut self, cx: &mut Context<Self>) -> Vec<PathBuf> {
+        let mut closed_paths = Vec::new();
+        let old_entries = std::mem::take(&mut self.entries);
+        self.active_id = None;
+        for entry in old_entries {
+            closed_paths.push(entry.path);
+            cx.emit(OpenFileEvent::Closed(entry.id));
+        }
+        cx.notify();
+        closed_paths
+    }
 }
 
 impl EventEmitter<OpenFileEvent> for OpenFileManager {}
+

@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex};
+use gpui_component::{ActiveTheme, IconName};
 use std::sync::{Arc, RwLock};
 
 use crate::actions::{NextDifference, PrevDifference, ToggleSyncScroll};
@@ -216,7 +216,7 @@ impl Panel for DiffPanel {
         "DiffPanel"
     }
 
-    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let left_name = self
             .left_path()
             .file_name()
@@ -229,22 +229,7 @@ impl Panel for DiffPanel {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .unwrap_or("Unknown".to_string());
-        let title = format!("Diff: {} ↔ {}", left_name, right_name);
-
-        let theme = cx.theme();
-
-        h_flex().gap_2().items_center().child(title).child(
-            div()
-                .id("close-icon")
-                .cursor_pointer()
-                .rounded_md()
-                .hover(|style| style.bg(theme.accent).text_color(theme.accent_foreground))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.focus_handle(cx).focus(window);
-                    window.dispatch_action(Box::new(crate::actions::CloseActivePanel), cx);
-                }))
-                .child(Icon::new(IconName::Close).size(px(14.0))),
-        )
+        format!("Diff: {} ↔ {}", left_name, right_name)
     }
 
     fn closable(&self, _cx: &App) -> bool {

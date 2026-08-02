@@ -134,3 +134,28 @@ pub struct JoinLine;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ClearAllCustomBreaks;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ActivateNextTab;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ActivatePreviousTab;
+
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+pub struct ActivateTab {
+    pub index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CloseOtherTabs;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CloseAllTabs;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SplitRight;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SplitDown;
+

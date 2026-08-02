@@ -15,7 +15,7 @@ use crate::core::editor::Editor;
 use crate::service::open_file_manager::{OpenFileEvent, OpenFileManager};
 use crate::ui::components::status_bar::StatusBar;
 use gpui_component::Root;
-use gpui_component::dock::{DockArea, DockItem, DockPlacement, Panel, PanelView};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::menu::AppMenuBar;
 use gpui_component::resizable::{h_resizable, resizable_panel};
 use std::path::PathBuf;
@@ -593,21 +593,114 @@ impl Workspace {
 
             if is_editor {
                 if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
-                    self.active_panel = Some(Arc::new(entry.panel.clone()));
+                    let next_panel = Arc::new(entry.panel.clone());
+                    next_panel.read(cx).focus_handle(cx).focus(window);
+                    self.active_panel = Some(next_panel.clone());
+                    self.add_panel_to_center_dock(next_panel, window, cx);
                 } else {
                     self.active_panel = None;
+                    let weak_dock_area = self.dock_area.downgrade();
+                    Self::reset_default_layout(weak_dock_area, window, cx);
                 }
             }
 
             self.sync_active_editor(cx);
-
-            if !self.check_has_panels(cx) {
-                let weak_dock_area = self.dock_area.downgrade();
-                Self::reset_default_layout(weak_dock_area, window, cx);
-            }
             cx.notify();
         }
     }
+
+    fn on_action_activate_next_tab(&mut self, _: &ActivateNextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file_manager.update(cx, |manager, cx| {
+            manager.activate_next(cx);
+        });
+        if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
+            let panel = Arc::new(entry.panel.clone());
+            entry.panel.read(cx).focus_handle(cx).focus(window);
+            self.active_panel = Some(panel.clone());
+            self.add_panel_to_center_dock(panel, window, cx);
+            self.sync_active_editor(cx);
+        }
+    }
+
+    fn on_action_activate_previous_tab(&mut self, _: &ActivatePreviousTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file_manager.update(cx, |manager, cx| {
+            manager.activate_previous(cx);
+        });
+        if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
+            let panel = Arc::new(entry.panel.clone());
+            entry.panel.read(cx).focus_handle(cx).focus(window);
+            self.active_panel = Some(panel.clone());
+            self.add_panel_to_center_dock(panel, window, cx);
+            self.sync_active_editor(cx);
+        }
+    }
+
+    fn on_action_activate_tab(&mut self, action: &ActivateTab, window: &mut Window, cx: &mut Context<Self>) {
+        if action.index > 0 {
+            let zero_based = action.index - 1;
+            self.open_file_manager.update(cx, |manager, cx| {
+                manager.activate_index(zero_based, cx);
+            });
+            if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
+                let panel = Arc::new(entry.panel.clone());
+                entry.panel.read(cx).focus_handle(cx).focus(window);
+                self.active_panel = Some(panel.clone());
+                self.add_panel_to_center_dock(panel, window, cx);
+                self.sync_active_editor(cx);
+            }
+        }
+    }
+
+    fn on_action_close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<Self>) {
+        let active_panel = self.active_panel.clone();
+        let closed_paths = self.open_file_manager.update(cx, |manager, cx| {
+            manager.close_others(cx)
+        });
+        let editor_service = AppState::global(cx).editor_service.clone();
+        for path in closed_paths {
+            editor_service.close_file(&path);
+        }
+
+        if let Some(panel) = active_panel {
+            self.dock_area.update(cx, |dock_area, cx| {
+                dock_area.set_center(DockItem::panel(panel), window, cx);
+            });
+        }
+        self.sync_active_editor(cx);
+        cx.notify();
+    }
+
+    fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, window: &mut Window, cx: &mut Context<Self>) {
+        let closed_paths = self.open_file_manager.update(cx, |manager, cx| {
+            manager.close_all(cx)
+        });
+        let editor_service = AppState::global(cx).editor_service.clone();
+        for path in closed_paths {
+            editor_service.close_file(&path);
+        }
+        self.active_panel = None;
+        let weak_dock_area = self.dock_area.downgrade();
+        Self::reset_default_layout(weak_dock_area, window, cx);
+        self.sync_active_editor(cx);
+        cx.notify();
+    }
+
+    fn on_action_split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel.clone() {
+            self.dock_area.update(cx, |dock_area, cx| {
+                dock_area.add_panel(panel, DockPlacement::Right, None, window, cx);
+            });
+        }
+    }
+
+    fn on_action_split_down(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel.clone() {
+            self.dock_area.update(cx, |dock_area, cx| {
+                dock_area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
+            });
+        }
+    }
+
 
     fn on_action_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings_panel(window, cx);
@@ -667,33 +760,8 @@ impl Workspace {
 
     fn add_panel_to_center_dock(&self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
         self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel(panel.clone(), DockPlacement::Center, None, window, cx);
-            let mut items = dock_area.items().clone();
-            if Self::add_panel_to_dock_item_tree(&mut items, panel) {
-                dock_area.set_center(items, window, cx);
-            }
+            dock_area.set_center(DockItem::panel(panel), window, cx);
         });
-    }
-
-    fn add_panel_to_dock_item_tree(dock_item: &mut DockItem, panel: Arc<dyn PanelView>) -> bool {
-        match dock_item {
-            DockItem::Tabs { items, .. } => {
-                if !items.iter().any(|item| item.view().entity_id() == panel.view().entity_id()) {
-                    items.push(panel);
-                    return true;
-                }
-                false
-            }
-            DockItem::Split { items, .. } => {
-                for item in items {
-                    if Self::add_panel_to_dock_item_tree(item, panel.clone()) {
-                        return true;
-                    }
-                }
-                false
-            }
-            _ => false,
-        }
     }
 
     /// Opens a new workspace window with the specified files and folder.
@@ -726,53 +794,10 @@ impl Workspace {
     }
 
     fn check_has_panels(&self, cx: &App) -> bool {
-        let dock_area = self.dock_area.read(cx);
-        Self::has_panels_recursive(dock_area.items(), cx)
+        self.active_panel.is_some() || !self.open_file_manager.read(cx).entries().is_empty()
     }
 
-    fn has_panels_recursive(dock_item: &DockItem, cx: &App) -> bool {
-        match dock_item {
-            DockItem::Tabs { view, .. } => {
-                let state = view.read(cx).dump(cx);
-                for child in state.children {
-                    if child.panel_name == "EditorPanel" {
-                        return true;
-                    }
-                    if child.panel_name == "DiffPanel" {
-                        return true;
-                    }
-                    if child.panel_name == "SettingsPanel" {
-                        return true;
-                    }
-                }
-            }
-            DockItem::Split { items, .. } => {
-                for item in items {
-                    if Self::has_panels_recursive(item, cx) {
-                        return true;
-                    }
-                }
-            }
-            DockItem::Tiles { items, .. } => {
-                if !items.is_empty() {
-                    return true;
-                }
-            }
-            DockItem::Panel { view, .. } => {
-                let state = view.dump(cx);
-                if state.panel_name == "EditorPanel" {
-                    return true;
-                }
-                if state.panel_name == "DiffPanel" {
-                    return true;
-                }
-                if state.panel_name == "SettingsPanel" {
-                    return true;
-                }
-            }
-        }
-        false
-    }
+
 
     fn on_focus_changed(&self, cx: &mut Context<Self>) {
         self.left_panel.update(cx, |panel, cx| {
@@ -836,10 +861,39 @@ impl Workspace {
             }
         });
     }
+
+    fn get_tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
+        let manager = self.open_file_manager.read(cx);
+        let active_id = manager.active_entry().map(|e| e.id);
+        manager
+            .entries()
+            .iter()
+            .map(|entry| {
+                let doc = entry.document.read().unwrap();
+                let title = entry
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Untitled".to_string());
+                let is_dirty = doc.is_dirty();
+                let is_active = Some(entry.id) == active_id;
+                crate::ui::components::tab_bar::TabItemInfo {
+                    id: entry.id.0,
+                    title,
+                    is_dirty,
+                    is_active,
+                    path: Some(entry.path.clone()),
+                }
+            })
+            .collect()
+    }
 }
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab_items = self.get_tab_items(cx);
+        let has_tabs = !tab_items.is_empty();
+
         div()
             .id("workspace")
             .on_action(cx.listener(Self::on_action_open_file))
@@ -864,6 +918,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_clear_structure_definition))
             .on_action(cx.listener(Self::on_action_open_folder))
             .on_action(cx.listener(Self::on_action_close_folder))
+            .on_action(cx.listener(Self::on_action_activate_next_tab))
+            .on_action(cx.listener(Self::on_action_activate_previous_tab))
+            .on_action(cx.listener(Self::on_action_activate_tab))
+            .on_action(cx.listener(Self::on_action_close_other_tabs))
+            .on_action(cx.listener(Self::on_action_close_all_tabs))
+            .on_action(cx.listener(Self::on_action_split_right))
+            .on_action(cx.listener(Self::on_action_split_down))
+
             .on_drop(cx.listener(move |this, external_paths: &gpui::ExternalPaths, window, cx| {
                 for path in external_paths.paths() {
                     if path.is_file() {
@@ -899,23 +961,32 @@ impl Render for Workspace {
                                 .child(self.left_panel.clone()),
                         )
                         .child(
-                            resizable_panel().child(div().relative().size_full().flex().flex_col().child(self.dock_area.clone()).when(
-                                !self.check_has_panels(cx),
-                                |this| {
-                                    this.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .size_full()
-                                            .flex()
-                                            .justify_center()
-                                            .items_center()
-                                            .bg(cx.theme().background)
-                                            .child(div().text_xl().text_color(cx.theme().muted_foreground).child("Nothing is open")),
-                                    )
-                                },
-                            )),
+                            resizable_panel().child(
+                                div()
+                                    .relative()
+                                    .size_full()
+                                    .flex()
+                                    .flex_col()
+                                    .when(has_tabs, |el| el.child(crate::ui::components::tab_bar::render_zed_tab_bar(&tab_items, window, cx)))
+                                    .child(self.dock_area.clone())
+                                    .when(
+                                        !self.check_has_panels(cx),
+                                        |this| {
+                                            this.child(
+                                                div()
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .size_full()
+                                                    .flex()
+                                                    .justify_center()
+                                                    .items_center()
+                                                    .bg(cx.theme().background)
+                                                    .child(div().text_xl().text_color(cx.theme().muted_foreground).child("Nothing is open")),
+                                            )
+                                        },
+                                    ),
+                            ),
                         ),
                 ),
             )

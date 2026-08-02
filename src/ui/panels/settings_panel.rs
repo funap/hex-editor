@@ -1,11 +1,10 @@
 use crate::core::appearance::Appearance;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
-use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Subscription, Window, div, px};
+use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Subscription, Window, div};
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme,
     dock::{Panel, PanelEvent},
-    h_flex,
     input::{self, Input, InputState},
 };
 
@@ -135,20 +134,8 @@ impl Panel for SettingsPanel {
     fn panel_name(&self) -> &'static str {
         "SettingsPanel"
     }
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        h_flex().gap_2().items_center().child("Settings").child(
-            div()
-                .id("close-icon")
-                .cursor_pointer()
-                .rounded_md()
-                .hover(|style| style.bg(theme.accent).text_color(theme.accent_foreground))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.focus_handle(cx).focus(window);
-                    window.dispatch_action(Box::new(crate::actions::CloseActivePanel), cx);
-                }))
-                .child(Icon::new(IconName::Close).size(px(14.0))),
-        )
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        "Settings"
     }
     fn closable(&self, _: &App) -> bool {
         true

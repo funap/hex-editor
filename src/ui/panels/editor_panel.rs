@@ -8,7 +8,7 @@ use crate::core::appearance::Appearance;
 use crate::core::search::SearchMode;
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex};
+use gpui_component::ActiveTheme;
 
 const CONTEXT: &str = "EditorPanel";
 
@@ -371,20 +371,7 @@ impl Panel for EditorPanel {
             name.push_str(" *");
         }
 
-        let theme = cx.theme();
-
-        h_flex().gap_2().items_center().child(name).child(
-            div()
-                .id("close-icon")
-                .cursor_pointer()
-                .rounded_md()
-                .hover(|style| style.bg(theme.accent).text_color(theme.accent_foreground))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.focus_handle(cx).focus(window);
-                    window.dispatch_action(Box::new(crate::actions::CloseActivePanel), cx);
-                }))
-                .child(Icon::new(IconName::Close).size(px(14.0))),
-        )
+        name
     }
 
     fn closable(&self, _cx: &App) -> bool {

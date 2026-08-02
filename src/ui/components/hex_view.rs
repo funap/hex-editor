@@ -163,6 +163,8 @@ pub struct HexView {
     scroll_offset: usize,
     is_selecting: bool,
     bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
+    list_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
+    visible_range: std::cell::Cell<Option<(usize, usize)>>,
     visible_row_info: std::cell::Cell<Option<(usize, Pixels, Pixels)>>,
     highlights: Arc<Vec<(Range<usize>, Hsla)>>,
     max_highlight_len: usize,
@@ -196,6 +198,8 @@ impl HexView {
             scroll_offset: 0,
             is_selecting: false,
             bounds: std::cell::Cell::new(None),
+            list_bounds: std::cell::Cell::new(None),
+            visible_range: std::cell::Cell::new(None),
             visible_row_info: std::cell::Cell::new(None),
             highlights: Arc::new(Vec::new()),
             max_highlight_len: 0,
@@ -289,15 +293,10 @@ impl HexView {
     }
 
     pub fn current_scroll_top_row(&self) -> usize {
-        if let Some((sample_row_idx, sample_top, _)) = self.visible_row_info.get() {
-            let root_top = self.bounds.get().map(|b| b.top()).unwrap_or(px(0.0));
-            let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
-            let list_top = root_top + px(header_h);
-
-            let row_0_top = sample_top - px(sample_row_idx as f32 * ROW_HEIGHT);
-            (f32::from((list_top - row_0_top).max(px(0.0))) / ROW_HEIGHT) as usize
+        if let Some((top_row, _)) = self.visible_range.get() {
+            top_row
         } else {
-            0
+            self.scroll_offset
         }
     }
 
@@ -320,13 +319,19 @@ impl HexView {
         let max_offset = total_rows.saturating_sub(1);
         let new_offset = row.min(max_offset);
 
-        let current_top = self.current_scroll_top_row();
-        if current_top == new_offset {
-            return;
-        }
-
         self.scroll_offset = new_offset;
         self.uniform_scroll_handle.scroll_to_item(new_offset, ScrollStrategy::Top);
+        cx.notify();
+        cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+    }
+
+    pub fn scroll_to_bottom_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let total_rows = self.editor.read(cx).line_starts().len();
+        let max_offset = total_rows.saturating_sub(1);
+        let new_offset = row.min(max_offset);
+
+        self.scroll_offset = new_offset;
+        self.uniform_scroll_handle.scroll_to_item(new_offset, ScrollStrategy::Bottom);
         cx.notify();
         cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
     }
@@ -337,16 +342,14 @@ impl HexView {
         let line_starts = editor.line_starts();
         let cursor_row = Editor::find_line_index(cursor_offset, &line_starts);
 
-        let viewport_height = self.bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(500.0);
-        let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
-        let visible_rows = (((viewport_height - header_h) / ROW_HEIGHT).floor() as usize).max(1);
-
-        let top_row = self.current_scroll_top_row();
-        if cursor_row < top_row {
+        if let Some((top_row, bottom_row)) = self.visible_range.get() {
+            if cursor_row < top_row {
+                self.scroll_to_row(cursor_row, cx);
+            } else if cursor_row >= bottom_row {
+                self.scroll_to_bottom_row(cursor_row, cx);
+            }
+        } else {
             self.scroll_to_row(cursor_row, cx);
-        } else if cursor_row >= top_row + visible_rows {
-            let target_row = cursor_row.saturating_sub(visible_rows.saturating_sub(1));
-            self.scroll_to_row(target_row, cx);
         }
     }
 
@@ -879,6 +882,7 @@ impl Render for HexView {
         let max_highlight_len = self.max_highlight_len;
 
         let bounds_view = view.clone();
+        let list_bounds_view = view.clone();
 
         container
             .track_focus(&self.focus_handle(cx))
@@ -967,10 +971,29 @@ impl Render for HexView {
             .child(header)
             .child(
                 div()
+                    .flex_1()
+                    .w_full()
                     .relative()
-                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        canvas(
+                            move |bounds, _window, cx| {
+                                list_bounds_view.update(cx, |this, _cx| {
+                                    this.list_bounds.set(Some(bounds));
+                                });
+                            },
+                            |_bounds, _prepaint, _window, _cx| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
                     .child(
                         uniform_list("hex-view-list", total_rows, move |range, _window, cx| {
+                            let top_row = range.start;
+                            let bottom_row = range.end.saturating_sub(2);
+                            view.update(cx, |this, _cx| {
+                                this.visible_range.set(Some((top_row, bottom_row)));
+                            });
                             let view_read = view.read(cx);
                             let editor = view_read.editor.read(cx);
                             let doc = editor.document.read().unwrap();

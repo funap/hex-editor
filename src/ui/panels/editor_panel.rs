@@ -417,7 +417,7 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::go_to_beginning))
             .on_action(cx.listener(Self::go_to_end))
             .when(self.is_search_visible, |el| el.child(self.search_bar.clone()))
-            .child(self.hex_view.clone())
+            .child(div().flex_1().w_full().min_h_0().child(self.hex_view.clone()))
     }
 }
 

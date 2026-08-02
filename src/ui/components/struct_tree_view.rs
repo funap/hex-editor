@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::core::editor::Editor;
 use crate::core::structure::ParsedField;
 use crate::ui::style::StyleExt as _;
@@ -5,7 +6,7 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, v_flex};
 
-actions!(struct_tree, [MoveUp, MoveDown,]);
+actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
 
 const CONTEXT: &str = "StructTreeView";
 
@@ -15,12 +16,19 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("down", MoveDown, Some(CONTEXT)),
         KeyBinding::new("k", MoveUp, Some(CONTEXT)),
         KeyBinding::new("j", MoveDown, Some(CONTEXT)),
+        KeyBinding::new("space", ToggleExpand, Some(CONTEXT)),
+        KeyBinding::new("enter", ToggleExpand, Some(CONTEXT)),
+        KeyBinding::new("right", Expand, Some(CONTEXT)),
+        KeyBinding::new("left", Collapse, Some(CONTEXT)),
+        KeyBinding::new("l", Expand, Some(CONTEXT)),
+        KeyBinding::new("h", Collapse, Some(CONTEXT)),
     ]);
 }
 
 pub struct StructTreeView {
     pub fields: Vec<crate::core::structure::ParsedField>,
     pub flattened_fields: Vec<FlattenedField>,
+    pub collapsed_paths: HashSet<Vec<usize>>,
     pub editor: Option<Entity<Editor>>,
     pub scroll_handle: UniformListScrollHandle,
     pub focus_handle: FocusHandle,
@@ -31,6 +39,7 @@ pub struct StructTreeView {
 
 #[derive(Clone)]
 pub struct FlattenedField {
+    pub path: Vec<usize>,
     pub id: SharedString,
     pub _field_type: SharedString,
     pub offset: usize,
@@ -38,18 +47,22 @@ pub struct FlattenedField {
     pub value_str: SharedString,
     pub color: Hsla,
     pub depth: usize,
+    pub has_children: bool,
+    pub is_collapsed: bool,
 }
 
 impl StructTreeView {
     pub fn new(fields: Vec<crate::core::structure::ParsedField>, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) -> Self {
+        let collapsed_paths = HashSet::new();
         let mut flattened = Vec::new();
-        Self::flatten_fields(&fields, 0, &mut flattened);
+        Self::flatten_fields(&fields, 0, &Vec::new(), &collapsed_paths, &mut flattened);
         let scroll_handle = UniformListScrollHandle::new();
         let focus_handle = cx.focus_handle();
 
         let mut this = Self {
             fields,
             flattened_fields: flattened,
+            collapsed_paths,
             editor: editor.clone(),
             scroll_handle,
             focus_handle,
@@ -75,11 +88,11 @@ impl StructTreeView {
 
         self.set_fields(Vec::new(), cx);
 
-        if let Some(ed) = editor {
-            self._editor_subscription = Some(cx.observe(&ed, |this, editor, cx| {
+        if let Some(ed) = &editor {
+            self._editor_subscription = Some(cx.observe(ed, |this, editor, cx| {
                 this.sync_fields(&editor, cx);
             }));
-            self.sync_fields(&ed, cx);
+            self.sync_fields(ed, cx);
         }
         cx.notify();
     }
@@ -109,14 +122,23 @@ impl StructTreeView {
             return;
         }
 
-        let upper_bound = self.flattened_fields.partition_point(|f| f.offset <= cursor_offset);
-        if upper_bound == 0 {
-            return;
+        // If current selected item already covers cursor_offset, keep it
+        if let Some(curr_idx) = self.selected_index {
+            if let Some(field) = self.flattened_fields.get(curr_idx) {
+                let end = field.offset + field.size;
+                let matches = if field.size > 0 {
+                    cursor_offset >= field.offset && cursor_offset < end
+                } else {
+                    cursor_offset == field.offset
+                };
+                if matches {
+                    return;
+                }
+            }
         }
 
-        let mut best_match: Option<(usize, usize, usize)> = None;
-        for i in (0..upper_bound).rev() {
-            let field = &self.flattened_fields[i];
+        let mut best_match: Option<(usize, bool, usize, usize)> = None; // (index, is_leaf, depth, size)
+        for (i, field) in self.flattened_fields.iter().enumerate() {
             let end = field.offset + field.size;
             let matches = if field.size > 0 {
                 cursor_offset >= field.offset && cursor_offset < end
@@ -125,22 +147,25 @@ impl StructTreeView {
             };
 
             if matches {
+                let is_leaf = !field.has_children;
                 match best_match {
                     None => {
-                        best_match = Some((i, field.depth, field.size));
+                        best_match = Some((i, is_leaf, field.depth, field.size));
                     }
-                    Some((_, best_depth, best_size)) => {
-                        if field.depth > best_depth || (field.depth == best_depth && field.size < best_size) {
-                            best_match = Some((i, field.depth, field.size));
+                    Some((_, best_is_leaf, best_depth, best_size)) => {
+                        // Prefer leaf nodes over container nodes, then deeper nodes, then smaller size
+                        if (is_leaf && !best_is_leaf)
+                            || (is_leaf == best_is_leaf && field.depth > best_depth)
+                            || (is_leaf == best_is_leaf && field.depth == best_depth && field.size < best_size)
+                        {
+                            best_match = Some((i, is_leaf, field.depth, field.size));
                         }
                     }
                 }
-            } else if field.offset + field.size < cursor_offset && best_match.is_some() {
-                break;
             }
         }
 
-        if let Some((idx, _, _)) = best_match {
+        if let Some((idx, _, _, _)) = best_match {
             if self.selected_index != Some(idx) {
                 self.selected_index = Some(idx);
                 self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
@@ -150,24 +175,42 @@ impl StructTreeView {
     }
 
     pub fn set_fields(&mut self, fields: Vec<ParsedField>, cx: &mut Context<Self>) {
-        let mut flattened = Vec::new();
-        Self::flatten_fields(&fields, 0, &mut flattened);
+        self.collapsed_paths.clear();
         self.fields = fields;
-        self.flattened_fields = flattened;
+        self.rebuild_flattened();
         self.selected_index = None;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
-    fn flatten_fields(fields: &[ParsedField], depth: usize, results: &mut Vec<FlattenedField>) {
-        for field in fields {
+    fn rebuild_flattened(&mut self) {
+        let mut flattened = Vec::new();
+        Self::flatten_fields(&self.fields, 0, &Vec::new(), &self.collapsed_paths, &mut flattened);
+        self.flattened_fields = flattened;
+    }
+
+    fn flatten_fields(
+        fields: &[ParsedField],
+        depth: usize,
+        parent_path: &[usize],
+        collapsed_paths: &HashSet<Vec<usize>>,
+        results: &mut Vec<FlattenedField>,
+    ) {
+        for (idx, field) in fields.iter().enumerate() {
+            let mut current_path = parent_path.to_vec();
+            current_path.push(idx);
+
             let val_str = if let Some(label) = &field.enum_label {
                 SharedString::from(format!("{} ({})", field.value, label))
             } else {
                 SharedString::from(format!("{}", field.value))
             };
 
+            let has_children = !field.children.is_empty();
+            let is_collapsed = collapsed_paths.contains(&current_path);
+
             results.push(FlattenedField {
+                path: current_path.clone(),
                 id: SharedString::from(field.id.clone()),
                 _field_type: SharedString::from(field.field_type.clone()),
                 offset: field.offset,
@@ -175,11 +218,35 @@ impl StructTreeView {
                 value_str: val_str,
                 color: field.color,
                 depth,
+                has_children,
+                is_collapsed,
             });
 
-            if !field.children.is_empty() {
-                Self::flatten_fields(&field.children, depth + 1, results);
+            if has_children && !is_collapsed {
+                Self::flatten_fields(&field.children, depth + 1, &current_path, collapsed_paths, results);
             }
+        }
+    }
+
+    fn get_field_at_path<'a>(&'a self, path: &[usize]) -> Option<&'a ParsedField> {
+        let mut current_fields = &self.fields;
+        let mut target_field: Option<&'a ParsedField> = None;
+        for &idx in path {
+            target_field = current_fields.get(idx);
+            if let Some(f) = target_field {
+                current_fields = &f.children;
+            } else {
+                return None;
+            }
+        }
+        target_field
+    }
+
+    fn find_first_leaf_offset(field: &ParsedField) -> usize {
+        if let Some(first_child) = field.children.first() {
+            Self::find_first_leaf_offset(first_child)
+        } else {
+            field.offset
         }
     }
 
@@ -191,7 +258,17 @@ impl StructTreeView {
         self.selected_index = Some(idx);
         self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
 
-        let offset = self.flattened_fields[idx].offset;
+        let item = &self.flattened_fields[idx];
+        let offset = if item.size == 0 && item.has_children {
+            if let Some(parsed_field) = self.get_field_at_path(&item.path) {
+                Self::find_first_leaf_offset(parsed_field)
+            } else {
+                item.offset
+            }
+        } else {
+            item.offset
+        };
+
         if let Some(editor) = &self.editor {
             editor.update(cx, |editor, cx| {
                 editor.set_cursor_offset(offset);
@@ -200,6 +277,32 @@ impl StructTreeView {
         }
 
         cx.notify();
+    }
+
+    fn toggle_collapse_at(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if let Some(field) = self.flattened_fields.get(idx) {
+            if !field.has_children {
+                return;
+            }
+
+            let path = field.path.clone();
+            if self.collapsed_paths.contains(&path) {
+                self.collapsed_paths.remove(&path);
+            } else {
+                self.collapsed_paths.insert(path);
+            }
+
+            self.rebuild_flattened();
+
+            // Maintain selection index if possible by path
+            if idx < self.flattened_fields.len() {
+                self.selected_index = Some(idx);
+            } else if !self.flattened_fields.is_empty() {
+                self.selected_index = Some(self.flattened_fields.len() - 1);
+            }
+
+            cx.notify();
+        }
     }
 
     fn move_up(&mut self, _: &MoveUp, _window: &mut Window, cx: &mut Context<Self>) {
@@ -229,6 +332,41 @@ impl StructTreeView {
         self.select_item(next_idx, cx);
     }
 
+    fn toggle_expand(&mut self, _: &ToggleExpand, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(idx) = self.selected_index {
+            self.toggle_collapse_at(idx, cx);
+        }
+    }
+
+    fn expand(&mut self, _: &Expand, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(idx) = self.selected_index {
+            if let Some(field) = self.flattened_fields.get(idx) {
+                if field.has_children && field.is_collapsed {
+                    self.toggle_collapse_at(idx, cx);
+                }
+            }
+        }
+    }
+
+    fn collapse(&mut self, _: &Collapse, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(idx) = self.selected_index {
+            if let Some(field) = self.flattened_fields.get(idx) {
+                if field.has_children && !field.is_collapsed {
+                    self.toggle_collapse_at(idx, cx);
+                } else if field.depth > 0 {
+                    // Move to parent field
+                    let target_depth = field.depth - 1;
+                    for p_idx in (0..idx).rev() {
+                        if self.flattened_fields[p_idx].depth == target_depth {
+                            self.select_item(p_idx, cx);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn render_list_item(
         ix: usize,
         field: &FlattenedField,
@@ -236,9 +374,10 @@ impl StructTreeView {
         is_focused: bool,
         view: Entity<Self>,
         focus_handle: &FocusHandle,
+        window: &mut Window,
         cx: &App,
     ) -> AnyElement {
-        let padding_left = px(16.0 * field.depth as f32 + 12.0);
+        let padding_left = px(14.0 * field.depth as f32 + 8.0);
         let theme = cx.theme();
         let bg_color = if is_selected {
             if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) }
@@ -247,6 +386,12 @@ impl StructTreeView {
         };
 
         let focus_handle = focus_handle.clone();
+        let chevron_symbol = if field.has_children {
+            if field.is_collapsed { "▶" } else { "▼" }
+        } else {
+            " "
+        };
+
         div()
             .id(ix)
             .flex()
@@ -255,9 +400,28 @@ impl StructTreeView {
             .w_full()
             .h(px(24.0))
             .bg(bg_color)
-            .px_3()
+            .px_2()
             .pl(padding_left)
-            .gap_2()
+            .gap_1()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(12.0))
+                    .h(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .child(chevron_symbol)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, _window, cx| {
+                            this.toggle_collapse_at(ix, cx);
+                        }),
+                    ),
+            )
             .child(
                 div()
                     .flex_shrink_0()
@@ -269,12 +433,13 @@ impl StructTreeView {
             )
             .child(div().text_sm().text_color(theme.foreground).child(field.id.clone()))
             .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(field.value_str.clone()))
-            .on_click(move |_, window, cx| {
-                focus_handle.focus(window);
-                view.update(cx, |this, cx| {
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
+                    focus_handle.focus(window);
                     this.select_item(ix, cx);
-                });
-            })
+                }),
+            )
             .into_any_element()
     }
 }
@@ -295,6 +460,9 @@ impl Render for StructTreeView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::toggle_expand))
+            .on_action(cx.listener(Self::expand))
+            .on_action(cx.listener(Self::collapse))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
@@ -317,13 +485,13 @@ impl Render for StructTreeView {
                     .into_any_element()
             } else {
                 let focus_handle = self.focus_handle.clone();
-                uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, _window, cx| {
+                uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {
                     let this = view.read(cx);
                     range
                         .map(|ix| {
                             if let Some(field) = this.flattened_fields.get(ix) {
                                 let is_selected = this.selected_index == Some(ix);
-                                Self::render_list_item(ix, field, is_selected, is_focused, view.clone(), &focus_handle, cx)
+                                Self::render_list_item(ix, field, is_selected, is_focused, view.clone(), &focus_handle, window, cx)
                             } else {
                                 div().into_any_element()
                             }

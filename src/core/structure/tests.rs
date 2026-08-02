@@ -337,4 +337,114 @@ seq:
         let val = ExprEvaluator::eval_ast_i64(&ast, &ctx);
         assert_eq!(val, 32);
     }
+
+    #[test]
+    fn test_ast_member_access_with_base_path() {
+        use crate::core::structure::expression::{EvalContext, ExprAST, ExprEvaluator};
+        use std::collections::HashMap;
+
+        let mut values = HashMap::new();
+        values.insert("header.sub.val".to_string(), 42);
+
+        let string_values = HashMap::new();
+        let base_path = vec!["header".to_string()];
+        let enums = HashMap::new();
+
+        let ctx = EvalContext {
+            values: &values,
+            string_values: &string_values,
+            base_path: &base_path,
+            stream_eof: false,
+            stream_size: 100,
+            stream_pos: 0,
+            enums: &enums,
+            errors: None,
+        };
+
+        let ast = ExprAST::compile("sub.val").expect("Failed to compile AST");
+        let val = ExprEvaluator::eval_ast_i64(&ast, &ctx);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn test_editor_reparse_structure_on_command() {
+        use crate::core::command::InsertCharCommand;
+        use crate::core::document::Document;
+        use crate::core::editor::Editor;
+        use std::sync::{Arc, RwLock};
+
+        let ksy_yaml = r#"
+meta:
+  id: test_reparse
+seq:
+  - id: len
+    type: u1
+  - id: data
+    size: len
+"#;
+        let ksy = Arc::new(parse_ksy_yaml(ksy_yaml));
+        let buffer = crate::core::buffer::Buffer::new(vec![0x02, 0xAA, 0xBB]);
+        let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+        let mut editor = Editor::new(doc);
+        editor.set_kaitai_definition(ksy);
+
+        assert_eq!(editor.parse_result.as_ref().unwrap().fields.len(), 2);
+        assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 2);
+
+        // Execute command that changes `len` from 2 to 1
+        editor.set_cursor_offset(0);
+        editor.execute_command(Box::new(InsertCharCommand::new(0, 0x01)));
+
+        assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 1);
+
+        // Undo command
+        editor.undo();
+        assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 2);
+    }
+
+    #[test]
+    fn test_parse_zip_ksy() {
+        let zip_ksy_content = match std::fs::read_to_string("/Users/af/Downloads/zip.ksy") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let ksy: KsyDefinition = serde_yaml::from_str(&zip_ksy_content).expect("zip.ksy YAML deserialization failed");
+
+        // Construct a minimal valid ZIP binary in memory:
+        // Local File Header + File name ("test.txt") + Body ("hello") + Central Dir + End of Central Dir
+        let mut sample_zip = Vec::new();
+        // Local File Header magic: PK\x03\x04
+        sample_zip.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+        // version needed (2 bytes): 20
+        sample_zip.extend_from_slice(&[20, 0]);
+        // flags (2 bytes): 0
+        sample_zip.extend_from_slice(&[0, 0]);
+        // compression method (2 bytes): 0 (store)
+        sample_zip.extend_from_slice(&[0, 0]);
+        // mod time (4 bytes): 0
+        sample_zip.extend_from_slice(&[0, 0, 0, 0]);
+        // crc32 (4 bytes): 0
+        sample_zip.extend_from_slice(&[0, 0, 0, 0]);
+        // compressed size (4 bytes): 5
+        sample_zip.extend_from_slice(&[5, 0, 0, 0]);
+        // uncompressed size (4 bytes): 5
+        sample_zip.extend_from_slice(&[5, 0, 0, 0]);
+        // len_file_name (2 bytes): 8 ("test.txt")
+        sample_zip.extend_from_slice(&[8, 0]);
+        // len_extra (2 bytes): 0
+        sample_zip.extend_from_slice(&[0, 0]);
+        // file_name: "test.txt"
+        sample_zip.extend_from_slice(b"test.txt");
+        // body: "hello"
+        sample_zip.extend_from_slice(b"hello");
+
+        let mut stream = KaitaiStream::new(&sample_zip);
+        let interpreter = KaitaiInterpreter::new(ksy);
+        let result = interpreter.parse(&mut stream);
+
+        assert!(!result.fields.is_empty(), "Parsed fields should not be empty");
+        assert_eq!(result.fields[0].id, "sections[0]");
+        assert_eq!(result.fields[0].children.len(), 3); // magic, section_type, body
+    }
 }

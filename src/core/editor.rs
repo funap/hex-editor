@@ -832,6 +832,7 @@ impl Editor {
         command.execute(self);
         self.document.write().unwrap().history.push(command);
         self.cached_line_map.replace(None);
+        self.reparse_structure();
     }
 
     pub fn undo(&mut self) {
@@ -852,6 +853,7 @@ impl Editor {
             // Re-acquire lock to push redo
             self.document.write().unwrap().history.push_redo(cmd);
             self.cached_line_map.replace(None);
+            self.reparse_structure();
         }
     }
 
@@ -867,6 +869,7 @@ impl Editor {
             // Re-acquire lock to push undo
             self.document.write().unwrap().history.push_undo(cmd);
             self.cached_line_map.replace(None);
+            self.reparse_structure();
         }
     }
 }
@@ -1339,15 +1342,18 @@ impl Editor {
             }
         }
 
-        let buffer_lock = self.document.read().unwrap();
-        let bytes = buffer_lock.buffer.data();
-        let mut stream = crate::core::structure::KaitaiStream::new(bytes);
-
-        let interpreter = crate::core::structure::KaitaiInterpreter::new((*ksy).clone());
-        let result = interpreter.parse(&mut stream);
-
         self.ksy_definition = Some(ksy);
-        self.parse_result = Some(result);
+        self.reparse_structure();
+    }
+
+    pub fn reparse_structure(&mut self) {
+        if let Some(ksy) = &self.ksy_definition {
+            let buffer_lock = self.document.read().unwrap();
+            let bytes = buffer_lock.buffer.data();
+            let mut stream = crate::core::structure::KaitaiStream::new(bytes);
+            let interpreter = crate::core::structure::KaitaiInterpreter::new((**ksy).clone());
+            self.parse_result = Some(interpreter.parse(&mut stream));
+        }
     }
 
     pub fn clear_structure_definition(&mut self) {

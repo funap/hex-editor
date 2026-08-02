@@ -1145,12 +1145,36 @@ impl ExprAST {
             return base.eval(ctx);
         }
 
-        let base_val = base.eval(ctx);
-        let base_str = base_val.to_string_val();
-        let path = if base_str.is_empty() {
-            member.to_string()
-        } else {
-            format!("{}.{}", base_str, member)
+        let path = match base {
+            ExprAST::Identifier(id) => {
+                let mut path_parts: Vec<String>;
+                if id == "_root" {
+                    path_parts = Vec::new();
+                } else if id == "_parent" {
+                    let mut p = ctx.base_path.to_vec();
+                    if !p.is_empty() {
+                        p.pop();
+                    }
+                    path_parts = p;
+                } else if id == "_" {
+                    path_parts = ctx.base_path.to_vec();
+                    path_parts.push("_".to_string());
+                } else {
+                    path_parts = ctx.base_path.to_vec();
+                    path_parts.push(id.to_string());
+                }
+                path_parts.push(member.to_string());
+                path_parts.join(".")
+            }
+            _ => {
+                let base_val = base.eval(ctx);
+                let base_str = base_val.to_string_val();
+                if base_str.is_empty() {
+                    member.to_string()
+                } else {
+                    format!("{}.{}", base_str, member)
+                }
+            }
         };
 
         if let Some(val) = ctx.values.get(&path) {

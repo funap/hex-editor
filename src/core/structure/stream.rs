@@ -48,39 +48,24 @@ impl<'a> KaitaiStream<'a> {
         if n == 0 {
             return Some(0);
         }
-        let mut res: u64 = 0;
-        let bits_needed = n as isize - self.bits_left as isize;
-        self.bits_left = ((-bits_needed) & 7) as usize;
 
-        if bits_needed > 0 {
-            let bytes_needed = ((bits_needed - 1) / 8 + 1) as usize;
-            if self.pos + bytes_needed > self.data.len() {
+        while self.bits_left < n {
+            if self.pos >= self.data.len() {
                 return None;
             }
-            let buf = &self.data[self.pos..self.pos + bytes_needed];
-            self.pos += bytes_needed;
-            for i in 0..bytes_needed {
-                res = (res << 8) | buf[i] as u64;
-            }
-
-            let new_bits = res;
-            let mut shifted_res = res >> self.bits_left;
-            if bits_needed < 64 && self.bits_left < 64 {
-                let bits_to_shift = bits_needed as usize;
-                if bits_to_shift < 64 {
-                    shifted_res |= self.bits << bits_to_shift;
-                }
-            }
-            res = shifted_res;
-            self.bits = new_bits;
-        } else {
-            let shift_amount = (-bits_needed) as usize;
-            res = self.bits >> shift_amount;
+            let byte = self.data[self.pos] as u64;
+            self.pos += 1;
+            self.bits = (self.bits << 8) | byte;
+            self.bits_left += 8;
         }
 
-        let mask = (1u64 << self.bits_left) - 1;
-        self.bits &= mask;
-
+        let shift = self.bits_left - n;
+        let mask = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+        let res = (self.bits >> shift) & mask;
+        self.bits_left -= n;
+        if self.bits_left < 64 {
+            self.bits &= (1u64 << self.bits_left) - 1;
+        }
         Some(res)
     }
 
@@ -91,34 +76,30 @@ impl<'a> KaitaiStream<'a> {
         if n == 0 {
             return Some(0);
         }
+
+        let mut bits_read = 0;
         let mut res: u64 = 0;
-        let bits_needed = n as isize - self.bits_left as isize;
 
-        if bits_needed > 0 {
-            let bytes_needed = ((bits_needed - 1) / 8 + 1) as usize;
-            if self.pos + bytes_needed > self.data.len() {
-                return None;
-            }
-            let buf = &self.data[self.pos..self.pos + bytes_needed];
-            self.pos += bytes_needed;
-            for i in 0..bytes_needed {
-                res |= (buf[i] as u64) << (i * 8);
+        while bits_read < n {
+            if self.bits_left == 0 {
+                if self.pos >= self.data.len() {
+                    return None;
+                }
+                self.bits = self.data[self.pos] as u64;
+                self.pos += 1;
+                self.bits_left = 8;
             }
 
-            let new_bits = if bits_needed < 64 { res >> bits_needed as usize } else { 0 };
-            res = (res << self.bits_left) | self.bits;
-            self.bits = new_bits;
-        } else {
-            res = self.bits;
-            self.bits >>= n;
+            let count = (n - bits_read).min(self.bits_left);
+            let mask = if count == 64 { u64::MAX } else { (1u64 << count) - 1 };
+            let chunk = self.bits & mask;
+
+            res |= chunk << bits_read;
+            self.bits >>= count;
+            self.bits_left -= count;
+            bits_read += count;
         }
 
-        self.bits_left = ((-bits_needed) & 7) as usize;
-
-        if n < 64 {
-            let mask = (1u64 << n) - 1;
-            res &= mask;
-        }
         Some(res)
     }
 

@@ -269,11 +269,16 @@ impl StructTreeView {
             item.offset
         };
 
-        if let Some(editor) = &self.editor {
-            editor.update(cx, |editor, cx| {
-                editor.set_cursor_offset(offset);
-                cx.notify();
-            });
+        // Don't move cursor for 0-byte leaf nodes (e.g. zero-size structs)
+        let should_move_cursor = item.size > 0 || item.has_children;
+
+        if should_move_cursor {
+            if let Some(editor) = &self.editor {
+                editor.update(cx, |editor, cx| {
+                    editor.set_cursor_offset(offset);
+                    cx.notify();
+                });
+            }
         }
 
         cx.notify();

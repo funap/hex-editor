@@ -1334,14 +1334,6 @@ mod tests {
 
 impl Editor {
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
-        // If the definition is already the same, skip re-parsing unless necessary.
-        // We compare by ID for now.
-        if let Some(existing) = &self.ksy_definition {
-            if existing.meta.id == ksy.meta.id {
-                return;
-            }
-        }
-
         self.ksy_definition = Some(ksy);
         self.reparse_structure();
     }

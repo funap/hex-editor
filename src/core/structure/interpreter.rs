@@ -199,9 +199,13 @@ impl KaitaiInterpreter {
                 "eos" => {
                     let mut i = 0;
                     while !stream.is_eof() && i < MAX_FIELDS {
+                        let pos_before = stream.pos();
                         if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
                             results.push(field);
                             i += 1;
+                            if stream.pos() <= pos_before {
+                                break;
+                            }
                         } else {
                             break;
                         }
@@ -280,7 +284,7 @@ impl KaitaiInterpreter {
         }
 
         let is_little = self.global_endian == "le";
-        let mut size = self.resolve_size(&attr.size, stream);
+        let mut size = self.resolve_size_attr(attr, stream);
 
         // size-eos: read remaining bytes
         if attr.size_eos {
@@ -378,8 +382,24 @@ impl KaitaiInterpreter {
             format!("{}.{}", self.id_stack.join("."), field_id)
         };
         self.context.insert(full_id.clone(), value.to_i64());
+        if let Some(ref raw_id) = attr.id {
+            let unindexed_id = if self.id_stack.is_empty() {
+                raw_id.clone()
+            } else {
+                format!("{}.{}", self.id_stack.join("."), raw_id)
+            };
+            self.context.insert(unindexed_id, value.to_i64());
+        }
         if let FieldValue::String(ref s) = value {
             self.string_context.insert(full_id.clone(), s.clone());
+            if let Some(ref raw_id) = attr.id {
+                let unindexed_id = if self.id_stack.is_empty() {
+                    raw_id.clone()
+                } else {
+                    format!("{}.{}", self.id_stack.join("."), raw_id)
+                };
+                self.string_context.insert(unindexed_id, s.clone());
+            }
         }
 
         // Enum label
@@ -582,7 +602,25 @@ impl KaitaiInterpreter {
         types: &HashMap<String, KsyType>,
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
     ) -> Option<(FieldValue, usize, Vec<ParsedField>)> {
-        let type_def = types.get(type_name)?;
+        let type_def = match types.get(type_name) {
+            Some(t) => t,
+            None => {
+                // Type not found (e.g. imported type like dos_datetime).
+                // Still consume the declared `size` bytes so the stream position stays correct.
+                let size_val = self.resolve_size_attr(attr, stream);
+                if let Some(sz) = size_val {
+                    if sz > 0 {
+                        let buf = stream.read_bytes(sz)?;
+                        return Some((FieldValue::Bytes(buf), sz, Vec::new()));
+                    }
+                } else if attr.size_eos {
+                    let buf = stream.read_bytes_remaining()?;
+                    let sz = buf.len();
+                    return Some((FieldValue::Bytes(buf), sz, Vec::new()));
+                }
+                return None;
+            }
+        };
         let field_id = attr.id.clone().unwrap_or_else(|| format!("field_{}", self.field_count));
         self.id_stack.push(field_id);
         self.recursion_depth += 1;
@@ -596,7 +634,15 @@ impl KaitaiInterpreter {
             self.all_enums.insert(k.clone(), normalize_enum(v));
         }
 
-        let size_val = self.resolve_size(&attr.size, stream);
+        let size_val = self.resolve_size_attr(attr, stream);
+
+        // If size is explicitly 0, return an empty struct immediately (consume nothing).
+        if size_val == Some(0) {
+            self.recursion_depth -= 1;
+            self.id_stack.pop();
+            return Some((FieldValue::Struct, 0, Vec::new()));
+        }
+
         let use_substream = (size_val.is_some() && size_val != Some(0)) || attr.size_eos;
 
         let res = (|| {
@@ -624,8 +670,19 @@ impl KaitaiInterpreter {
                     }
                 }
 
+                let new_pos = (start_offset + sub_size) as u64;
+                stream.set_pos(new_pos);
                 self.stream_size = old_stream_size;
-                Some(fields)
+                // Adjust offsets from substream-relative to absolute file offsets
+                fn adjust_offsets(fields: &mut Vec<ParsedField>, base: usize) {
+                    for f in fields {
+                        f.offset += base;
+                        adjust_offsets(&mut f.children, base);
+                    }
+                }
+                let mut fields_adj = fields;
+                adjust_offsets(&mut fields_adj, start_offset);
+                Some(fields_adj)
             } else {
                 let seq = type_def.seq.clone();
                 let mut fields = Vec::new();
@@ -689,6 +746,16 @@ impl KaitaiInterpreter {
                     });
                 }
             }
+        }
+    }
+
+    fn resolve_size_attr(&self, attr: &KsyAttr, stream: &KaitaiStream) -> Option<usize> {
+        if let Some(ref ast) = attr.compiled_size {
+            let ctx = self.make_eval_ctx(stream);
+            let val = ExprEvaluator::eval_ast_i64(ast, &ctx);
+            Some(if val < 0 { 0 } else { val as usize })
+        } else {
+            self.resolve_size(&attr.size, stream)
         }
     }
 

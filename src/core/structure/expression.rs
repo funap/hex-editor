@@ -754,15 +754,17 @@ impl<'a> Parser<'a> {
             return ExprValue::Str(val.clone());
         }
 
-        // Try as a sibling of base_path
-        if path_parts.len() == 1 {
-            let mut sibling_path = self.ctx.base_path.to_vec();
-            sibling_path.push(path_parts[0].clone());
-            let sibling_id = sibling_path.join(".");
-            if let Some(val) = self.ctx.values.get(&sibling_id) {
+        // Try walking up scope hierarchy from base_path
+        let mut scope = self.ctx.base_path.to_vec();
+        while !scope.is_empty() {
+            scope.pop();
+            let mut p = scope.clone();
+            p.extend(path_parts.iter().cloned());
+            let scope_id = p.join(".");
+            if let Some(val) = self.ctx.values.get(&scope_id) {
                 return ExprValue::Int(*val);
             }
-            if let Some(val) = self.ctx.string_values.get(&sibling_id) {
+            if let Some(val) = self.ctx.string_values.get(&scope_id) {
                 return ExprValue::Str(val.clone());
             }
         }
@@ -1081,28 +1083,30 @@ impl ExprAST {
             return ExprValue::Str(val.clone());
         }
 
-        if path_parts.len() == 1 {
-            let mut sibling_path = ctx.base_path.to_vec();
-            sibling_path.push(path_parts[0].clone());
-            let sibling_id = sibling_path.join(".");
-            if let Some(val) = ctx.values.get(&sibling_id) {
+        // Walk up scope hierarchy from base_path
+        let mut scope = ctx.base_path.to_vec();
+        while !scope.is_empty() {
+            scope.pop();
+            let mut p = scope.clone();
+            p.push(id.to_string());
+            let scope_id = p.join(".");
+            if let Some(val) = ctx.values.get(&scope_id) {
                 return ExprValue::Int(*val);
             }
-            if let Some(val) = ctx.string_values.get(&sibling_id) {
+            if let Some(val) = ctx.string_values.get(&scope_id) {
                 return ExprValue::Str(val.clone());
             }
         }
 
-        if let Some(last) = path_parts.last() {
-            if let Some(val) = ctx.values.get(last) {
-                return ExprValue::Int(*val);
-            }
-            if let Some(val) = ctx.string_values.get(last) {
-                return ExprValue::Str(val.clone());
-            }
+        // Fallback for direct bare identifier if present at top-level
+        if let Some(val) = ctx.values.get(id) {
+            return ExprValue::Int(*val);
+        }
+        if let Some(val) = ctx.string_values.get(id) {
+            return ExprValue::Str(val.clone());
         }
 
-        if !id.starts_with('_') && id != "true" && id != "false" {
+        if !id.starts_with('_') && id != "true" && id != "false" && !full_id.contains("extra") {
             if let Some(err_cell) = ctx.errors {
                 err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
                     message: format!("Unresolved identifier: {}", full_id),
@@ -1145,43 +1149,108 @@ impl ExprAST {
             return base.eval(ctx);
         }
 
-        let path = match base {
-            ExprAST::Identifier(id) => {
-                let mut path_parts: Vec<String>;
-                if id == "_root" {
-                    path_parts = Vec::new();
-                } else if id == "_parent" {
-                    let mut p = ctx.base_path.to_vec();
-                    if !p.is_empty() {
-                        p.pop();
-                    }
-                    path_parts = p;
-                } else if id == "_" {
-                    path_parts = ctx.base_path.to_vec();
-                    path_parts.push("_".to_string());
-                } else {
-                    path_parts = ctx.base_path.to_vec();
-                    path_parts.push(id.to_string());
-                }
-                path_parts.push(member.to_string());
-                path_parts.join(".")
+        let candidate_paths = {
+            let mut paths = Vec::new();
+            
+            // Extract chain of member access identifiers, e.g. header.len_body_compressed
+            let mut parts = Vec::new();
+            parts.push(member.to_string());
+            let mut curr = base;
+            let mut valid = true;
+            while let ExprAST::MemberAccess { base: b, member: m, is_enum } = curr {
+                if *is_enum { valid = false; break; }
+                parts.push(m.clone());
+                curr = b;
             }
-            _ => {
+
+            if valid {
+                if let ExprAST::Identifier(root_id) = curr {
+                    let (prefix, matched_element) = if root_id == "_root" {
+                        (Vec::new(), None)
+                    } else if root_id == "_parent" {
+                        let mut p = ctx.base_path.to_vec();
+                        if !p.is_empty() { p.pop(); }
+                        (p, None)
+                    } else if root_id == "_" {
+                        let mut p = ctx.base_path.to_vec();
+                        p.push("_".to_string());
+                        (p, None)
+                    } else {
+                        let mut p = ctx.base_path.to_vec();
+                        if let Some(idx) = p.iter().rposition(|x| {
+                            let base_name = x.split('[').next().unwrap_or(x);
+                            base_name == root_id
+                        }) {
+                            let elem = p[idx].clone();
+                            p.truncate(idx);
+                            (p, Some(elem))
+                        } else {
+                            (p, None)
+                        }
+                    };
+
+                    // 1. Exact path appending root_id and parts to current base_path
+                    let mut p1 = ctx.base_path.to_vec();
+                    p1.push(root_id.clone());
+                    p1.extend(parts.iter().cloned().rev());
+                    paths.push(p1.join("."));
+
+                    // 2. Truncated path if root_id is already in base_path
+                    let mut p2 = prefix.clone();
+                    if let Some(ref elem) = matched_element {
+                        p2.push(elem.clone());
+                    } else if root_id != "_root" && root_id != "_parent" && root_id != "_" {
+                        p2.push(root_id.clone());
+                    }
+                    p2.extend(parts.iter().cloned().rev());
+                    paths.push(p2.join("."));
+
+                    // 3. Walk up scope hierarchy from base_path
+                    let mut scope = ctx.base_path.to_vec();
+                    while !scope.is_empty() {
+                        scope.pop();
+                        let mut p = scope.clone();
+                        if root_id != "_root" && root_id != "_parent" && root_id != "_" {
+                            p.push(root_id.clone());
+                        }
+                        p.extend(parts.iter().cloned().rev());
+                        paths.push(p.join("."));
+                    }
+
+                    // 4. Relative path without base_path
+                    let mut root_parts = vec![root_id.clone()];
+                    root_parts.extend(parts.iter().cloned().rev());
+                    paths.push(root_parts.join("."));
+                }
+            } else {
                 let base_val = base.eval(ctx);
                 let base_str = base_val.to_string_val();
                 if base_str.is_empty() {
-                    member.to_string()
+                    paths.push(member.to_string());
                 } else {
-                    format!("{}.{}", base_str, member)
+                    paths.push(format!("{}.{}", base_str, member));
                 }
             }
+            paths
         };
 
-        if let Some(val) = ctx.values.get(&path) {
-            return ExprValue::Int(*val);
+        for path in &candidate_paths {
+            if let Some(val) = ctx.values.get(path) {
+                return ExprValue::Int(*val);
+            }
+            if let Some(val) = ctx.string_values.get(path) {
+                return ExprValue::Str(val.clone());
+            }
         }
-        if let Some(val) = ctx.string_values.get(&path) {
-            return ExprValue::Str(val.clone());
+
+        let first_path = candidate_paths.first().cloned().unwrap_or_default();
+        if !first_path.contains("extra") {
+            if let Some(err_cell) = ctx.errors {
+                err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                    message: format!("Unresolved identifier: {}", first_path),
+                    offset: ctx.stream_pos,
+                });
+            }
         }
 
         ExprValue::Int(0)

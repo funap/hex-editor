@@ -59,6 +59,8 @@ pub struct KsyAttr {
     pub compiled_repeat_until: Option<ExprAST>,
     #[serde(skip)]
     pub compiled_value: Option<ExprAST>,
+    #[serde(skip)]
+    pub compiled_size: Option<ExprAST>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -93,6 +95,9 @@ impl KsyAttr {
         }
         if let Some(ref val) = self.value {
             self.compiled_value = ExprAST::compile(val);
+        }
+        if let Some(KsyValue::Expr(ref expr)) = self.size {
+            self.compiled_size = ExprAST::compile(expr);
         }
     }
 }

@@ -39,6 +39,8 @@ pub struct Editor {
     pub encoding: Encoding,
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub parse_result: Option<ParseResult>,
+    pub is_parsing_structure: bool,
+    pub parse_generation: usize,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
@@ -56,6 +58,8 @@ impl Editor {
             encoding: Encoding::default(),
             ksy_definition: None,
             parse_result: None,
+            is_parsing_structure: false,
+            parse_generation: 0,
             cached_line_map: RefCell::new(None),
         }
     }

@@ -452,6 +452,7 @@ impl StructTreeView {
 impl Render for StructTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().clone();
+        let is_parsing = self.editor.as_ref().map_or(false, |ed| ed.read(cx).is_parsing_structure);
         let is_empty = self.fields.is_empty();
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
@@ -481,7 +482,14 @@ impl Render for StructTreeView {
                     .text_color(crate::ui::style::header_text_color(is_focused, theme))
                     .child("STRUCTURE"),
             )
-            .child(if is_empty {
+            .child(if is_parsing {
+                v_flex()
+                    .size_full()
+                    .justify_center()
+                    .items_center()
+                    .child(div().text_color(theme.muted_foreground).child("Parsing structure..."))
+                    .into_any_element()
+            } else if is_empty {
                 v_flex()
                     .size_full()
                     .justify_center()

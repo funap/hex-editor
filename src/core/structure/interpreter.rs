@@ -20,7 +20,6 @@ pub struct KaitaiInterpreter {
 }
 
 const MAX_RECURSION: usize = 64;
-const MAX_FIELDS: usize = 10000;
 
 /// Helper: extract a simple type string from serde_yaml::Value
 fn type_as_str(val: &serde_yaml::Value) -> Option<String> {
@@ -155,7 +154,7 @@ impl KaitaiInterpreter {
         types: &HashMap<String, KsyType>,
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
     ) -> Vec<ParsedField> {
-        if self.recursion_depth > MAX_RECURSION || self.field_count > MAX_FIELDS {
+        if self.recursion_depth > MAX_RECURSION {
             return Vec::new();
         }
         let mut results = Vec::new();
@@ -188,8 +187,12 @@ impl KaitaiInterpreter {
                             self.resolve_count(expr, stream)
                         };
                         for i in 0..count {
+                            let pos_before = stream.pos();
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
                                 results.push(field);
+                                if stream.pos() <= pos_before && attr.pos.is_none() {
+                                    break;
+                                }
                             } else {
                                 break;
                             }
@@ -198,12 +201,12 @@ impl KaitaiInterpreter {
                 }
                 "eos" => {
                     let mut i = 0;
-                    while !stream.is_eof() && i < MAX_FIELDS {
+                    while !stream.is_eof() {
                         let pos_before = stream.pos();
                         if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
                             results.push(field);
                             i += 1;
-                            if stream.pos() <= pos_before {
+                            if stream.pos() <= pos_before && attr.pos.is_none() {
                                 break;
                             }
                         } else {
@@ -215,9 +218,10 @@ impl KaitaiInterpreter {
                     if let Some(expr) = &attr.repeat_until {
                         let mut i = 0;
                         loop {
-                            if stream.is_eof() || i >= MAX_FIELDS {
+                            if stream.is_eof() {
                                 break;
                             }
+                            let pos_before = stream.pos();
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
                                 results.push(field);
                                 i += 1;
@@ -228,7 +232,7 @@ impl KaitaiInterpreter {
                                 } else {
                                     ExprEvaluator::eval_bool(expr, &ctx)
                                 };
-                                if stop {
+                                if stop || (stream.pos() <= pos_before && attr.pos.is_none()) {
                                     break;
                                 }
                             } else {
@@ -255,7 +259,7 @@ impl KaitaiInterpreter {
         types: &HashMap<String, KsyType>,
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
     ) -> Option<ParsedField> {
-        if self.recursion_depth > MAX_RECURSION || self.field_count > MAX_FIELDS {
+        if self.recursion_depth > MAX_RECURSION {
             return None;
         }
 
@@ -774,13 +778,13 @@ impl KaitaiInterpreter {
     fn resolve_count(&self, expr: &str, stream: &KaitaiStream) -> usize {
         let ctx = self.make_eval_ctx(stream);
         let val = ExprEvaluator::eval_i64(expr, &ctx);
-        (if val < 0 { 0 } else { val as usize }).min(MAX_FIELDS)
+        if val < 0 { 0 } else { val as usize }
     }
 
     fn resolve_count_ast(&self, ast: &crate::core::structure::expression::ExprAST, stream: &KaitaiStream) -> usize {
         let ctx = self.make_eval_ctx(stream);
         let val = ExprEvaluator::eval_ast_i64(ast, &ctx);
-        (if val < 0 { 0 } else { val as usize }).min(MAX_FIELDS)
+        if val < 0 { 0 } else { val as usize }
     }
 
     fn remaining_bytes(&self, stream: &KaitaiStream) -> usize {

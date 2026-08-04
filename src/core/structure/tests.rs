@@ -447,4 +447,26 @@ seq:
         assert_eq!(result.fields[0].id, "sections[0]");
         assert_eq!(result.fields[0].children.len(), 3); // magic, section_type, body
     }
+
+    #[test]
+    fn test_infinite_loop_prevention() {
+        let yaml = r#"
+meta:
+  id: test_zero_byte_repeat
+seq:
+  - id: empty_items
+    type: empty_type
+    repeat: eos
+types:
+  empty_type:
+    seq: []
+"#;
+        let ksy = parse_ksy_yaml(yaml);
+        let data = vec![0x01, 0x02, 0x03];
+        let mut stream = KaitaiStream::new(&data);
+        let interpreter = KaitaiInterpreter::new(ksy);
+        let result = interpreter.parse(&mut stream);
+
+        assert!(result.fields.len() <= 1, "Should terminate loop when stream position does not advance");
+    }
 }

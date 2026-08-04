@@ -216,11 +216,7 @@ impl Workspace {
         let editor = cx.new(|_| Editor::new(document.clone()));
 
         if let Some(ksy) = &self.ksy_definition {
-            let ksy = ksy.clone();
-            editor.update(cx, |editor, cx| {
-                editor.set_kaitai_definition(ksy);
-                cx.notify();
-            });
+            set_kaitai_definition_async(&editor, ksy.clone(), cx);
         }
 
         let editor_panel = cx.new(|cx| EditorPanel::new(editor.clone(), window, cx));
@@ -485,10 +481,7 @@ impl Workspace {
 
                                         let editors: Vec<_> = this.open_file_manager.read(cx).entries().iter().map(|e| e.editor.clone()).collect();
                                         for editor_entity in editors {
-                                            editor_entity.update(cx, |editor, cx| {
-                                                editor.set_kaitai_definition(ksy_arc.clone());
-                                                cx.notify();
-                                            });
+                                            set_kaitai_definition_async(&editor_entity, ksy_arc.clone(), cx);
                                         }
 
                                         let active_editor = this.active_editor(cx);
@@ -995,4 +988,42 @@ impl Render for Workspace {
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+pub fn set_kaitai_definition_async(
+    editor_entity: &Entity<Editor>,
+    ksy: Arc<crate::core::structure::KsyDefinition>,
+    cx: &mut App,
+) {
+    let (bytes, generation) = editor_entity.update(cx, |editor, cx| {
+        editor.ksy_definition = Some(ksy.clone());
+        editor.is_parsing_structure = true;
+        editor.parse_generation += 1;
+        cx.notify();
+        (
+            editor.document.read().unwrap().buffer.data().to_vec(),
+            editor.parse_generation,
+        )
+    });
+
+    let editor_entity = editor_entity.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move {
+                let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
+                let interpreter = crate::core::structure::KaitaiInterpreter::new((*ksy).clone());
+                interpreter.parse(&mut stream)
+            })
+            .await;
+
+        let _ = editor_entity.update(cx, |editor, cx| {
+            if editor.parse_generation == generation {
+                editor.parse_result = Some(result);
+                editor.is_parsing_structure = false;
+                cx.notify();
+            }
+        });
+    })
+    .detach();
 }

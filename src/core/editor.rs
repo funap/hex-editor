@@ -40,7 +40,10 @@ pub struct Editor {
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub parse_result: Option<Arc<ParseResult>>,
     pub is_parsing_structure: bool,
+    pub parse_progress_offset: usize,
+    pub parse_total_size: usize,
     pub parse_generation: usize,
+    pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
     cached_line_map: RefCell<Option<LineMap>>,
@@ -61,7 +64,10 @@ impl Editor {
             ksy_definition: None,
             parse_result: None,
             is_parsing_structure: false,
+            parse_progress_offset: 0,
+            parse_total_size: 0,
             parse_generation: 0,
+            parse_cancel_token: None,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
             cached_line_map: RefCell::new(None),
@@ -69,7 +75,7 @@ impl Editor {
     }
 
     pub fn total_size(&self) -> usize {
-        self.document.read().unwrap().buffer.len()
+        self.document.read().expect("document read lock").buffer.len()
     }
 
     /// line_starts の中から、指定オフセットが属するデータ行（空行でない行）のインデックスを返す。
@@ -126,13 +132,13 @@ impl Editor {
     }
 
     pub fn value_at_cursor(&self) -> Option<u8> {
-        let binding = self.document.read().unwrap();
+        let binding = self.document.read().expect("document read lock");
         let buffer = &binding.buffer;
         buffer.data().get(self.cursor_offset).copied()
     }
 
     pub fn read_bytes_at_cursor(&self, count: usize) -> Vec<u8> {
-        let binding = self.document.read().unwrap();
+        let binding = self.document.read().expect("document read lock");
         let buffer = &binding.buffer;
         let data = buffer.data();
         if self.cursor_offset < data.len() {
@@ -186,10 +192,10 @@ impl Editor {
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
         if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
-            let current_line_start = line_starts.get(current_line_idx).unwrap();
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = self.cursor_offset - current_line_start;
-            let prev_line_start = line_starts.get(prev_idx).unwrap();
-            let prev_line_end = line_starts.get(prev_idx + 1).unwrap();
+            let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
+            let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
             let prev_line_len = prev_line_end - prev_line_start;
 
             self.cursor_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
@@ -204,11 +210,11 @@ impl Editor {
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
         if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
-            let current_line_start = line_starts.get(current_line_idx).unwrap();
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = self.cursor_offset - current_line_start;
-            let next_line_start = line_starts.get(next_idx).unwrap();
+            let next_line_start = line_starts.get(next_idx).expect("valid next line start");
             let next_line_end = if next_idx + 1 < line_starts.len() {
-                line_starts.get(next_idx + 1).unwrap()
+                line_starts.get(next_idx + 1).expect("valid next line end")
             } else {
                 total_size
             };
@@ -257,10 +263,10 @@ impl Editor {
             if self.selection_start.is_none() {
                 self.selection_start = Some(self.cursor_offset);
             }
-            let current_line_start = line_starts.get(current_line_idx).unwrap();
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = self.cursor_offset - current_line_start;
-            let prev_line_start = line_starts.get(prev_idx).unwrap();
-            let prev_line_end = line_starts.get(prev_idx + 1).unwrap();
+            let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
+            let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
             let prev_line_len = prev_line_end - prev_line_start;
 
             self.cursor_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
@@ -278,11 +284,11 @@ impl Editor {
         }
 
         if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
-            let current_line_start = line_starts.get(current_line_idx).unwrap();
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = self.cursor_offset - current_line_start;
-            let next_line_start = line_starts.get(next_idx).unwrap();
+            let next_line_start = line_starts.get(next_idx).expect("valid next line start");
             let next_line_end = if next_idx + 1 < line_starts.len() {
-                line_starts.get(next_idx + 1).unwrap()
+                line_starts.get(next_idx + 1).expect("valid next line end")
             } else {
                 total_size
             };
@@ -327,12 +333,12 @@ impl Editor {
         self.selection_end = None;
 
         let target_line_idx = current_line_idx.saturating_sub(visible_rows);
-        let current_line_start = line_starts.get(current_line_idx).unwrap();
+        let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
 
-        let target_line_start = line_starts.get(target_line_idx).unwrap();
+        let target_line_start = line_starts.get(target_line_idx).expect("valid target line start");
         let target_line_end = if target_line_idx + 1 < line_starts.len() {
-            line_starts.get(target_line_idx + 1).unwrap()
+            line_starts.get(target_line_idx + 1).expect("valid target line end")
         } else {
             self.total_size()
         };
@@ -349,12 +355,12 @@ impl Editor {
         self.selection_end = None;
 
         let target_line_idx = cmp::min(current_line_idx + visible_rows, line_starts.len() - 1);
-        let current_line_start = line_starts.get(current_line_idx).unwrap();
+        let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
 
-        let target_line_start = line_starts.get(target_line_idx).unwrap();
+        let target_line_start = line_starts.get(target_line_idx).expect("valid target line start");
         let target_line_end = if target_line_idx + 1 < line_starts.len() {
-            line_starts.get(target_line_idx + 1).unwrap()
+            line_starts.get(target_line_idx + 1).expect("valid target line end")
         } else {
             self.total_size()
         };
@@ -389,12 +395,12 @@ impl Editor {
         }
 
         let target_line_idx = current_line_idx.saturating_sub(visible_rows);
-        let current_line_start = line_starts.get(current_line_idx).unwrap();
+        let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
 
-        let target_line_start = line_starts.get(target_line_idx).unwrap();
+        let target_line_start = line_starts.get(target_line_idx).expect("valid target line start");
         let target_line_end = if target_line_idx + 1 < line_starts.len() {
-            line_starts.get(target_line_idx + 1).unwrap()
+            line_starts.get(target_line_idx + 1).expect("valid target line end")
         } else {
             self.total_size()
         };
@@ -413,12 +419,12 @@ impl Editor {
         }
 
         let target_line_idx = cmp::min(current_line_idx + visible_rows, line_starts.len() - 1);
-        let current_line_start = line_starts.get(current_line_idx).unwrap();
+        let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
 
-        let target_line_start = line_starts.get(target_line_idx).unwrap();
+        let target_line_start = line_starts.get(target_line_idx).expect("valid target line start");
         let target_line_end = if target_line_idx + 1 < line_starts.len() {
-            line_starts.get(target_line_idx + 1).unwrap()
+            line_starts.get(target_line_idx + 1).expect("valid target line end")
         } else {
             self.total_size()
         };
@@ -538,10 +544,10 @@ impl Editor {
                 layout_events.extend(self.custom_breaks.iter().copied());
                 layout_events.extend(self.custom_joins.iter().copied());
                 layout_events.extend(self.empty_lines.keys().copied());
-                if self.show_inline_structure_view {
-                    if let Some(parse_res) = &self.parse_result {
-                        parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
-                    }
+                if self.show_inline_structure_view
+                    && let Some(parse_res) = &self.parse_result
+                {
+                    parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
                 }
                 layout_events.sort_unstable();
                 layout_events.dedup();
@@ -549,15 +555,16 @@ impl Editor {
                 let mut break_events: Vec<usize> = Vec::new();
                 break_events.extend(self.custom_breaks.iter().copied());
                 break_events.extend(self.empty_lines.keys().copied());
-                if self.show_inline_structure_view {
-                    if let Some(parse_res) = &self.parse_result {
-                        parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
-                    }
+                if self.show_inline_structure_view
+                    && let Some(parse_res) = &self.parse_result
+                {
+                    parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
                 }
                 break_events.sort_unstable();
                 break_events.dedup();
 
                 let mut event_idx = 0;
+                let mut break_idx = 0;
 
                 while current < total_size {
                     // Find next event > current
@@ -644,8 +651,11 @@ impl Editor {
 
                         starts.push(current);
 
-                        // Find next event break after current (includes structure field breaks, custom breaks, etc.)
-                        let next_event_break = break_events.iter().copied().find(|&ev| ev > current);
+                        // Find next event break after current (includes structure field breaks, custom breaks, etc.) in O(1) amortized
+                        while break_idx < break_events.len() && break_events[break_idx] <= current {
+                            break_idx += 1;
+                        }
+                        let next_event_break = break_events.get(break_idx).copied();
 
                         // Advance in BYTES_PER_ROW increments, skipping joined boundaries
                         let mut next_pos = current + BYTES_PER_ROW;
@@ -755,7 +765,7 @@ impl Editor {
                 }
                 // line_end が offset から BYTES_PER_ROW の倍数で到達できない場合、
                 // アルゴリズムが line_end をまたいでしまうため、明示的に break を追加する
-                if line_end < self.total_size() && (line_end - offset) % BYTES_PER_ROW != 0 && !self.custom_breaks.contains(&line_end) {
+                if line_end < self.total_size() && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !self.custom_breaks.contains(&line_end) {
                     self.custom_breaks.insert(line_end);
                 }
             }
@@ -811,7 +821,7 @@ impl Editor {
             return;
         }
 
-        let next_line_start = line_starts.get(current_line_idx + 1).unwrap();
+        let next_line_start = line_starts.get(current_line_idx + 1).expect("valid next line start");
 
         if self.custom_breaks.contains(&next_line_start) {
             // Custom Break による改行なら、その break を削除
@@ -879,7 +889,7 @@ impl Editor {
 
     pub fn execute_command(&mut self, mut command: Box<dyn Command>) {
         command.execute(self);
-        self.document.write().unwrap().history.push(command);
+        self.document.write().expect("document write lock").history.push(command);
         self.cached_line_map.replace(None);
         self.reparse_structure();
     }
@@ -892,7 +902,7 @@ impl Editor {
         // But if I hold the lock while calling command.undo(self), and command.undo tries to lock document again... deadlock.
 
         let command = {
-            let mut doc = self.document.write().unwrap();
+            let mut doc = self.document.write().expect("document write lock");
             doc.history.pop_undo()
         };
 
@@ -900,7 +910,7 @@ impl Editor {
             cmd.undo(self);
 
             // Re-acquire lock to push redo
-            self.document.write().unwrap().history.push_redo(cmd);
+            self.document.write().expect("document write lock").history.push_redo(cmd);
             self.cached_line_map.replace(None);
             self.reparse_structure();
         }
@@ -908,7 +918,7 @@ impl Editor {
 
     pub fn redo(&mut self) {
         let command = {
-            let mut doc = self.document.write().unwrap();
+            let mut doc = self.document.write().expect("document write lock");
             doc.history.pop_redo()
         };
 
@@ -916,10 +926,73 @@ impl Editor {
             cmd.execute(self);
 
             // Re-acquire lock to push undo
-            self.document.write().unwrap().history.push_undo(cmd);
+            self.document.write().expect("document write lock").history.push_undo(cmd);
             self.cached_line_map.replace(None);
             self.reparse_structure();
         }
+    }
+
+    pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
+        self.ksy_definition = Some(ksy);
+        self.reparse_structure();
+    }
+
+    pub fn set_parse_result(&mut self, result: ParseResult) {
+        self.parse_progress_offset = result.total_parsed_bytes;
+        self.parse_result = Some(Arc::new(result));
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
+        self.parse_progress_offset = result.total_parsed_bytes;
+        let old = self.parse_result.replace(result);
+        if let Some(old_res) = old {
+            std::thread::spawn(move || drop(old_res));
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn update_parse_progress(&mut self, offset: usize, total_size: usize, intermediate_result: Option<ParseResult>) {
+        self.parse_progress_offset = offset;
+        self.parse_total_size = total_size;
+        if let Some(res) = intermediate_result {
+            self.parse_result = Some(Arc::new(res));
+            self.cached_line_map.replace(None);
+        }
+    }
+
+    pub fn invalidate_line_map(&self) {
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn reparse_structure(&mut self) {
+        if let Some(ksy) = &self.ksy_definition {
+            let (bytes, ksy_clone) = {
+                let buffer_lock = self.document.read().expect("document read lock");
+                (buffer_lock.buffer.data().to_vec(), (**ksy).clone())
+            };
+            let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
+            let interpreter = crate::core::structure::KaitaiInterpreter::new(ksy_clone);
+            let result = interpreter.parse(&mut stream);
+            self.set_parse_result(result);
+        }
+    }
+
+    pub fn cancel_structure_parsing(&mut self) {
+        if let Some(token) = self.parse_cancel_token.take() {
+            token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.is_parsing_structure = false;
+    }
+
+    pub fn clear_structure_definition(&mut self) {
+        self.cancel_structure_parsing();
+        self.ksy_definition = None;
+        self.parse_result = None;
+        self.is_parsing_structure = false;
+        self.parse_progress_offset = 0;
+        self.parse_total_size = 0;
+        self.cached_line_map.replace(None);
     }
 }
 
@@ -1227,7 +1300,7 @@ mod tests {
 
         let starts = editor.line_starts();
         assert!(matches!(starts, LineMap::Standard { .. }));
-        assert_eq!(starts.len(), (10_000_000 + 15) / 16);
+        assert_eq!(starts.len(), 10_000_000_usize.div_ceil(16));
 
         editor.add_custom_break(5_000_000);
         editor.add_custom_break(5_000_010);
@@ -1378,43 +1451,5 @@ mod tests {
 
         editor.toggle_custom_break(20);
         assert!(!editor.custom_breaks.contains(&20));
-    }
-}
-
-impl Editor {
-    pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
-        self.ksy_definition = Some(ksy);
-        self.reparse_structure();
-    }
-
-    pub fn set_parse_result(&mut self, result: ParseResult) {
-        self.parse_result = Some(Arc::new(result));
-        self.cached_line_map.replace(None);
-    }
-
-    pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
-        self.parse_result = Some(result);
-        self.cached_line_map.replace(None);
-    }
-
-    pub fn invalidate_line_map(&self) {
-        self.cached_line_map.replace(None);
-    }
-
-    pub fn reparse_structure(&mut self) {
-        if let Some(ksy) = &self.ksy_definition {
-            let buffer_lock = self.document.read().unwrap();
-            let bytes = buffer_lock.buffer.data();
-            let mut stream = crate::core::structure::KaitaiStream::new(bytes);
-            let interpreter = crate::core::structure::KaitaiInterpreter::new((**ksy).clone());
-            self.parse_result = Some(Arc::new(interpreter.parse(&mut stream)));
-            self.cached_line_map.replace(None);
-        }
-    }
-
-    pub fn clear_structure_definition(&mut self) {
-        self.ksy_definition = None;
-        self.parse_result = None;
-        self.cached_line_map.replace(None);
     }
 }

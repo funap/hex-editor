@@ -99,12 +99,10 @@ impl OpenFileManager {
     }
 
     pub fn activate(&mut self, id: OpenEntryId, cx: &mut Context<Self>) {
-        if self.entries.iter().any(|e| e.id == id) {
-            if self.active_id != Some(id) {
-                self.active_id = Some(id);
-                cx.emit(OpenFileEvent::Activated(id));
-                cx.notify();
-            }
+        if self.entries.iter().any(|e| e.id == id) && self.active_id != Some(id) {
+            self.active_id = Some(id);
+            cx.emit(OpenFileEvent::Activated(id));
+            cx.notify();
         }
     }
 

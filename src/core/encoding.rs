@@ -1,8 +1,9 @@
 // This file will be responsible for converting byte sequences into strings corresponding to a specified encoding
 // (e.g., UTF-8, Shift JIS). It will also include logic for detecting the encoding.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Encoding {
+    #[default]
     Ascii,
     Utf8,
     Utf16Le,
@@ -15,7 +16,7 @@ impl Encoding {
             Encoding::Ascii => {
                 if offset < buffer.len() {
                     let b = buffer[offset];
-                    if b >= 32 && b <= 126 { Some((b as char, 1)) } else { None }
+                    if (32..=126).contains(&b) { Some((b as char, 1)) } else { None }
                 } else {
                     None
                 }
@@ -37,20 +38,20 @@ impl Encoding {
                     return None;
                 }; // Invalid start byte or continuation byte
 
-                if offset + len <= buffer.len() {
-                    if let Ok(s) = std::str::from_utf8(&buffer[offset..offset + len]) {
-                        let c = s.chars().next().unwrap();
-                        let is_printable = !c.is_control() && c != '\u{FFFD}';
-                        if is_printable {
-                            return Some((c, len));
-                        }
+                if offset + len <= buffer.len()
+                    && let Ok(s) = std::str::from_utf8(&buffer[offset..offset + len])
+                {
+                    let c = s.chars().next().expect("valid utf-8 character");
+                    let is_printable = !c.is_control() && c != '\u{FFFD}';
+                    if is_printable {
+                        return Some((c, len));
                     }
                 }
                 None
             }
             Encoding::Utf16Le | Encoding::Utf16Be => {
                 let is_le = *self == Encoding::Utf16Le;
-                if offset % 2 != 0 {
+                if !offset.is_multiple_of(2) {
                     return None;
                 }
                 if offset + 2 <= buffer.len() {
@@ -93,6 +94,7 @@ impl Encoding {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_continuation_byte(&self, buffer: &[u8], offset: usize) -> bool {
         if offset >= buffer.len() {
             return false;
@@ -118,7 +120,7 @@ impl Encoding {
                 false
             }
             Encoding::Utf16Le | Encoding::Utf16Be => {
-                if offset % 2 != 0 {
+                if !offset.is_multiple_of(2) {
                     let start_idx = offset - 1;
                     if let Some((_, len)) = self.decode_char_at(buffer, start_idx) {
                         return start_idx + len > offset;
@@ -141,12 +143,6 @@ impl Encoding {
                 }
             }
         }
-    }
-}
-
-impl Default for Encoding {
-    fn default() -> Self {
-        Encoding::Ascii
     }
 }
 
@@ -205,5 +201,20 @@ mod tests {
         let utf16be = vec![0x00, 0x41, 0x00, 0x42];
         assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 0), Some(('A', 2)));
         assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 2), Some(('B', 2)));
+    }
+
+    #[test]
+    fn test_is_continuation_byte() {
+        use super::Encoding;
+
+        let utf8_bytes = "こんにちは".as_bytes();
+        assert!(!Encoding::Utf8.is_continuation_byte(utf8_bytes, 0));
+        assert!(Encoding::Utf8.is_continuation_byte(utf8_bytes, 1));
+        assert!(Encoding::Utf8.is_continuation_byte(utf8_bytes, 2));
+        assert!(!Encoding::Utf8.is_continuation_byte(utf8_bytes, 3));
+
+        let ascii_bytes = b"Hello";
+        assert!(!Encoding::Ascii.is_continuation_byte(ascii_bytes, 0));
+        assert!(!Encoding::Ascii.is_continuation_byte(ascii_bytes, 1));
     }
 }

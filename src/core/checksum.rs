@@ -52,7 +52,7 @@ pub fn crc16_arc(data: &[u8]) -> u16 {
 pub fn crc32(data: &[u8]) -> u32 {
     const POLY: u32 = 0xEDB88320;
     let mut table = [0u32; 256];
-    for i in 0..256 {
+    for (i, item) in table.iter_mut().enumerate() {
         let mut crc = i as u32;
         for _ in 0..8 {
             if crc & 1 != 0 {
@@ -61,7 +61,7 @@ pub fn crc32(data: &[u8]) -> u32 {
                 crc >>= 1;
             }
         }
-        table[i] = crc;
+        *item = crc;
     }
 
     let mut crc = 0xFFFFFFFFu32;
@@ -94,7 +94,7 @@ pub fn md5(data: &[u8]) -> [u8; 16] {
     let mut msg = data.to_vec();
     let bit_len = (data.len() as u64) * 8;
     msg.push(0x80);
-    while (msg.len() + 8) % 64 != 0 {
+    while !(msg.len() + 8).is_multiple_of(64) {
         msg.push(0x00);
     }
     msg.extend_from_slice(&bit_len.to_le_bytes());

@@ -23,12 +23,16 @@ pub fn hex_to_hsla(hex: &str) -> Option<Hsla> {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
-        a: a,
+        a,
     };
     Some(rgba8.into())
 }
 
-pub fn get_color(index: usize) -> Hsla {
+pub fn color(index: usize) -> Hsla {
     let hex = DEFAULT_PALETTE[index % DEFAULT_PALETTE.len()];
-    hex_to_hsla(hex).unwrap_or(gpui::white())
+    hex_to_hsla(hex).unwrap_or_else(gpui::white)
+}
+
+pub fn get_color(index: usize) -> Hsla {
+    color(index)
 }

@@ -10,6 +10,7 @@ pub struct TabItemInfo {
     pub title: String,
     pub is_dirty: bool,
     pub is_active: bool,
+    #[allow(dead_code)]
     pub path: Option<PathBuf>,
 }
 

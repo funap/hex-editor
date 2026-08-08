@@ -212,7 +212,7 @@ impl Workspace {
     }
 
     fn open_editor_panel(&mut self, document: Arc<RwLock<crate::core::document::Document>>, window: &mut Window, cx: &mut Context<Self>) {
-        let path = document.read().unwrap().path().to_path_buf();
+        let path = document.read().expect("document read lock").path().to_path_buf();
         let editor = cx.new(|_| Editor::new(document.clone()));
 
         if let Some(ksy) = &self.ksy_definition {
@@ -370,7 +370,7 @@ impl Workspace {
         let right_path = action.right_path.clone();
 
         cx.spawn_in(window, async move |this, window| {
-            let app = this.update(window, |_, cx| AppState::global(cx).clone()).ok().unwrap();
+            let app = this.update(window, |_, cx| AppState::global(cx).clone()).expect("AppState global");
 
             if let Some(workspace) = this.upgrade() {
                 let left_result = app.editor_service.open_file(std::path::PathBuf::from(left_path)).await;
@@ -570,11 +570,9 @@ impl Workspace {
         if let Some(panel) = self.active_panel.take() {
             let is_editor = panel.panel_name(cx) == "EditorPanel";
             let mut closed_path = None;
-            if is_editor {
-                if let Ok(editor_panel) = panel.view().downcast::<EditorPanel>() {
-                    let path = editor_panel.read(cx).path(cx);
-                    closed_path = Some(path);
-                }
+            if is_editor && let Ok(editor_panel) = panel.view().downcast::<EditorPanel>() {
+                let path = editor_panel.read(cx).path(cx);
+                closed_path = Some(path);
             }
 
             self.dock_area.update(cx, |dock_area, cx| {
@@ -857,14 +855,14 @@ impl Workspace {
         });
     }
 
-    fn get_tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
+    fn tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
         let manager = self.open_file_manager.read(cx);
         let active_id = manager.active_entry().map(|e| e.id);
         manager
             .entries()
             .iter()
             .map(|entry| {
-                let doc = entry.document.read().unwrap();
+                let doc = entry.document.read().expect("document read lock");
                 let title = entry
                     .path
                     .file_name()
@@ -882,11 +880,16 @@ impl Workspace {
             })
             .collect()
     }
+
+    #[allow(dead_code)]
+    fn get_tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
+        self.tab_items(cx)
+    }
 }
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab_items = self.get_tab_items(cx);
+        let tab_items = self.tab_items(cx);
         let has_tabs = !tab_items.is_empty();
 
         div()
@@ -992,33 +995,86 @@ impl Render for Workspace {
 }
 
 pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crate::core::structure::KsyDefinition>, cx: &mut App) {
-    let (bytes, generation) = editor_entity.update(cx, |editor, cx| {
+    let cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_token_clone = cancel_token.clone();
+
+    let (doc_arc, generation) = editor_entity.update(cx, |editor, cx| {
+        editor.cancel_structure_parsing();
+        editor.parse_cancel_token = Some(cancel_token.clone());
         editor.ksy_definition = Some(ksy.clone());
         editor.is_parsing_structure = true;
+        editor.parse_progress_offset = 0;
+        let total = editor.document.read().expect("document read lock").buffer.len();
+        editor.parse_total_size = total;
         editor.parse_generation += 1;
+        editor.parse_result = None;
         editor.invalidate_line_map();
         cx.notify();
-        (editor.document.read().unwrap().buffer.data().to_vec(), editor.parse_generation)
+        (editor.document.clone(), editor.parse_generation)
     });
 
-    let editor_entity = editor_entity.clone();
-    cx.spawn(async move |cx| {
-        let result = cx
-            .background_executor()
-            .spawn(async move {
-                let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
-                let interpreter = crate::core::structure::KaitaiInterpreter::new((*ksy).clone());
-                interpreter.parse(&mut stream)
-            })
-            .await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::core::structure::types::ParseProgress>();
 
-        let _ = editor_entity.update(cx, |editor, cx| {
-            if editor.parse_generation == generation {
-                editor.set_parse_result(result);
-                editor.is_parsing_structure = false;
-                cx.notify();
+    let editor_entity = editor_entity.clone();
+
+    // Dedicated background OS thread for parsing: guarantees UI thread never freezes
+    let ksy_clone = (*ksy).clone();
+    std::thread::Builder::new()
+        .name("kaitai-parser".into())
+        .spawn(move || {
+            // Read document buffer in background thread (no UI thread copy)
+            let bytes = {
+                if let Ok(doc) = doc_arc.read() {
+                    doc.buffer.data().to_vec()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
+            let interpreter = crate::core::structure::KaitaiInterpreter::new(ksy_clone);
+            interpreter.parse_with_progress_cancellable(&mut stream, Some(&cancel_token_clone), |progress| {
+                if !cancel_token_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = tx.send(progress.clone());
+                }
+            });
+        })
+        .expect("Failed to spawn kaitai parser thread");
+
+    // UI task to consume progress updates
+    cx.spawn(async move |cx| {
+        while let Some(mut progress) = rx.recv().await {
+            while let Ok(newer) = rx.try_recv() {
+                progress = newer;
             }
-        });
+            let is_done = progress.is_done;
+            let parse_res = progress.parse_result;
+
+            let should_continue = editor_entity.update(cx, |editor, cx| {
+                if editor.parse_generation != generation {
+                    return false;
+                }
+                if !editor.is_parsing_structure && !is_done {
+                    // Canceled via stop button; exit UI task immediately
+                    return false;
+                }
+                editor.parse_progress_offset = progress.parsed_offset;
+                editor.parse_total_size = progress.total_bytes;
+                if let Some(res) = parse_res {
+                    editor.set_parse_result_arc(res);
+                }
+                if is_done {
+                    editor.is_parsing_structure = false;
+                    editor.parse_cancel_token = None;
+                }
+                cx.notify();
+                !is_done
+            });
+
+            if should_continue.is_err() || !should_continue.unwrap_or(false) {
+                break;
+            }
+        }
     })
     .detach();
 }

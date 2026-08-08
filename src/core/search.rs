@@ -107,17 +107,17 @@ pub fn parse_hex_pattern(query: &str) -> Option<Vec<PatternByte>> {
                 if is_c1_wild && is_c2_wild {
                     pattern.push(PatternByte::new_wildcard());
                 } else if is_c1_hex && is_c2_hex {
-                    let val_high = c1.to_digit(16).unwrap() as u8;
-                    let val_low = c2.to_digit(16).unwrap() as u8;
+                    let val_high = c1.to_digit(16).expect("valid hex digit") as u8;
+                    let val_low = c2.to_digit(16).expect("valid hex digit") as u8;
                     pattern.push(PatternByte::new_exact((val_high << 4) | val_low));
                 } else if is_c1_hex && is_c2_wild {
-                    let val_high = c1.to_digit(16).unwrap() as u8;
+                    let val_high = c1.to_digit(16).expect("valid hex digit") as u8;
                     pattern.push(PatternByte {
                         value: val_high << 4,
                         mask: 0xF0,
                     });
                 } else if is_c1_wild && is_c2_hex {
-                    let val_low = c2.to_digit(16).unwrap() as u8;
+                    let val_low = c2.to_digit(16).expect("valid hex digit") as u8;
                     pattern.push(PatternByte { value: val_low, mask: 0x0F });
                 } else {
                     return None;
@@ -127,7 +127,7 @@ pub fn parse_hex_pattern(query: &str) -> Option<Vec<PatternByte>> {
                 if c1 == '?' || c1 == '*' {
                     pattern.push(PatternByte::new_wildcard());
                 } else if c1.is_ascii_hexdigit() {
-                    let val = c1.to_digit(16).unwrap() as u8;
+                    let val = c1.to_digit(16).expect("valid hex digit") as u8;
                     pattern.push(PatternByte::new_exact(val));
                 } else {
                     return None;
@@ -204,10 +204,10 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
                     }
                 }
                 SearchLimit::Range(range_bytes) => {
-                    if let Some(first) = first_match {
-                        if i >= first + range_bytes {
-                            break;
-                        }
+                    if let Some(first) = first_match
+                        && i >= first + range_bytes
+                    {
+                        break;
                     }
                     results.push(i);
                 }

@@ -50,10 +50,10 @@ impl Command for DeleteCharCommand {
     }
 
     fn undo(&mut self, editor: &mut Editor) {
-        if let Some(c) = self.deleted_char {
-            if let Ok(mut document) = editor.document.write() {
-                document.buffer.insert(self.position, c);
-            }
+        if let Some(c) = self.deleted_char
+            && let Ok(mut document) = editor.document.write()
+        {
+            document.buffer.insert(self.position, c);
         }
     }
 }

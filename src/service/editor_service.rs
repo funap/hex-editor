@@ -32,7 +32,7 @@ impl EditorService {
     pub async fn open_file(&self, path: PathBuf) -> anyhow::Result<Arc<RwLock<Document>>> {
         let path = path.canonicalize().unwrap_or(path);
         // First, check if the document is already in the cache with a read lock.
-        if let Some(document) = self.documents.read().unwrap().get(&path) {
+        if let Some(document) = self.documents.read().expect("documents read lock").get(&path) {
             return Ok(document.clone());
         }
 
@@ -47,7 +47,7 @@ impl EditorService {
         let new_document = Arc::new(RwLock::new(Document::new(path.clone(), buffer)));
 
         // Acquire a write lock to insert the new document into the cache.
-        let mut documents = self.documents.write().unwrap();
+        let mut documents = self.documents.write().expect("documents write lock");
 
         // Before inserting, check again if another thread has inserted it in the meantime.
         if let Some(document) = documents.get(&path) {
@@ -61,7 +61,7 @@ impl EditorService {
     /// Closes a file by removing it from the document cache.
     pub fn close_file(&self, path: &std::path::Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let mut documents = self.documents.write().unwrap();
+        let mut documents = self.documents.write().expect("documents write lock");
         documents.remove(&path);
     }
 
@@ -102,7 +102,7 @@ impl EditorService {
     ) -> gpui::Task<()> {
         let buffer_data = {
             let editor_read = editor.read(cx);
-            let document = editor_read.document.read().unwrap();
+            let document = editor_read.document.read().expect("document read lock");
             // Since `Buffer` cloning is O(1) (internally uses Arc<Vec<u8>> or Arc<Mmap>),
             // cloning the buffer here is extremely cheap and creates a consistent snapshot
             // for the background search thread.
@@ -161,8 +161,8 @@ impl EditorService {
 
     pub fn compute_diff(&self, left: Arc<RwLock<Document>>, right: Arc<RwLock<Document>>, cx: &gpui::App) -> gpui::Task<crate::core::diff::DiffResult> {
         cx.background_executor().spawn(async move {
-            let left_doc = left.read().unwrap();
-            let right_doc = right.read().unwrap();
+            let left_doc = left.read().expect("left document read lock");
+            let right_doc = right.read().expect("right document read lock");
             let left_data = left_doc.buffer.data();
             let right_data = right_doc.buffer.data();
             crate::core::diff::compute_simple_diff(left_data, right_data)

@@ -103,6 +103,7 @@ impl<'a> KaitaiStream<'a> {
         Some(res)
     }
 
+    #[inline(always)]
     fn read_fixed<const N: usize>(&mut self) -> Option<[u8; N]> {
         self.align_to_byte();
         if self.pos + N <= self.data.len() {
@@ -115,50 +116,62 @@ impl<'a> KaitaiStream<'a> {
         }
     }
 
+    #[inline(always)]
     pub fn read_u1(&mut self) -> Option<u8> {
         self.read_fixed::<1>().map(|b| b[0])
     }
 
+    #[inline(always)]
     pub fn read_u2le(&mut self) -> Option<u16> {
         self.read_fixed::<2>().map(u16::from_le_bytes)
     }
 
+    #[inline(always)]
     pub fn read_u2be(&mut self) -> Option<u16> {
         self.read_fixed::<2>().map(u16::from_be_bytes)
     }
 
+    #[inline(always)]
     pub fn read_u4le(&mut self) -> Option<u32> {
         self.read_fixed::<4>().map(u32::from_le_bytes)
     }
 
+    #[inline(always)]
     pub fn read_u4be(&mut self) -> Option<u32> {
         self.read_fixed::<4>().map(u32::from_be_bytes)
     }
 
+    #[inline(always)]
     pub fn read_u8le(&mut self) -> Option<u64> {
         self.read_fixed::<8>().map(u64::from_le_bytes)
     }
 
+    #[inline(always)]
     pub fn read_u8be(&mut self) -> Option<u64> {
         self.read_fixed::<8>().map(u64::from_be_bytes)
     }
 
+    #[inline(always)]
     pub fn read_s1(&mut self) -> Option<i8> {
         self.read_u1().map(|v| v as i8)
     }
 
+    #[inline(always)]
     pub fn read_s2le(&mut self) -> Option<i16> {
         self.read_u2le().map(|v| v as i16)
     }
 
+    #[inline(always)]
     pub fn read_s2be(&mut self) -> Option<i16> {
         self.read_u2be().map(|v| v as i16)
     }
 
+    #[inline(always)]
     pub fn read_s4le(&mut self) -> Option<i32> {
         self.read_u4le().map(|v| v as i32)
     }
 
+    #[inline(always)]
     pub fn read_s4be(&mut self) -> Option<i32> {
         self.read_u4be().map(|v| v as i32)
     }

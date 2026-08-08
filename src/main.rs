@@ -16,7 +16,10 @@ use ui::workspace::Workspace;
 impl gpui::Global for Appearance {}
 
 fn main() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("initialize tokio runtime");
     let _guard = rt.enter();
 
     // Parse command line arguments

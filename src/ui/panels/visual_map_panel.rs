@@ -16,6 +16,9 @@ pub enum ColorMode {
     Rainbow,
 }
 
+pub type CachedImageKey = (usize, usize, usize, ColorMode, usize, f32, f32, u32);
+pub type CachedImage = (Arc<RenderImage>, CachedImageKey);
+
 pub struct VisualMapPanel {
     pub editor: Option<Entity<Editor>>,
     focus_handle: FocusHandle,
@@ -27,7 +30,7 @@ pub struct VisualMapPanel {
     color_mode: ColorMode,
     hovered_info: Option<(usize, u8)>,
     last_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
-    cached_image: RefCell<Option<(Arc<RenderImage>, (usize, usize, usize, ColorMode, usize, f32, f32, u32))>>,
+    cached_image: RefCell<Option<CachedImage>>,
     is_dragging: bool,
     _editor_subscription: Option<Subscription>,
 }
@@ -72,16 +75,21 @@ impl VisualMapPanel {
     }
 
     fn file_path(&self, cx: &App) -> Option<std::path::PathBuf> {
-        self.editor.as_ref().map(|ed| ed.read(cx).document.read().unwrap().path().to_path_buf())
+        self.editor
+            .as_ref()
+            .map(|ed| ed.read(cx).document.read().expect("document read lock").path().to_path_buf())
     }
 
     fn buffer_len(&self, cx: &App) -> usize {
-        self.editor.as_ref().map(|ed| ed.read(cx).document.read().unwrap().buffer.len()).unwrap_or(0)
+        self.editor
+            .as_ref()
+            .map(|ed| ed.read(cx).document.read().expect("document read lock").buffer.len())
+            .unwrap_or(0)
     }
 
     fn update_scrollbar(&mut self, cx: &mut Context<Self>) {
         let buffer_len = self.buffer_len(cx);
-        let total_rows = (buffer_len + self.cols - 1) / self.cols;
+        let total_rows = buffer_len.div_ceil(self.cols);
         let pixel_size_px = px(self.pixel_size as f32);
         self.scroll_offset = self.scroll_offset.min(total_rows.saturating_sub(1));
         self.scroll_handle.set_offset(point(px(0.), -(self.scroll_offset as f32 * pixel_size_px)));
@@ -93,7 +101,7 @@ impl VisualMapPanel {
         if buffer_len == 0 {
             return;
         }
-        let total_rows = (buffer_len + self.cols - 1) / self.cols;
+        let total_rows = buffer_len.div_ceil(self.cols);
 
         let max_offset = total_rows.saturating_sub(1).max(0) as i32;
         let delta_y_pixels = event.delta.pixel_delta(pixel_size_px).y.as_f32();
@@ -128,13 +136,13 @@ impl VisualMapPanel {
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window);
         self.is_dragging = true;
-        if let Some(offset) = self.offset_from_point_clamped(event.position, cx) {
-            if let Some(editor) = &self.editor {
-                editor.update(cx, |editor, cx| {
-                    editor.set_cursor_offset(offset);
-                    cx.notify();
-                });
-            }
+        if let Some(offset) = self.offset_from_point_clamped(event.position, cx)
+            && let Some(editor) = &self.editor
+        {
+            editor.update(cx, |editor, cx| {
+                editor.set_cursor_offset(offset);
+                cx.notify();
+            });
         }
     }
 
@@ -151,41 +159,40 @@ impl VisualMapPanel {
         if buffer_len == 0 {
             return;
         }
-        let total_rows = (buffer_len + self.cols - 1) / self.cols;
+        let total_rows = buffer_len.div_ceil(self.cols);
         if handle_row != self.scroll_offset {
             self.scroll_offset = handle_row.min(total_rows.saturating_sub(1));
             cx.notify();
         }
 
-        if self.is_dragging {
-            if let Some(offset) = self.offset_from_point_clamped(event.position, cx) {
-                if let Some(editor) = &self.editor {
-                    editor.update(cx, |editor, cx| {
-                        editor.set_cursor_offset(offset);
-                        cx.notify();
-                    });
-                }
-            }
+        if self.is_dragging
+            && let Some(offset) = self.offset_from_point_clamped(event.position, cx)
+            && let Some(editor) = &self.editor
+        {
+            editor.update(cx, |editor, cx| {
+                editor.set_cursor_offset(offset);
+                cx.notify();
+            });
         }
 
         let mut hovered = None;
-        if let Some(bounds) = self.last_bounds.get() {
-            if bounds.contains(&event.position) {
-                let rel_x = event.position.x - bounds.left();
-                let rel_y = event.position.y - bounds.top();
+        if let Some(bounds) = self.last_bounds.get()
+            && bounds.contains(&event.position)
+        {
+            let rel_x = event.position.x - bounds.left();
+            let rel_y = event.position.y - bounds.top();
 
-                let col = (rel_x.as_f32() / self.pixel_size as f32) as usize;
-                if col < self.cols {
-                    let row = (rel_y.as_f32() / self.pixel_size as f32) as usize + self.scroll_offset;
-                    let offset = row * self.cols + col;
+            let col = (rel_x.as_f32() / self.pixel_size as f32) as usize;
+            if col < self.cols {
+                let row = (rel_y.as_f32() / self.pixel_size as f32) as usize + self.scroll_offset;
+                let offset = row * self.cols + col;
 
-                    if offset < buffer_len {
-                        if let Some(editor) = &self.editor {
-                            let doc = editor.read(cx).document.read().unwrap();
-                            let byte = doc.buffer.get_range(offset, 1)[0];
-                            hovered = Some((offset, byte));
-                        }
-                    }
+                if offset < buffer_len
+                    && let Some(editor) = &self.editor
+                {
+                    let doc = editor.read(cx).document.read().expect("document read lock");
+                    let byte = doc.buffer.get_range(offset, 1)[0];
+                    hovered = Some((offset, byte));
                 }
             }
         }
@@ -261,7 +268,7 @@ impl Panel for VisualMapPanel {
             pixel_size: self.pixel_size,
             color_mode: self.color_mode,
         };
-        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(map_state).unwrap());
+        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(map_state).expect("serialize VisualMapPanelState"));
         state
     }
 }
@@ -534,7 +541,6 @@ impl Element for VisualMapElement {
         _window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        ()
     }
 
     fn paint(
@@ -551,7 +557,7 @@ impl Element for VisualMapElement {
             panel.read(cx).last_bounds.set(Some(bounds));
         }
 
-        let doc = self.document.read().unwrap();
+        let doc = self.document.read().expect("document read lock");
         let buffer = &doc.buffer;
         let buffer_len = buffer.len();
 

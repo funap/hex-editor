@@ -61,17 +61,17 @@ pub const COMMENT_WIDTH: f32 = 300.0;
 
 #[inline]
 fn format_offset_08(offset: usize) -> SharedString {
-    static DIGITS: &[u8; 16] = b"0123456789abcdef";
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [b'0'; 8];
     let mut val = offset;
     for i in (0..8).rev() {
         buf[i] = DIGITS[val & 0xf];
         val >>= 4;
     }
-    SharedString::from(std::str::from_utf8(&buf).unwrap().to_string())
+    SharedString::from(std::str::from_utf8(&buf).expect("valid ascii utf8").to_string())
 }
 
-static HEX_STR_TABLE: [&str; 256] = [
+const HEX_STR_TABLE: [&str; 256] = [
     "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0a", "0b", "0c", "0d", "0e", "0f", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
     "1a", "1b", "1c", "1d", "1e", "1f", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "2a", "2b", "2c", "2d", "2e", "2f", "30", "31", "32", "33",
     "34", "35", "36", "37", "38", "39", "3a", "3b", "3c", "3d", "3e", "3f", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "4a", "4b", "4c", "4d",
@@ -84,9 +84,9 @@ static HEX_STR_TABLE: [&str; 256] = [
     "ea", "eb", "ec", "ed", "ee", "ef", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "fa", "fb", "fc", "fd", "fe", "ff",
 ];
 
-static HEADER_HEX_LABELS: [&str; 16] = ["+0", "+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8", "+9", "+A", "+B", "+C", "+D", "+E", "+F"];
+const HEADER_HEX_LABELS: [&str; 16] = ["+0", "+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8", "+9", "+A", "+B", "+C", "+D", "+E", "+F"];
 
-fn row_highlights<'a>(highlights: &'a [(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &'a [(Range<usize>, Hsla)] {
+fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
     if highlights.is_empty() {
         return &[];
     }
@@ -287,6 +287,12 @@ impl HexView {
         cx.notify();
     }
 
+    pub fn set_highlights_arc(&mut self, highlights: Arc<Vec<(Range<usize>, Hsla)>>, cx: &mut Context<Self>) {
+        self.max_highlight_len = highlights.iter().map(|(r, _)| r.end.saturating_sub(r.start)).max().unwrap_or(0);
+        self.highlights = highlights;
+        cx.notify();
+    }
+
     pub fn set_highlight_ranges(&mut self, ranges: Vec<Range<usize>>, cx: &mut Context<Self>) {
         let highlight_color = cx.theme().accent;
         let highlights: Vec<_> = ranges.into_iter().map(|range| (range, highlight_color)).collect();
@@ -314,7 +320,7 @@ impl HexView {
         let start_byte = line_starts.get(current_top).unwrap_or(0);
         let end_row = (current_top + 30).min(line_starts.len());
         let end_byte = if end_row < line_starts.len() {
-            line_starts.get(end_row).unwrap()
+            line_starts.get(end_row).expect("valid line start at end_row")
         } else {
             editor.total_size()
         };
@@ -617,6 +623,7 @@ impl HexView {
         Some(line_offset + byte_idx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_hex_row(
         row_idx: usize,
         doc: &Document,
@@ -1031,12 +1038,8 @@ impl Render for HexView {
 
         let header = if self.show_header {
             let mut hex_cols = Vec::with_capacity(max_bytes_per_row);
-            for i in 0..max_bytes_per_row {
-                let label = if i < 16 {
-                    SharedString::from(HEADER_HEX_LABELS[i])
-                } else {
-                    SharedString::from(format!("+{:X}", i))
-                };
+            for label_str in HEADER_HEX_LABELS.iter().take(max_bytes_per_row) {
+                let label = SharedString::from(*label_str);
                 hex_cols.push(
                     div()
                         .w(px(HEX_BYTE_WIDTH + HEX_GAP))
@@ -1045,6 +1048,19 @@ impl Render for HexView {
                         .text_color(theme.muted_foreground)
                         .child(label),
                 );
+            }
+            if max_bytes_per_row > HEADER_HEX_LABELS.len() {
+                for i in HEADER_HEX_LABELS.len()..max_bytes_per_row {
+                    let label = SharedString::from(format!("+{:X}", i));
+                    hex_cols.push(
+                        div()
+                            .w(px(HEX_BYTE_WIDTH + HEX_GAP))
+                            .text_center()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(label),
+                    );
+                }
             }
 
             div()
@@ -1286,16 +1302,16 @@ impl Render for HexView {
                     cx.notify();
                     return;
                 }
-                if this.is_selecting {
-                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
-                        this.editor.update(cx, |editor, cx| {
-                            let prev_end = editor.selection_end;
-                            if prev_end != Some(target_pos) {
-                                editor.continue_drag(target_pos);
-                                cx.notify();
-                            }
-                        });
-                    }
+                if this.is_selecting
+                    && let Some(target_pos) = this.offset_from_point(event.position, cx)
+                {
+                    this.editor.update(cx, |editor, cx| {
+                        let prev_end = editor.selection_end;
+                        if prev_end != Some(target_pos) {
+                            editor.continue_drag(target_pos);
+                            cx.notify();
+                        }
+                    });
                 }
             }))
             .on_mouse_up(
@@ -1365,7 +1381,7 @@ impl Render for HexView {
                                 let editor = view_read.editor.read(cx);
                                 let parse_result = editor.parse_result.clone();
                                 let collapsed_structs = Arc::new(editor.collapsed_struct_ids.clone());
-                                let doc = editor.document.read().unwrap();
+                                let doc = editor.document.read().expect("document read lock");
                                 let line_starts = editor.line_starts();
                                 let cursor_offset = editor.cursor_offset;
                                 let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {

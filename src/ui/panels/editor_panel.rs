@@ -158,7 +158,7 @@ impl EditorPanel {
     }
 
     pub fn path(&self, cx: &App) -> std::path::PathBuf {
-        self.editor.read(cx).document.read().unwrap().path().to_path_buf()
+        self.editor.read(cx).document.read().expect("document read lock").path().to_path_buf()
     }
 
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,8 +236,26 @@ impl EditorPanel {
     }
 
     fn update_highlights(&mut self, cx: &mut Context<Self>) {
-        let editor = self.editor.read(cx);
+        let (parse_highlights_arc, search_query) = {
+            let editor = self.editor.read(cx);
+            let search_query = if self.is_search_visible {
+                self.search_bar.read(cx).query(cx)
+            } else {
+                String::new()
+            };
+            let highlights_arc = editor.parse_result.as_ref().map(|res| res.index.highlights.clone());
+            (highlights_arc, search_query)
+        };
 
+        if !self.is_search_visible || search_query.is_empty() {
+            let arc = parse_highlights_arc.unwrap_or_else(|| std::sync::Arc::new(Vec::new()));
+            self.hex_view.update(cx, |view, cx| {
+                view.set_highlights_arc(arc, cx);
+            });
+            return;
+        }
+
+        let editor = self.editor.read(cx);
         // 1. Update structure highlights cache if needed
         let current_parse_id = editor.parse_result.as_ref().map(|r| format!("{}-{}", r.definition_id, r.total_parsed_bytes));
         if current_parse_id != self.last_parse_id {
@@ -250,23 +268,28 @@ impl EditorPanel {
         // 2. Add all structure highlights from cache
         highlights.extend(self.cached_structure_highlights.iter().cloned());
 
-        // 3. Add all search highlights
-        if self.is_search_visible {
-            let bar = self.search_bar.read(cx);
-            let query = bar.query(cx);
-            if !query.is_empty() {
-                let mode = bar.mode();
-                let pattern_len = match mode {
-                    crate::core::search::SearchMode::Text => query.len(),
-                    crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&query).map(|pat| pat.len()).unwrap_or(0),
-                };
+        let bar = self.search_bar.read(cx);
+        let query = bar.query(cx);
+        if !query.is_empty() {
+            let mode = bar.mode();
+            let pattern_len = match mode {
+                crate::core::search::SearchMode::Text => query.len(),
+                crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&query).map(|pat| pat.len()).unwrap_or(0),
+            };
 
-                if pattern_len > 0 {
-                    let theme = cx.theme();
-                    for &pos in &editor.search_state.results {
-                        let end = pos + pattern_len;
-                        highlights.push((pos..end, theme.yellow.opacity(0.4)));
-                    }
+            if pattern_len > 0 {
+                let theme = cx.theme();
+                let search_color = theme.accent;
+                let current_result_color = theme.success;
+                let current_offset = editor.current_search_result();
+
+                for &result_offset in &editor.search_state.results {
+                    let color = if Some(result_offset) == current_offset {
+                        current_result_color
+                    } else {
+                        search_color
+                    };
+                    highlights.push((result_offset..result_offset + pattern_len, color));
                 }
             }
         }
@@ -359,7 +382,7 @@ impl Panel for EditorPanel {
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.read(cx);
-        let doc = editor.document.read().unwrap();
+        let doc = editor.document.read().expect("document read lock");
 
         let mut name = doc
             .path()
@@ -397,7 +420,7 @@ impl Panel for EditorPanel {
     fn dump(&self, cx: &App) -> gpui_component::dock::PanelState {
         let mut state = gpui_component::dock::PanelState::new(self);
         let panel_state = EditorPanelState {
-            path: Some(self.editor.read(cx).document.read().unwrap().path().to_path_buf()),
+            path: Some(self.editor.read(cx).document.read().expect("document read lock").path().to_path_buf()),
         };
         state.info = gpui_component::dock::PanelInfo::panel(panel_state.to_value());
         state
@@ -429,7 +452,7 @@ pub struct EditorPanelState {
 impl EditorPanelState {
     #[allow(dead_code)]
     pub fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap()
+        serde_json::to_value(self).expect("serialize EditorPanelState")
     }
 
     #[allow(dead_code)]

@@ -136,10 +136,10 @@ impl ParsedField {
     }
 
     pub fn format_comment(&self) -> Option<String> {
-        if let Some(desc) = &self.description {
-            if !desc.is_empty() {
-                return Some(desc.clone());
-            }
+        if let Some(desc) = &self.description
+            && !desc.is_empty()
+        {
+            return Some(desc.clone());
         }
         if let Some(label) = &self.enum_label {
             return Some(label.clone());
@@ -167,7 +167,18 @@ pub struct StructureIndex {
     pub container_structs: Vec<ParsedField>,
     pub leaf_fields: Vec<ParsedField>,
     pub active_ranges: Vec<ActiveStructRange>,
-    pub highlights: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+    pub highlights: Arc<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseProgress {
+    pub definition_id: String,
+    pub fields: Vec<ParsedField>,
+    pub parsed_offset: usize,
+    pub total_bytes: usize,
+    pub is_done: bool,
+    pub errors: Vec<ParseError>,
+    pub parse_result: Option<Arc<ParseResult>>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,84 +209,68 @@ impl ParseResult {
     fn build_structure_index(fields: &[ParsedField]) -> StructureIndex {
         let mut highlights = Vec::new();
         Self::collect_highlights(fields, &mut highlights);
+        highlights.sort_by_key(|(range, _)| range.start);
 
         let mut raw_containers = Vec::new();
-        Self::collect_all_containers(fields, &mut raw_containers);
+        let mut container_seen = std::collections::HashSet::new();
+        Self::collect_all_containers(fields, &mut raw_containers, &mut container_seen);
 
         let mut raw_leaves = Vec::new();
-        Self::collect_all_leaves(fields, &mut raw_leaves);
+        let mut leaf_seen = std::collections::HashSet::new();
+        Self::collect_all_leaves(fields, &mut raw_leaves, &mut leaf_seen);
 
         let mut active_ranges = Vec::new();
-        Self::collect_active_struct_ranges(fields, 0, &mut active_ranges);
+        let mut range_seen = std::collections::HashSet::new();
+        Self::collect_active_struct_ranges(fields, 0, &mut active_ranges, &mut range_seen);
+        active_ranges.sort_unstable_by_key(|r| r.start);
 
         StructureIndex {
             container_structs: raw_containers,
             leaf_fields: raw_leaves,
             active_ranges,
-            highlights,
+            highlights: Arc::new(highlights),
         }
     }
 
-    fn collect_all_containers(fields: &[ParsedField], result: &mut Vec<ParsedField>) {
+    fn collect_all_containers(fields: &[ParsedField], result: &mut Vec<ParsedField>, seen: &mut std::collections::HashSet<(usize, usize, String)>) {
         for field in fields {
             if field.is_struct() {
-                if !result
-                    .iter()
-                    .any(|existing| existing.offset == field.offset && existing.size == field.size && existing.id == field.id)
-                {
+                let key = (field.offset, field.size, field.id.clone());
+                if seen.insert(key) {
                     result.push(field.clone());
                 }
             }
             if !field.children.is_empty() {
-                Self::collect_all_containers(&field.children, result);
+                Self::collect_all_containers(&field.children, result, seen);
             }
         }
     }
 
-    fn collect_all_leaves(fields: &[ParsedField], result: &mut Vec<ParsedField>) {
+    fn collect_all_leaves(fields: &[ParsedField], result: &mut Vec<ParsedField>, seen: &mut std::collections::HashSet<(usize, usize, String)>) {
         for field in fields {
             if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
-                if !result.iter().any(|existing| {
-                    existing.offset == field.offset
-                        && existing.size == field.size
-                        && (existing.id == field.id || existing.format_expression() == field.format_expression())
-                }) {
+                let key = (field.offset, field.size, field.id.clone());
+                if seen.insert(key) {
                     result.push(field.clone());
                 }
             }
             if !field.children.is_empty() {
-                Self::collect_all_leaves(&field.children, result);
+                Self::collect_all_leaves(&field.children, result, seen);
             }
         }
     }
 
     pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
-        if !self.index.highlights.is_empty() || self.fields.is_empty() {
-            self.index.highlights.clone()
-        } else {
-            let mut highlights = Vec::new();
-            Self::collect_highlights(&self.fields, &mut highlights);
-            highlights
-        }
+        self.index.highlights.as_ref().clone()
     }
 
     fn collect_highlights(fields: &[ParsedField], highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>) {
         for field in fields {
-            if !field.is_instance && field.size > 0 {
+            if field.size > 0 && !field.is_struct() {
                 highlights.push((field.offset..field.offset + field.size, field.color));
             }
             if !field.children.is_empty() {
                 Self::collect_highlights(&field.children, highlights);
-            }
-        }
-        for field in fields {
-            if field.is_instance && field.size > 0 && field.children.is_empty() {
-                if !highlights
-                    .iter()
-                    .any(|(range, _)| range.start <= field.offset && range.end >= field.offset + field.size)
-                {
-                    highlights.push((field.offset..field.offset + field.size, field.color));
-                }
             }
         }
     }
@@ -301,11 +296,6 @@ impl ParseResult {
     pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
         let end_offset = start_offset + len;
         let containers = &self.index.container_structs;
-        if containers.is_empty() && !self.fields.is_empty() {
-            let mut result = Vec::new();
-            Self::collect_container_structs_starting(&self.fields, start_offset, len, &mut result);
-            return result;
-        }
         let start_idx = containers.partition_point(|f| f.offset < start_offset);
         let mut result = Vec::new();
         for field in &containers[start_idx..] {
@@ -317,31 +307,9 @@ impl ParseResult {
         result
     }
 
-    fn collect_container_structs_starting<'a>(fields: &'a [ParsedField], start_offset: usize, len: usize, result: &mut Vec<&'a ParsedField>) {
-        let end_offset = start_offset + len;
-        for field in fields {
-            if field.is_struct() && field.offset >= start_offset && field.offset < end_offset {
-                if !result
-                    .iter()
-                    .any(|existing| existing.offset == field.offset && existing.size == field.size && existing.id == field.id)
-                {
-                    result.push(field);
-                }
-            }
-            if !field.children.is_empty() {
-                Self::collect_container_structs_starting(&field.children, start_offset, len, result);
-            }
-        }
-    }
-
     pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
         let end_offset = start_offset + len;
         let leaves = &self.index.leaf_fields;
-        if leaves.is_empty() && !self.fields.is_empty() {
-            let mut result = Vec::new();
-            Self::collect_leaf_fields_starting(&self.fields, start_offset, len, &mut result);
-            return result;
-        }
         let start_idx = leaves.partition_point(|f| f.offset < start_offset);
         let mut result = Vec::new();
         for field in &leaves[start_idx..] {
@@ -353,32 +321,13 @@ impl ParseResult {
         result
     }
 
-    fn collect_leaf_fields_starting<'a>(fields: &'a [ParsedField], start_offset: usize, len: usize, result: &mut Vec<&'a ParsedField>) {
-        let end_offset = start_offset + len;
-        for field in fields {
-            if field.offset >= start_offset && field.offset < end_offset {
-                if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
-                    if !result.iter().any(|existing| {
-                        existing.offset == field.offset
-                            && existing.size == field.size
-                            && (existing.id == field.id || existing.format_expression() == field.format_expression())
-                    }) {
-                        result.push(field);
-                    }
-                }
-            }
-            if !field.children.is_empty() {
-                Self::collect_leaf_fields_starting(&field.children, start_offset, len, result);
-            }
-        }
-    }
-
     pub fn find_active_struct_ranges(&self, start_offset: usize, len: usize) -> Vec<(usize, usize, usize, String)> {
         let row_end = start_offset + len;
         let ranges = &self.index.active_ranges;
         if ranges.is_empty() && !self.fields.is_empty() {
             let mut raw_ranges = Vec::new();
-            Self::collect_active_struct_ranges(&self.fields, 0, &mut raw_ranges);
+            let mut range_seen = std::collections::HashSet::new();
+            Self::collect_active_struct_ranges(&self.fields, 0, &mut raw_ranges, &mut range_seen);
             return raw_ranges
                 .into_iter()
                 .filter(|r| r.start < row_end && r.end > start_offset)
@@ -392,11 +341,17 @@ impl ParseResult {
             .collect()
     }
 
-    fn collect_active_struct_ranges(fields: &[ParsedField], depth: usize, ranges: &mut Vec<ActiveStructRange>) {
+    fn collect_active_struct_ranges(
+        fields: &[ParsedField],
+        depth: usize,
+        ranges: &mut Vec<ActiveStructRange>,
+        seen: &mut std::collections::HashSet<(usize, usize, String)>,
+    ) {
         for field in fields {
             if field.is_struct() {
                 let end = field.offset + field.size;
-                if !ranges.iter().any(|r| r.start == field.offset && r.end == end && r.id == field.id) {
+                let key = (field.offset, end, field.id.clone());
+                if seen.insert(key) {
                     ranges.push(ActiveStructRange {
                         start: field.offset,
                         end,
@@ -405,7 +360,7 @@ impl ParseResult {
                     });
                 }
                 if !field.children.is_empty() {
-                    Self::collect_active_struct_ranges(&field.children, depth + 1, ranges);
+                    Self::collect_active_struct_ranges(&field.children, depth + 1, ranges, seen);
                 }
             }
         }

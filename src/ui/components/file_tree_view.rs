@@ -58,16 +58,14 @@ fn build_file_items(ignorer: &Ignorer, root: &PathBuf, path: &PathBuf) -> Vec<Tr
     items
 }
 
-fn update_item_children_recursive(items: &mut Vec<TreeItem>, target_id: &str, children: Vec<TreeItem>) -> bool {
+fn update_item_children_recursive(items: &mut [TreeItem], target_id: &str, children: Vec<TreeItem>) -> bool {
     for item in items.iter_mut() {
         if item.id == target_id {
             item.children = children;
             return true;
         }
-        if item.is_folder() {
-            if update_item_children_recursive(&mut item.children, target_id, children.clone()) {
-                return true;
-            }
+        if item.is_folder() && update_item_children_recursive(&mut item.children, target_id, children.clone()) {
+            return true;
         }
     }
     false
@@ -77,7 +75,7 @@ impl FileTreeView {
     pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
 
-        let this = Self {
+        Self {
             tree_state: tree_state.clone(),
             selected_item: None,
             selected_items: Vec::new(),
@@ -86,9 +84,7 @@ impl FileTreeView {
             root_path: None,
             loaded_paths: HashSet::new(),
             items: Vec::new(),
-        };
-
-        this
+        }
     }
 
     fn load_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -406,7 +402,7 @@ pub struct FileTreeViewState {
 impl FileTreeViewState {
     #[allow(dead_code)]
     pub fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap()
+        serde_json::to_value(self).expect("serialize FileTreeViewState")
     }
 
     #[allow(dead_code)]

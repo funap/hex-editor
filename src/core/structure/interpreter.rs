@@ -2,7 +2,7 @@ use crate::core::structure::definition::*;
 use crate::core::structure::expression::{EvalContext, ExprEvaluator};
 use crate::core::structure::palette;
 use crate::core::structure::stream::*;
-use crate::core::structure::types::{FieldValue, ParseError, ParseResult, ParsedField};
+use crate::core::structure::types::{FieldValue, ParseError, ParseProgress, ParseResult, ParsedField};
 use std::collections::HashMap;
 
 pub struct KaitaiInterpreter {
@@ -34,43 +34,43 @@ fn type_as_str(val: &serde_yaml::Value) -> Option<String> {
 /// Helper: parse parameterized type string, e.g. "utf8_codepoint(_io.pos)" -> ("utf8_codepoint", ["_io.pos"])
 fn parse_type_with_args(type_str: &str) -> (String, Vec<String>) {
     let s = type_str.trim();
-    if let Some(paren_open) = s.find('(') {
-        if s.ends_with(')') {
-            let type_name = s[..paren_open].trim().to_string();
-            let args_str = &s[paren_open + 1..s.len() - 1];
-            let mut args = Vec::new();
-            let mut current = String::new();
-            let mut paren_depth = 0;
-            for ch in args_str.chars() {
-                match ch {
-                    '(' => {
-                        paren_depth += 1;
-                        current.push(ch);
+    if let Some(paren_open) = s.find('(')
+        && s.ends_with(')')
+    {
+        let type_name = s[..paren_open].trim().to_string();
+        let args_str = &s[paren_open + 1..s.len() - 1];
+        let mut args = Vec::new();
+        let mut current = String::new();
+        let mut paren_depth = 0;
+        for ch in args_str.chars() {
+            match ch {
+                '(' => {
+                    paren_depth += 1;
+                    current.push(ch);
+                }
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
                     }
-                    ')' => {
-                        if paren_depth > 0 {
-                            paren_depth -= 1;
-                        }
-                        current.push(ch);
+                    current.push(ch);
+                }
+                ',' if paren_depth == 0 => {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        args.push(trimmed);
                     }
-                    ',' if paren_depth == 0 => {
-                        let trimmed = current.trim().to_string();
-                        if !trimmed.is_empty() {
-                            args.push(trimmed);
-                        }
-                        current.clear();
-                    }
-                    _ => {
-                        current.push(ch);
-                    }
+                    current.clear();
+                }
+                _ => {
+                    current.push(ch);
                 }
             }
-            let trimmed = current.trim().to_string();
-            if !trimmed.is_empty() {
-                args.push(trimmed);
-            }
-            return (type_name, args);
         }
+        let trimmed = current.trim().to_string();
+        if !trimmed.is_empty() {
+            args.push(trimmed);
+        }
+        return (type_name, args);
     }
     (s.to_string(), Vec::new())
 }
@@ -78,8 +78,8 @@ fn parse_type_with_args(type_str: &str) -> (String, Vec<String>) {
 /// Helper: check if type value is a switch-on/cases
 fn type_as_switch(val: &serde_yaml::Value) -> Option<(String, HashMap<String, String>)> {
     let map = val.as_mapping()?;
-    let switch_on = map.get(&serde_yaml::Value::String("switch-on".into()))?.as_str()?.to_string();
-    let cases_val = map.get(&serde_yaml::Value::String("cases".into()))?.as_mapping()?;
+    let switch_on = map.get("switch-on")?.as_str()?.to_string();
+    let cases_val = map.get("cases")?.as_mapping()?;
     let mut cases = HashMap::new();
     for (k, v) in cases_val {
         let key = match k {
@@ -89,7 +89,22 @@ fn type_as_switch(val: &serde_yaml::Value) -> Option<(String, HashMap<String, St
             _ => continue,
         };
         if let Some(s) = v.as_str() {
-            cases.insert(key, s.to_string());
+            cases.insert(key.clone(), s.to_string());
+            let trimmed = key.trim();
+            if let Ok(int_val) = i64::from_str_radix(trimmed.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+                cases.insert(int_val.to_string(), s.to_string());
+                cases.insert(format!("0x{:x}", int_val), s.to_string());
+                cases.insert(format!("0x{:X}", int_val), s.to_string());
+                cases.insert(format!("0x{:04x}", int_val), s.to_string());
+                cases.insert(format!("0x{:04X}", int_val), s.to_string());
+            }
+            if let Ok(int_val) = trimmed.parse::<i64>() {
+                cases.insert(int_val.to_string(), s.to_string());
+                cases.insert(format!("0x{:x}", int_val), s.to_string());
+                cases.insert(format!("0x{:X}", int_val), s.to_string());
+                cases.insert(format!("0x{:04x}", int_val), s.to_string());
+                cases.insert(format!("0x{:04X}", int_val), s.to_string());
+            }
         }
     }
     Some((switch_on, cases))
@@ -104,10 +119,10 @@ fn normalize_enum(raw: &HashMap<String, serde_yaml::Value>) -> HashMap<String, S
                 result.insert(key.clone(), s.clone());
             }
             serde_yaml::Value::Mapping(m) => {
-                if let Some(id_val) = m.get(&serde_yaml::Value::String("id".into())) {
-                    if let Some(s) = id_val.as_str() {
-                        result.insert(key.clone(), s.to_string());
-                    }
+                if let Some(id_val) = m.get("id")
+                    && let Some(s) = id_val.as_str()
+                {
+                    result.insert(key.clone(), s.to_string());
                 }
             }
             _ => {}
@@ -122,7 +137,7 @@ fn collect_enums(ksy: &KsyDefinition) -> HashMap<String, HashMap<String, String>
         all.insert(name.clone(), normalize_enum(raw));
     }
     fn collect_type_enums(types: &HashMap<String, KsyType>, out: &mut HashMap<String, HashMap<String, String>>) {
-        for (_name, t) in types {
+        for t in types.values() {
             for (ename, raw) in &t.enums {
                 out.insert(ename.clone(), normalize_enum(raw));
             }
@@ -134,10 +149,11 @@ fn collect_enums(ksy: &KsyDefinition) -> HashMap<String, HashMap<String, String>
 }
 
 impl KaitaiInterpreter {
-    pub fn new(mut ksy: KsyDefinition) -> Self {
-        ksy.compile_expressions();
+    pub fn new(ksy: KsyDefinition) -> Self {
         let global_endian = ksy.meta.endian.clone().unwrap_or_else(|| "le".to_string());
         let all_enums = collect_enums(&ksy);
+        let mut ksy = ksy;
+        ksy.compile_expressions();
         Self {
             ksy,
             stream_size: 0,
@@ -154,25 +170,139 @@ impl KaitaiInterpreter {
         }
     }
 
-    pub fn parse(mut self, stream: &mut KaitaiStream) -> ParseResult {
+    pub fn parse(self, stream: &mut KaitaiStream) -> ParseResult {
+        self.parse_with_progress(stream, |_| {})
+    }
+
+    pub fn parse_with_progress<F>(self, stream: &mut KaitaiStream, on_progress: F) -> ParseResult
+    where
+        F: FnMut(&ParseProgress),
+    {
+        self.parse_with_progress_cancellable(stream, None, on_progress)
+    }
+
+    pub fn parse_with_progress_cancellable<F>(
+        mut self,
+        stream: &mut KaitaiStream,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+        mut on_progress: F,
+    ) -> ParseResult
+    where
+        F: FnMut(&ParseProgress),
+    {
         // Try to determine stream size
         self.stream_size = stream.size() as usize;
+        let def_id = self.ksy.meta.id.clone();
+        let total_bytes = self.stream_size;
 
         let mut fields = Vec::new();
         let seq = self.ksy.seq.clone();
         let types = self.ksy.types.clone();
         let enums = self.ksy.enums.clone();
+
+        let mut last_notify_time = std::time::Instant::now();
+        let mut last_notify_offset = 0usize;
+
+        // Initial progress notification
+        on_progress(&ParseProgress {
+            definition_id: def_id.clone(),
+            fields: Vec::new(),
+            parsed_offset: stream.pos() as usize,
+            total_bytes,
+            is_done: false,
+            errors: Vec::new(),
+            parse_result: None,
+        });
+
         for attr in &seq {
-            fields.extend(self.parse_attr_repeated(attr, stream, &types, &enums, false));
-        }
-        let instances = self.ksy.instances.clone();
-        for (id, mut attr) in instances {
-            if attr.pos.is_some() || attr.value.is_some() {
-                attr.id = Some(id);
-                fields.extend(self.parse_attr_repeated(&attr, stream, &types, &enums, true));
+            if let Some(token) = cancel_token
+                && token.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            let parsed = self.parse_attr_repeated_cb_cancellable(attr, stream, &types, &enums, false, cancel_token, &mut |_items, current_offset| {
+                let now = std::time::Instant::now();
+                if now.duration_since(last_notify_time).as_millis() >= 50 || current_offset.saturating_sub(last_notify_offset) >= 65536 {
+                    last_notify_time = now;
+                    last_notify_offset = current_offset;
+
+                    on_progress(&ParseProgress {
+                        definition_id: def_id.clone(),
+                        fields: Vec::new(),
+                        parsed_offset: current_offset,
+                        total_bytes,
+                        is_done: false,
+                        errors: Vec::new(),
+                        parse_result: None,
+                    });
+                }
+            });
+            fields.extend(parsed);
+
+            let now = std::time::Instant::now();
+            let cur_pos = stream.pos() as usize;
+            if now.duration_since(last_notify_time).as_millis() >= 50 || cur_pos.saturating_sub(last_notify_offset) >= 65536 {
+                last_notify_time = now;
+                last_notify_offset = cur_pos;
+
+                on_progress(&ParseProgress {
+                    definition_id: def_id.clone(),
+                    fields: Vec::new(),
+                    parsed_offset: cur_pos,
+                    total_bytes,
+                    is_done: false,
+                    errors: Vec::new(),
+                    parse_result: None,
+                });
             }
         }
-        ParseResult::new(self.ksy.meta.id.clone(), fields, stream.pos() as usize, self.errors.into_inner())
+
+        let instances = self.ksy.instances.clone();
+        for (id, mut attr) in instances {
+            if let Some(token) = cancel_token
+                && token.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            if attr.pos.is_some() || attr.value.is_some() {
+                attr.id = Some(id);
+                let parsed = self.parse_attr_repeated_cb_cancellable(&attr, stream, &types, &enums, true, cancel_token, &mut |_items, current_offset| {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_notify_time).as_millis() >= 50 || current_offset.saturating_sub(last_notify_offset) >= 65536 {
+                        last_notify_time = now;
+                        last_notify_offset = current_offset;
+
+                        on_progress(&ParseProgress {
+                            definition_id: def_id.clone(),
+                            fields: Vec::new(),
+                            parsed_offset: current_offset,
+                            total_bytes,
+                            is_done: false,
+                            errors: Vec::new(),
+                            parse_result: None,
+                        });
+                    }
+                });
+                fields.extend(parsed);
+            }
+        }
+
+        let final_offset = stream.pos() as usize;
+        let final_errors = self.errors.into_inner();
+        let final_result = ParseResult::new(def_id.clone(), fields, final_offset, final_errors.clone());
+        let final_result_arc = std::sync::Arc::new(final_result.clone());
+
+        on_progress(&ParseProgress {
+            definition_id: def_id.clone(),
+            fields: Vec::new(),
+            parsed_offset: final_offset,
+            total_bytes,
+            is_done: true,
+            errors: final_errors.clone(),
+            parse_result: Some(final_result_arc),
+        });
+
+        final_result
     }
 
     fn make_eval_ctx<'b>(&'b self, stream: &KaitaiStream) -> EvalContext<'b> {
@@ -190,6 +320,21 @@ impl KaitaiInterpreter {
         }
     }
 
+    fn make_eval_ctx_silent<'b>(&'b self, stream: &KaitaiStream) -> EvalContext<'b> {
+        EvalContext {
+            values: &self.context,
+            string_values: &self.string_context,
+            byte_arrays: &self.byte_arrays,
+            base_path: &self.id_stack,
+            stream_eof: stream.is_eof(),
+            stream_size: self.stream_size,
+            stream_pos: stream.pos() as usize,
+            enums: &self.all_enums,
+            errors: None,
+            instance_resolver: None,
+        }
+    }
+
     fn parse_attr_repeated(
         &mut self,
         attr: &KsyAttr,
@@ -198,6 +343,23 @@ impl KaitaiInterpreter {
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
         is_instance: bool,
     ) -> Vec<ParsedField> {
+        self.parse_attr_repeated_cb_cancellable(attr, stream, types, enums, is_instance, None, &mut |_, _| {})
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn parse_attr_repeated_cb_cancellable<F>(
+        &mut self,
+        attr: &KsyAttr,
+        stream: &mut KaitaiStream,
+        types: &HashMap<String, KsyType>,
+        enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
+        is_instance: bool,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+        on_item: &mut F,
+    ) -> Vec<ParsedField>
+    where
+        F: FnMut(&[ParsedField], usize),
+    {
         if self.recursion_depth > MAX_RECURSION {
             return Vec::new();
         }
@@ -234,9 +396,15 @@ impl KaitaiInterpreter {
                             self.resolve_count(expr, stream)
                         };
                         for i in 0..count {
+                            if let Some(token) = cancel_token
+                                && token.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                break;
+                            }
                             let pos_before = stream.pos();
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                                 results.push(field);
+                                on_item(&results, stream.pos() as usize);
                                 if stream.pos() <= pos_before && attr.pos.is_none() {
                                     break;
                                 }
@@ -249,9 +417,15 @@ impl KaitaiInterpreter {
                 "eos" => {
                     let mut i = 0;
                     while !stream.is_eof() {
+                        if let Some(token) = cancel_token
+                            && token.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            break;
+                        }
                         let pos_before = stream.pos();
                         if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                             results.push(field);
+                            on_item(&results, stream.pos() as usize);
                             if stream.pos() <= pos_before && attr.pos.is_none() {
                                 break;
                             }
@@ -265,9 +439,15 @@ impl KaitaiInterpreter {
                     if let Some(until) = &attr.repeat_until {
                         let mut i = 0;
                         while !stream.is_eof() {
+                            if let Some(token) = cancel_token
+                                && token.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                break;
+                            }
                             let pos_before = stream.pos();
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                                 results.push(field);
+                                on_item(&results, stream.pos() as usize);
                                 let ctx = self.make_eval_ctx(stream);
                                 let until_holds = if let Some(ref ast) = attr.compiled_repeat_until {
                                     ExprEvaluator::eval_ast_bool(ast, &ctx)
@@ -292,6 +472,7 @@ impl KaitaiInterpreter {
         } else {
             if let Some(field) = self.parse_attr_once(attr, None, stream, types, enums, is_instance) {
                 results.push(field);
+                on_item(&results, stream.pos() as usize);
             }
         }
         results
@@ -343,21 +524,22 @@ impl KaitaiInterpreter {
         }
 
         // Contents-based size
-        if !attr.size_eos && (size.is_none() || size == Some(0)) {
-            if let Some(expected_contents) = &attr.contents {
-                if let Some(arr) = expected_contents.as_sequence() {
-                    let mut sum = 0;
-                    for v in arr {
-                        if let Some(s) = v.as_str() {
-                            sum += s.len();
-                        } else {
-                            sum += 1;
-                        }
+        if !attr.size_eos
+            && (size.is_none() || size == Some(0))
+            && let Some(expected_contents) = &attr.contents
+        {
+            if let Some(arr) = expected_contents.as_sequence() {
+                let mut sum = 0;
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        sum += s.len();
+                    } else {
+                        sum += 1;
                     }
-                    size = Some(sum);
-                } else if let Some(s) = expected_contents.as_str() {
-                    size = Some(s.len());
                 }
+                size = Some(sum);
+            } else if let Some(s) = expected_contents.as_str() {
+                size = Some(s.len());
             }
         }
         let computed_size = size.unwrap_or(0);
@@ -370,26 +552,28 @@ impl KaitaiInterpreter {
                 if let Some(s) = type_as_str(v) {
                     let (tname, args) = parse_type_with_args(&s);
                     Some((tname, args))
+                } else if let Some((ref switch_on, ref cases)) = attr.compiled_switch {
+                    let ctx = self.make_eval_ctx(stream);
+                    let switch_val = ExprEvaluator::evaluate_rich(switch_on, &ctx);
+                    let switch_str = switch_val.to_string_val();
+                    let switch_int = switch_val.to_i64();
+                    let chosen = cases
+                        .get(&switch_str)
+                        .or_else(|| cases.get(&format!("\"{}\"", switch_str)))
+                        .or_else(|| cases.get(&switch_int.to_string()))
+                        .or_else(|| cases.get("_"));
+                    chosen.map(|s| parse_type_with_args(s))
                 } else if let Some((switch_on, cases)) = type_as_switch(v) {
                     let ctx = self.make_eval_ctx(stream);
                     let switch_val = ExprEvaluator::evaluate_rich(&switch_on, &ctx);
                     let switch_str = switch_val.to_string_val();
                     let switch_int = switch_val.to_i64();
-                    let chosen = if let Some(t) = cases.get(&switch_str) {
-                        Some(t.clone())
-                    } else if let Some(t) = cases.get(&format!("\"{}\"", switch_str)) {
-                        Some(t.clone())
-                    } else if let Some(t) = cases.get(&switch_int.to_string()) {
-                        Some(t.clone())
-                    } else if let Some(t) = cases.get("_") {
-                        Some(t.clone())
-                    } else {
-                        None
-                    };
-                    chosen.map(|s| {
-                        let (tname, args) = parse_type_with_args(&s);
-                        (tname, args)
-                    })
+                    let chosen = cases
+                        .get(&switch_str)
+                        .or_else(|| cases.get(&format!("\"{}\"", switch_str)))
+                        .or_else(|| cases.get(&switch_int.to_string()))
+                        .or_else(|| cases.get("_"));
+                    chosen.map(|s| parse_type_with_args(s))
                 } else {
                     None
                 }
@@ -416,12 +600,10 @@ impl KaitaiInterpreter {
             let buf = self.read_remaining(stream);
             let s = buf.len();
             Some((FieldValue::Bytes(buf), s, Vec::new()))
+        } else if computed_size > 0 {
+            stream.read_bytes(computed_size).map(|buf| (FieldValue::Bytes(buf), computed_size, Vec::new()))
         } else {
-            if computed_size > 0 {
-                stream.read_bytes(computed_size).map(|buf| (FieldValue::Bytes(buf), computed_size, Vec::new()))
-            } else {
-                Some((FieldValue::Bytes(Vec::new()), 0, Vec::new()))
-            }
+            Some((FieldValue::Bytes(Vec::new()), 0, Vec::new()))
         };
 
         // Restore position if we jumped
@@ -432,12 +614,11 @@ impl KaitaiInterpreter {
         let (mut value, final_size, children) = typed_result?;
 
         // Apply process transformation if present
-        if let Some(process_val) = &attr.process {
-            if let FieldValue::Bytes(ref bytes) = value {
-                if let Some(processed) = self.apply_process(process_val, bytes, stream) {
-                    value = FieldValue::Bytes(processed);
-                }
-            }
+        if let Some(process_val) = &attr.process
+            && let FieldValue::Bytes(ref bytes) = value
+            && let Some(processed) = self.apply_process(process_val, bytes, stream)
+        {
+            value = FieldValue::Bytes(processed);
         }
 
         // Contents validation
@@ -446,49 +627,43 @@ impl KaitaiInterpreter {
         }
 
         // Context update
-        let mut field_id = attr.id.clone().unwrap_or_else(|| format!("unnamed_{}", self.field_count));
-        if let Some(i) = index {
-            field_id = format!("{}[{}]", field_id, i);
-        }
-        let full_id = if self.id_stack.is_empty() {
-            field_id.clone()
-        } else {
-            format!("{}.{}", self.id_stack.join("."), field_id)
-        };
-        self.context.insert(full_id.clone(), value.to_i64());
-        if let Some(ref raw_id) = attr.id {
+        let field_id = if let Some(ref raw_id) = attr.id {
+            let mut fid = raw_id.clone();
+            if let Some(i) = index {
+                fid = format!("{}[{}]", fid, i);
+            }
+            let full_id = if self.id_stack.is_empty() {
+                fid.clone()
+            } else {
+                format!("{}.{}", self.id_stack.join("."), fid)
+            };
             let unindexed_id = if self.id_stack.is_empty() {
                 raw_id.clone()
             } else {
                 format!("{}.{}", self.id_stack.join("."), raw_id)
             };
+            self.context.insert(full_id.clone(), value.to_i64());
             self.context.insert(unindexed_id.clone(), value.to_i64());
             self.context.insert(raw_id.clone(), value.to_i64());
-        }
-        if let FieldValue::String(ref s) = value {
-            self.string_context.insert(full_id.clone(), s.clone());
-            if let Some(ref raw_id) = attr.id {
-                let unindexed_id = if self.id_stack.is_empty() {
-                    raw_id.clone()
-                } else {
-                    format!("{}.{}", self.id_stack.join("."), raw_id)
-                };
-                self.string_context.insert(unindexed_id, s.clone());
+
+            if let FieldValue::String(ref s) = value {
+                self.string_context.insert(full_id.clone(), s.clone());
+                self.string_context.insert(unindexed_id.clone(), s.clone());
                 self.string_context.insert(raw_id.clone(), s.clone());
             }
-        }
-        if let FieldValue::Bytes(ref b) = value {
-            self.byte_arrays.insert(full_id.clone(), b.clone());
-            if let Some(ref raw_id) = attr.id {
-                let unindexed_id = if self.id_stack.is_empty() {
-                    raw_id.clone()
-                } else {
-                    format!("{}.{}", self.id_stack.join("."), raw_id)
-                };
+            if let FieldValue::Bytes(ref b) = value {
+                self.byte_arrays.insert(full_id, b.clone());
                 self.byte_arrays.insert(unindexed_id, b.clone());
                 self.byte_arrays.insert(raw_id.clone(), b.clone());
             }
-        }
+            fid
+        } else {
+            if let Some(i) = index {
+                format!("unnamed_{}[{}]", self.field_count, i)
+            } else {
+                format!("unnamed_{}", self.field_count)
+            }
+        };
 
         // Enum label
         let enum_label = self.resolve_enum_label(attr, &value, enums);
@@ -512,6 +687,7 @@ impl KaitaiInterpreter {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_typed_value(
         &mut self,
         type_str: &str,
@@ -607,7 +783,7 @@ impl KaitaiInterpreter {
                         stream.read_bits_int_be(bits)?
                     };
                     // size representation: we round up to byte representation for highlight purposes
-                    let bytes_needed = (bits + 7) / 8;
+                    let bytes_needed = bits.div_ceil(8);
                     Some((FieldValue::U64(val), bytes_needed, Vec::new()))
                 } else {
                     None
@@ -665,9 +841,9 @@ impl KaitaiInterpreter {
                 return process::rotate_left(data, val as u32, 1).ok();
             }
         } else if let Some(map) = process_val.as_mapping() {
-            let algo = map.get(&serde_yaml::Value::String("algo".into()))?.as_str()?;
+            let algo = map.get("algo")?.as_str()?;
             if algo == "xor" {
-                let key_val = map.get(&serde_yaml::Value::String("key".into()))?;
+                let key_val = map.get("key")?;
                 let ctx = self.make_eval_ctx(stream);
                 if let Some(k_str) = key_val.as_str() {
                     let key = ExprEvaluator::eval_i64(k_str, &ctx);
@@ -682,6 +858,7 @@ impl KaitaiInterpreter {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_custom_type(
         &mut self,
         type_name: &str,
@@ -699,11 +876,11 @@ impl KaitaiInterpreter {
                 // Type not found (e.g. imported type like dos_datetime).
                 // Still consume the declared `size` bytes so the stream position stays correct.
                 let size_val = self.resolve_size_attr(attr, stream);
-                if let Some(sz) = size_val {
-                    if sz > 0 {
-                        let buf = stream.read_bytes(sz)?;
-                        return Some((FieldValue::Bytes(buf), sz, Vec::new()));
-                    }
+                if let Some(sz) = size_val
+                    && sz > 0
+                {
+                    let buf = stream.read_bytes(sz)?;
+                    return Some((FieldValue::Bytes(buf), sz, Vec::new()));
                 } else if attr.size_eos {
                     let buf = stream.read_bytes_remaining()?;
                     let sz = buf.len();
@@ -763,7 +940,7 @@ impl KaitaiInterpreter {
                 self.stream_size = sub_size;
                 let mut fields = Vec::new();
 
-                // Pre-evaluate pos-based instances before seq (in case seq size or elements depend on them)
+                // Pre-evaluate pos-based instances before seq (e.g. byte0 at pos: ofs)
                 let instances = type_def.instances.clone();
                 for (id, inst_attr) in &instances {
                     if inst_attr.pos.is_some() && inst_attr.value.is_none() {
@@ -773,12 +950,25 @@ impl KaitaiInterpreter {
                     }
                 }
 
-                // Pre-evaluate value instances that do not depend on stream bytes
+                // Pre-evaluate value instances without recording errors (in case seq sizes depend on them)
                 for (id, inst_attr) in &instances {
-                    if inst_attr.value.is_some() && inst_attr.pos.is_none() {
-                        let mut inst_copy = inst_attr.clone();
-                        inst_copy.id = Some(id.clone());
-                        self.parse_attr_repeated(&inst_copy, &mut sub_stream, &nested_types, &nested_enums, true);
+                    if inst_attr.value.is_some()
+                        && inst_attr.pos.is_none()
+                        && let Some(ref val_expr) = inst_attr.value
+                    {
+                        let ctx = self.make_eval_ctx_silent(&sub_stream);
+                        let val = if let Some(ref ast) = inst_attr.compiled_value {
+                            ExprEvaluator::eval_ast_i64(ast, &ctx)
+                        } else {
+                            ExprEvaluator::eval_i64(val_expr, &ctx)
+                        };
+                        let full_id = if self.id_stack.is_empty() {
+                            id.clone()
+                        } else {
+                            format!("{}.{}", self.id_stack.join("."), id)
+                        };
+                        self.context.insert(full_id, val);
+                        self.context.insert(id.clone(), val);
                     }
                 }
 
@@ -787,7 +977,7 @@ impl KaitaiInterpreter {
                     fields.extend(self.parse_attr_repeated(nested_attr, &mut sub_stream, &nested_types, &nested_enums, false));
                 }
 
-                // Evaluate remaining instances (e.g. value instances that compute over parsed bytes)
+                // Evaluate instances after seq so that instances can refer to parsed seq attributes
                 for (id, inst_attr) in instances {
                     if inst_attr.pos.is_some() || inst_attr.value.is_some() {
                         let mut inst_copy = inst_attr;
@@ -819,12 +1009,26 @@ impl KaitaiInterpreter {
                         self.parse_attr_repeated(&inst_copy, stream, &nested_types, &nested_enums, true);
                     }
                 }
-                // Pre-evaluate value instances
+
+                // Pre-evaluate value instances without recording errors (in case seq sizes depend on them)
                 for (id, inst_attr) in &instances {
-                    if inst_attr.value.is_some() && inst_attr.pos.is_none() {
-                        let mut inst_copy = inst_attr.clone();
-                        inst_copy.id = Some(id.clone());
-                        self.parse_attr_repeated(&inst_copy, stream, &nested_types, &nested_enums, true);
+                    if inst_attr.value.is_some()
+                        && inst_attr.pos.is_none()
+                        && let Some(ref val_expr) = inst_attr.value
+                    {
+                        let ctx = self.make_eval_ctx_silent(stream);
+                        let val = if let Some(ref ast) = inst_attr.compiled_value {
+                            ExprEvaluator::eval_ast_i64(ast, &ctx)
+                        } else {
+                            ExprEvaluator::eval_i64(val_expr, &ctx)
+                        };
+                        let full_id = if self.id_stack.is_empty() {
+                            id.clone()
+                        } else {
+                            format!("{}.{}", self.id_stack.join("."), id)
+                        };
+                        self.context.insert(full_id, val);
+                        self.context.insert(id.clone(), val);
                     }
                 }
 
@@ -834,7 +1038,7 @@ impl KaitaiInterpreter {
                     fields.extend(self.parse_attr_repeated(nested_attr, stream, &nested_types, &nested_enums, false));
                 }
 
-                // Evaluate remaining instances
+                // Evaluate instances after seq so that instances can refer to parsed seq attributes
                 for (id, inst_attr) in instances {
                     if inst_attr.pos.is_some() || inst_attr.value.is_some() {
                         let mut inst_copy = inst_attr;
@@ -863,7 +1067,7 @@ impl KaitaiInterpreter {
         let val = enum_def.get(&key)?;
         match val {
             serde_yaml::Value::String(s) => Some(s.clone()),
-            serde_yaml::Value::Mapping(m) => m.get(&serde_yaml::Value::String("id".into()))?.as_str().map(|s| s.to_string()),
+            serde_yaml::Value::Mapping(m) => m.get("id")?.as_str().map(|s| s.to_string()),
             _ => None,
         }
     }
@@ -883,15 +1087,14 @@ impl KaitaiInterpreter {
         } else if let Some(s) = expected.as_str() {
             expected_bytes.extend(s.as_bytes());
         }
-        if !expected_bytes.is_empty() {
-            if let FieldValue::Bytes(actual_bytes) = actual {
-                if actual_bytes != &expected_bytes {
-                    self.errors.borrow_mut().push(ParseError {
-                        message: "contents mismatch".into(),
-                        offset: stream.pos() as usize,
-                    });
-                }
-            }
+        if !expected_bytes.is_empty()
+            && let FieldValue::Bytes(actual_bytes) = actual
+            && actual_bytes != &expected_bytes
+        {
+            self.errors.borrow_mut().push(ParseError {
+                message: "contents mismatch".into(),
+                offset: stream.pos() as usize,
+            });
         }
     }
 

@@ -71,6 +71,8 @@ pub struct KsyAttr {
     pub compiled_value: Option<ExprAST>,
     #[serde(skip)]
     pub compiled_size: Option<ExprAST>,
+    #[serde(skip)]
+    pub compiled_switch: Option<(String, HashMap<String, String>)>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -110,6 +112,41 @@ impl KsyAttr {
         }
         if let Some(KsyValue::Expr(ref expr)) = self.size {
             self.compiled_size = ExprAST::compile(expr);
+        }
+        if let Some(ref val) = self.attr_type
+            && let Some(map) = val.as_mapping()
+            && let Some(switch_on_val) = map.get("switch-on")
+            && let Some(switch_on) = switch_on_val.as_str()
+            && let Some(cases_map) = map.get("cases").and_then(|v| v.as_mapping())
+        {
+            let mut cases = HashMap::new();
+            for (k, v) in cases_map {
+                let key = match k {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    serde_yaml::Value::Number(n) => n.to_string(),
+                    serde_yaml::Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+                if let Some(s) = v.as_str() {
+                    cases.insert(key.clone(), s.to_string());
+                    let trimmed = key.trim();
+                    if let Ok(int_val) = i64::from_str_radix(trimmed.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+                        cases.insert(int_val.to_string(), s.to_string());
+                        cases.insert(format!("0x{:x}", int_val), s.to_string());
+                        cases.insert(format!("0x{:X}", int_val), s.to_string());
+                        cases.insert(format!("0x{:04x}", int_val), s.to_string());
+                        cases.insert(format!("0x{:04X}", int_val), s.to_string());
+                    }
+                    if let Ok(int_val) = trimmed.parse::<i64>() {
+                        cases.insert(int_val.to_string(), s.to_string());
+                        cases.insert(format!("0x{:x}", int_val), s.to_string());
+                        cases.insert(format!("0x{:X}", int_val), s.to_string());
+                        cases.insert(format!("0x{:04x}", int_val), s.to_string());
+                        cases.insert(format!("0x{:04X}", int_val), s.to_string());
+                    }
+                }
+            }
+            self.compiled_switch = Some((switch_on.to_string(), cases));
         }
     }
 }

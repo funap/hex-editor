@@ -29,7 +29,7 @@ impl EventEmitter<FileTreeViewEvent> for LeftPanel {}
 
 impl LeftPanel {
     pub fn new(file_tree: Entity<FileTreeView>, cx: &mut Context<Self>) -> Self {
-        let struct_tree = cx.new(|cx| StructTreeView::new(Vec::new(), None, cx));
+        let struct_tree = cx.new(|cx| StructTreeView::new(None, None, cx));
         let data_inspector = cx.new(|cx| DataInspector::new(None, cx));
         let visual_map = cx.new(|cx| VisualMapPanel::new(None, cx));
         let checksum_panel = cx.new(|cx| ChecksumPanel::new(None, cx));

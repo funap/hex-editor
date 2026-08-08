@@ -72,7 +72,7 @@ impl DataInspector {
     }
 
     fn format_unix_time(&self, timestamp: i64) -> String {
-        if timestamp < 0 || timestamp > 253402300799 {
+        if !(0..=253402300799).contains(&timestamp) {
             // up to year 9999
             return "Out of range".to_string();
         }
@@ -128,19 +128,19 @@ pub fn format_hex_values(bytes: &[u8], is_big_endian: bool) -> (String, String, 
     }
 
     if bytes.len() >= 2 {
-        let arr: [u8; 2] = bytes[0..2].try_into().unwrap();
+        let arr: [u8; 2] = bytes[0..2].try_into().expect("2-byte slice");
         let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
         hex16 = format!("0x{:04X}", val);
     }
 
     if bytes.len() >= 4 {
-        let arr: [u8; 4] = bytes[0..4].try_into().unwrap();
+        let arr: [u8; 4] = bytes[0..4].try_into().expect("4-byte slice");
         let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
         hex32 = format!("0x{:08X}", val);
     }
 
     if bytes.len() >= 8 {
-        let arr: [u8; 8] = bytes[0..8].try_into().unwrap();
+        let arr: [u8; 8] = bytes[0..8].try_into().expect("8-byte slice");
         let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
         hex64 = format!("0x{:016X}", val);
     }
@@ -194,7 +194,7 @@ impl Render for DataInspector {
         }
 
         if bytes_at_cursor.len() >= 2 {
-            let arr: [u8; 2] = bytes_at_cursor[0..2].try_into().unwrap();
+            let arr: [u8; 2] = bytes_at_cursor[0..2].try_into().expect("2-byte slice");
             let i16_val_raw = if is_big_endian { i16::from_be_bytes(arr) } else { i16::from_le_bytes(arr) };
             let u16_val_raw = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
             i16_val = format!("{}", i16_val_raw);
@@ -213,7 +213,7 @@ impl Render for DataInspector {
         }
 
         if bytes_at_cursor.len() >= 4 {
-            let arr: [u8; 4] = bytes_at_cursor[0..4].try_into().unwrap();
+            let arr: [u8; 4] = bytes_at_cursor[0..4].try_into().expect("4-byte slice");
             let i32_val_raw = if is_big_endian { i32::from_be_bytes(arr) } else { i32::from_le_bytes(arr) };
             let u32_val_raw = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
             let f32_val_raw = if is_big_endian { f32::from_be_bytes(arr) } else { f32::from_le_bytes(arr) };
@@ -224,7 +224,7 @@ impl Render for DataInspector {
         }
 
         if bytes_at_cursor.len() >= 8 {
-            let arr: [u8; 8] = bytes_at_cursor[0..8].try_into().unwrap();
+            let arr: [u8; 8] = bytes_at_cursor[0..8].try_into().expect("8-byte slice");
             let i64_val_raw = if is_big_endian { i64::from_be_bytes(arr) } else { i64::from_le_bytes(arr) };
             let u64_val_raw = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
             let f64_val_raw = if is_big_endian { f64::from_be_bytes(arr) } else { f64::from_le_bytes(arr) };
@@ -249,17 +249,17 @@ impl Render for DataInspector {
             };
 
             let mut decoded = false;
-            if expected_len > 0 && expected_len <= bytes_at_cursor.len() {
-                if let Ok(s) = std::str::from_utf8(&bytes_at_cursor[0..expected_len]) {
-                    if let Some(c) = s.chars().next() {
-                        if !c.is_control() {
-                            utf8_val = format!("'{}'", c);
-                        } else {
-                            utf8_val = ".".to_string();
-                        }
-                        decoded = true;
-                    }
+            if expected_len > 0
+                && expected_len <= bytes_at_cursor.len()
+                && let Ok(s) = std::str::from_utf8(&bytes_at_cursor[0..expected_len])
+                && let Some(c) = s.chars().next()
+            {
+                if !c.is_control() {
+                    utf8_val = format!("'{}'", c);
+                } else {
+                    utf8_val = ".".to_string();
                 }
+                decoded = true;
             }
             if !decoded {
                 utf8_val = ".".to_string();

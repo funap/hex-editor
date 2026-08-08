@@ -68,26 +68,28 @@ impl DiffPanel {
         let mut subscriptions = Vec::new();
 
         subscriptions.push(cx.subscribe_in(&left_view, window, |this, _left_view, event, _window, cx| {
-            if this.sync_scroll && !this.is_syncing {
-                if let HexViewEvent::Scrolled(offset) = event {
-                    this.is_syncing = true;
-                    this.right_view.update(cx, |view, cx| {
-                        view.scroll_to_row(*offset, cx);
-                    });
-                    this.is_syncing = false;
-                }
+            if this.sync_scroll
+                && !this.is_syncing
+                && let HexViewEvent::Scrolled(offset) = event
+            {
+                this.is_syncing = true;
+                this.right_view.update(cx, |view, cx| {
+                    view.scroll_to_row(*offset, cx);
+                });
+                this.is_syncing = false;
             }
         }));
 
         subscriptions.push(cx.subscribe_in(&right_view, window, |this, _right_view, event, _window, cx| {
-            if this.sync_scroll && !this.is_syncing {
-                if let HexViewEvent::Scrolled(offset) = event {
-                    this.is_syncing = true;
-                    this.left_view.update(cx, |view, cx| {
-                        view.scroll_to_row(*offset, cx);
-                    });
-                    this.is_syncing = false;
-                }
+            if this.sync_scroll
+                && !this.is_syncing
+                && let HexViewEvent::Scrolled(offset) = event
+            {
+                this.is_syncing = true;
+                this.left_view.update(cx, |view, cx| {
+                    view.scroll_to_row(*offset, cx);
+                });
+                this.is_syncing = false;
             }
         }));
 
@@ -195,11 +197,11 @@ impl DiffPanel {
     }
 
     fn left_path(&self) -> std::path::PathBuf {
-        self.left_document.read().unwrap().path().to_path_buf()
+        self.left_document.read().expect("left document read lock").path().to_path_buf()
     }
 
     fn right_path(&self) -> std::path::PathBuf {
-        self.right_document.read().unwrap().path().to_path_buf()
+        self.right_document.read().expect("right document read lock").path().to_path_buf()
     }
 }
 
@@ -258,7 +260,7 @@ impl Panel for DiffPanel {
             left_path: self.left_path().to_string_lossy().to_string(),
             right_path: self.right_path().to_string_lossy().to_string(),
         };
-        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(diff_state).unwrap());
+        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(diff_state).expect("serialize diff_state"));
         state
     }
 }

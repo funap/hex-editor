@@ -39,6 +39,7 @@ enum Token {
     Question,
     Colon,
     ColonColon,
+    #[allow(clippy::upper_case_acronyms)]
     EOF,
 }
 
@@ -192,7 +193,7 @@ impl<'a> Lexer<'a> {
         // Check for float
         if self.pos < self.input.len() && self.current_char() == '.' {
             let next_pos = self.pos + 1;
-            if next_pos < self.input.len() && self.input[next_pos..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            if next_pos < self.input.len() && self.input[next_pos..].chars().next().is_some_and(|c| c.is_ascii_digit()) {
                 self.pos += 1; // consume '.'
                 while self.pos < self.input.len() && self.current_char().is_ascii_digit() {
                     self.pos += 1;
@@ -228,6 +229,8 @@ impl<'a> Lexer<'a> {
     }
 }
 
+pub type InstanceResolver<'a> = dyn Fn(&str) -> Option<i64> + 'a;
+
 /// Context for expression evaluation, providing access to parsed field values,
 /// stream state, and enum definitions.
 pub struct EvalContext<'a> {
@@ -240,14 +243,14 @@ pub struct EvalContext<'a> {
     pub stream_pos: usize,
     pub enums: &'a HashMap<String, HashMap<String, String>>,
     pub errors: Option<&'a std::cell::RefCell<Vec<crate::core::structure::types::ParseError>>>,
-    pub instance_resolver: Option<&'a dyn Fn(&str) -> Option<i64>>,
+    pub instance_resolver: Option<&'a InstanceResolver<'a>>,
 }
 
 impl<'a> EvalContext<'a> {
     pub fn simple(values: &'a HashMap<String, i64>, base_path: &'a [String]) -> Self {
-        let empty_strings = &EMPTY_STRING_MAP;
-        let empty_enums = &EMPTY_ENUM_MAP;
-        let empty_bytes = &EMPTY_BYTE_MAP;
+        let empty_strings = &G_EMPTY_STRING_MAP;
+        let empty_enums = &G_EMPTY_ENUM_MAP;
+        let empty_bytes = &G_EMPTY_BYTE_MAP;
         Self {
             values,
             string_values: empty_strings,
@@ -263,9 +266,9 @@ impl<'a> EvalContext<'a> {
     }
 }
 
-pub static EMPTY_STRING_MAP: std::sync::LazyLock<HashMap<String, String>> = std::sync::LazyLock::new(HashMap::new);
-pub static EMPTY_ENUM_MAP: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> = std::sync::LazyLock::new(HashMap::new);
-pub static EMPTY_BYTE_MAP: std::sync::LazyLock<HashMap<String, Vec<u8>>> = std::sync::LazyLock::new(HashMap::new);
+pub static G_EMPTY_STRING_MAP: std::sync::LazyLock<HashMap<String, String>> = std::sync::LazyLock::new(HashMap::new);
+pub static G_EMPTY_ENUM_MAP: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> = std::sync::LazyLock::new(HashMap::new);
+pub static G_EMPTY_BYTE_MAP: std::sync::LazyLock<HashMap<String, Vec<u8>>> = std::sync::LazyLock::new(HashMap::new);
 
 /// Expression value - can be integer, float, string, or bool
 #[derive(Debug, Clone)]
@@ -749,15 +752,15 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
                 let full_id = path_parts.join(".");
-                if let Some(bytes) = self.ctx.byte_arrays.get(&full_id).or_else(|| self.ctx.byte_arrays.get(id)) {
-                    if idx < bytes.len() {
-                        return ExprValue::Int(bytes[idx] as i64);
-                    }
+                if let Some(bytes) = self.ctx.byte_arrays.get(&full_id).or_else(|| self.ctx.byte_arrays.get(id))
+                    && idx < bytes.len()
+                {
+                    return ExprValue::Int(bytes[idx] as i64);
                 }
-                if let Some(s) = self.ctx.string_values.get(&full_id).or_else(|| self.ctx.string_values.get(id)) {
-                    if idx < s.len() {
-                        return ExprValue::Int(s.as_bytes()[idx] as i64);
-                    }
+                if let Some(s) = self.ctx.string_values.get(&full_id).or_else(|| self.ctx.string_values.get(id))
+                    && idx < s.len()
+                {
+                    return ExprValue::Int(s.as_bytes()[idx] as i64);
                 }
                 return ExprValue::Int(0);
             }
@@ -828,10 +831,10 @@ impl<'a> Parser<'a> {
         }
 
         // Try instance resolver if provided
-        if let Some(resolver) = self.ctx.instance_resolver {
-            if let Some(val) = resolver(&full_id).or_else(|| resolver(id)) {
-                return ExprValue::Int(val);
-            }
+        if let Some(resolver) = self.ctx.instance_resolver
+            && let Some(val) = resolver(&full_id).or_else(|| resolver(id))
+        {
+            return ExprValue::Int(val);
         }
 
         if !id.starts_with('_') && id != "true" && id != "false" {
@@ -846,10 +849,10 @@ impl<'a> Parser<'a> {
             // enum_def maps numeric_key -> label_name
             // We need reverse lookup: label_name -> numeric_key
             for (key, label) in enum_def {
-                if label == value_name {
-                    if let Ok(v) = key.parse::<i64>() {
-                        return ExprValue::Int(v);
-                    }
+                if label == value_name
+                    && let Ok(v) = key.parse::<i64>()
+                {
+                    return ExprValue::Int(v);
                 }
             }
         }
@@ -946,32 +949,32 @@ impl ExprAST {
                     }
                     _ => {
                         let base_val = base.eval(ctx);
-                        if let ExprValue::Str(ref s) = base_val {
-                            if idx_val < s.len() {
-                                return ExprValue::Int(s.as_bytes()[idx_val] as i64);
-                            }
+                        if let ExprValue::Str(ref s) = base_val
+                            && idx_val < s.len()
+                        {
+                            return ExprValue::Int(s.as_bytes()[idx_val] as i64);
                         }
                     }
                 }
-                if let Some(bytes) = ctx.byte_arrays.get(&path) {
-                    if idx_val < bytes.len() {
-                        return ExprValue::Int(bytes[idx_val] as i64);
-                    }
+                if let Some(bytes) = ctx.byte_arrays.get(&path)
+                    && idx_val < bytes.len()
+                {
+                    return ExprValue::Int(bytes[idx_val] as i64);
                 }
                 let scoped_path = if ctx.base_path.is_empty() {
                     path.clone()
                 } else {
                     format!("{}.{}", ctx.base_path.join("."), path)
                 };
-                if let Some(bytes) = ctx.byte_arrays.get(&scoped_path) {
-                    if idx_val < bytes.len() {
-                        return ExprValue::Int(bytes[idx_val] as i64);
-                    }
+                if let Some(bytes) = ctx.byte_arrays.get(&scoped_path)
+                    && idx_val < bytes.len()
+                {
+                    return ExprValue::Int(bytes[idx_val] as i64);
                 }
-                if let Some(s) = ctx.string_values.get(&path).or_else(|| ctx.string_values.get(&scoped_path)) {
-                    if idx_val < s.len() {
-                        return ExprValue::Int(s.as_bytes()[idx_val] as i64);
-                    }
+                if let Some(s) = ctx.string_values.get(&path).or_else(|| ctx.string_values.get(&scoped_path))
+                    && idx_val < s.len()
+                {
+                    return ExprValue::Int(s.as_bytes()[idx_val] as i64);
                 }
                 ExprValue::Int(0)
             }
@@ -1204,49 +1207,51 @@ impl ExprAST {
         }
 
         // Try instance resolver if provided
-        if let Some(resolver) = ctx.instance_resolver {
-            if let Some(val) = resolver(&full_id).or_else(|| resolver(id)) {
-                return ExprValue::Int(val);
-            }
+        if let Some(resolver) = ctx.instance_resolver
+            && let Some(val) = resolver(&full_id).or_else(|| resolver(id))
+        {
+            return ExprValue::Int(val);
         }
 
-        if !id.starts_with('_') && id != "true" && id != "false" && !full_id.contains("extra") {
-            if let Some(err_cell) = ctx.errors {
-                err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
-                    message: format!("Unresolved identifier: {}", full_id),
-                    offset: ctx.stream_pos,
-                });
-            }
+        if !id.starts_with('_')
+            && id != "true"
+            && id != "false"
+            && !full_id.contains("extra")
+            && let Some(err_cell) = ctx.errors
+        {
+            err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                message: format!("Unresolved identifier: {}", full_id),
+                offset: ctx.stream_pos,
+            });
         }
 
         ExprValue::Int(0)
     }
 
     fn eval_member_access(&self, base: &ExprAST, member: &str, is_enum: bool, ctx: &EvalContext) -> ExprValue {
-        if is_enum {
-            if let ExprAST::Identifier(enum_name) = base {
-                if let Some(enum_def) = ctx.enums.get(enum_name) {
-                    for (key, label) in enum_def {
-                        if label == member {
-                            if let Ok(v) = key.parse::<i64>() {
-                                return ExprValue::Int(v);
-                            }
-                        }
-                    }
+        if is_enum
+            && let ExprAST::Identifier(enum_name) = base
+            && let Some(enum_def) = ctx.enums.get(enum_name)
+        {
+            for (key, label) in enum_def {
+                if label == member
+                    && let Ok(v) = key.parse::<i64>()
+                {
+                    return ExprValue::Int(v);
                 }
             }
             return ExprValue::Int(0);
         }
 
-        if let ExprAST::Identifier(id) = base {
-            if id == "_io" {
-                return match member {
-                    "eof" => ExprValue::Bool(ctx.stream_eof),
-                    "size" => ExprValue::Int(ctx.stream_size as i64),
-                    "pos" => ExprValue::Int(ctx.stream_pos as i64),
-                    _ => ExprValue::Int(0),
-                };
-            }
+        if let ExprAST::Identifier(id) = base
+            && id == "_io"
+        {
+            return match member {
+                "eof" => ExprValue::Bool(ctx.stream_eof),
+                "size" => ExprValue::Int(ctx.stream_size as i64),
+                "pos" => ExprValue::Int(ctx.stream_pos as i64),
+                _ => ExprValue::Int(0),
+            };
         }
 
         if member == "to_i" {
@@ -1353,13 +1358,13 @@ impl ExprAST {
         }
 
         let first_path = candidate_paths.first().cloned().unwrap_or_default();
-        if !first_path.contains("extra") {
-            if let Some(err_cell) = ctx.errors {
-                err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
-                    message: format!("Unresolved identifier: {}", first_path),
-                    offset: ctx.stream_pos,
-                });
-            }
+        if !first_path.contains("extra")
+            && let Some(err_cell) = ctx.errors
+        {
+            err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
+                message: format!("Unresolved identifier: {}", first_path),
+                offset: ctx.stream_pos,
+            });
         }
 
         ExprValue::Int(0)

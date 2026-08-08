@@ -58,8 +58,8 @@ impl PartialEq<Vec<usize>> for LineMap {
         if self.len() != other.len() {
             return false;
         }
-        for i in 0..self.len() {
-            if self.get(i) != Some(other[i]) {
+        for (i, &item) in other.iter().enumerate().take(self.len()) {
+            if self.get(i) != Some(item) {
                 return false;
             }
         }
@@ -79,7 +79,7 @@ impl SparseLineMap {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.total_lines == 0
     }
 
     pub fn get(&self, index: usize) -> Option<usize> {
@@ -134,7 +134,7 @@ impl SparseLineMap {
         match &seg.kind {
             SegmentKind::Standard => {
                 let rel_offset = offset - seg.start_offset;
-                if rel_offset % BYTES_PER_ROW == 0 {
+                if rel_offset.is_multiple_of(BYTES_PER_ROW) {
                     Ok(seg.start_line + rel_offset / BYTES_PER_ROW)
                 } else {
                     Err(seg.start_line + rel_offset / BYTES_PER_ROW + 1)
@@ -155,7 +155,7 @@ impl LineMap {
                 if *total_size == 0 {
                     1
                 } else {
-                    (*total_size + BYTES_PER_ROW - 1) / BYTES_PER_ROW
+                    (*total_size).div_ceil(BYTES_PER_ROW)
                 }
             }
             LineMap::Sparse(sparse) => sparse.len(),
@@ -185,7 +185,7 @@ impl LineMap {
                 let row = *offset / BYTES_PER_ROW;
                 let len = self.len();
                 if row < len {
-                    if *offset % BYTES_PER_ROW == 0 { Ok(row) } else { Err(row + 1) }
+                    if (*offset).is_multiple_of(BYTES_PER_ROW) { Ok(row) } else { Err(row + 1) }
                 } else {
                     Err(len)
                 }

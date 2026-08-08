@@ -10,6 +10,7 @@ pub struct KaitaiInterpreter {
     stream_size: usize,
     context: HashMap<String, i64>,
     string_context: HashMap<String, String>,
+    byte_arrays: HashMap<String, Vec<u8>>,
     id_stack: Vec<String>,
     color_index: usize,
     errors: std::cell::RefCell<Vec<ParseError>>,
@@ -28,6 +29,50 @@ fn type_as_str(val: &serde_yaml::Value) -> Option<String> {
         serde_yaml::Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
+}
+
+/// Helper: parse parameterized type string, e.g. "utf8_codepoint(_io.pos)" -> ("utf8_codepoint", ["_io.pos"])
+fn parse_type_with_args(type_str: &str) -> (String, Vec<String>) {
+    let s = type_str.trim();
+    if let Some(paren_open) = s.find('(') {
+        if s.ends_with(')') {
+            let type_name = s[..paren_open].trim().to_string();
+            let args_str = &s[paren_open + 1..s.len() - 1];
+            let mut args = Vec::new();
+            let mut current = String::new();
+            let mut paren_depth = 0;
+            for ch in args_str.chars() {
+                match ch {
+                    '(' => {
+                        paren_depth += 1;
+                        current.push(ch);
+                    }
+                    ')' => {
+                        if paren_depth > 0 {
+                            paren_depth -= 1;
+                        }
+                        current.push(ch);
+                    }
+                    ',' if paren_depth == 0 => {
+                        let trimmed = current.trim().to_string();
+                        if !trimmed.is_empty() {
+                            args.push(trimmed);
+                        }
+                        current.clear();
+                    }
+                    _ => {
+                        current.push(ch);
+                    }
+                }
+            }
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() {
+                args.push(trimmed);
+            }
+            return (type_name, args);
+        }
+    }
+    (s.to_string(), Vec::new())
 }
 
 /// Helper: check if type value is a switch-on/cases
@@ -98,6 +143,7 @@ impl KaitaiInterpreter {
             stream_size: 0,
             context: HashMap::new(),
             string_context: HashMap::new(),
+            byte_arrays: HashMap::new(),
             id_stack: Vec::new(),
             color_index: 0,
             errors: std::cell::RefCell::new(Vec::new()),
@@ -117,13 +163,13 @@ impl KaitaiInterpreter {
         let types = self.ksy.types.clone();
         let enums = self.ksy.enums.clone();
         for attr in &seq {
-            fields.extend(self.parse_attr_repeated(attr, stream, &types, &enums));
+            fields.extend(self.parse_attr_repeated(attr, stream, &types, &enums, false));
         }
         let instances = self.ksy.instances.clone();
         for (id, mut attr) in instances {
             if attr.pos.is_some() || attr.value.is_some() {
                 attr.id = Some(id);
-                fields.extend(self.parse_attr_repeated(&attr, stream, &types, &enums));
+                fields.extend(self.parse_attr_repeated(&attr, stream, &types, &enums, true));
             }
         }
         ParseResult::new(self.ksy.meta.id.clone(), fields, stream.pos() as usize, self.errors.into_inner())
@@ -133,12 +179,14 @@ impl KaitaiInterpreter {
         EvalContext {
             values: &self.context,
             string_values: &self.string_context,
+            byte_arrays: &self.byte_arrays,
             base_path: &self.id_stack,
             stream_eof: stream.is_eof(),
             stream_size: self.stream_size,
             stream_pos: stream.pos() as usize,
             enums: &self.all_enums,
             errors: Some(&self.errors),
+            instance_resolver: None,
         }
     }
 
@@ -148,6 +196,7 @@ impl KaitaiInterpreter {
         stream: &mut KaitaiStream,
         types: &HashMap<String, KsyType>,
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
+        is_instance: bool,
     ) -> Vec<ParsedField> {
         if self.recursion_depth > MAX_RECURSION {
             return Vec::new();
@@ -169,6 +218,9 @@ impl KaitaiInterpreter {
                 format!("{}.{}", self.id_stack.join("."), field_id)
             };
             self.context.insert(full_id, val);
+            if let Some(ref raw_id) = attr.id {
+                self.context.insert(raw_id.clone(), val);
+            }
             return results;
         }
 
@@ -183,7 +235,7 @@ impl KaitaiInterpreter {
                         };
                         for i in 0..count {
                             let pos_before = stream.pos();
-                            if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
+                            if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                                 results.push(field);
                                 if stream.pos() <= pos_before && attr.pos.is_none() {
                                     break;
@@ -198,48 +250,47 @@ impl KaitaiInterpreter {
                     let mut i = 0;
                     while !stream.is_eof() {
                         let pos_before = stream.pos();
-                        if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
+                        if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                             results.push(field);
-                            i += 1;
                             if stream.pos() <= pos_before && attr.pos.is_none() {
                                 break;
                             }
                         } else {
                             break;
                         }
+                        i += 1;
                     }
                 }
                 "until" => {
-                    if let Some(expr) = &attr.repeat_until {
+                    if let Some(until) = &attr.repeat_until {
                         let mut i = 0;
-                        loop {
-                            if stream.is_eof() {
-                                break;
-                            }
+                        while !stream.is_eof() {
                             let pos_before = stream.pos();
-                            if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums) {
+                            if let Some(field) = self.parse_attr_once(attr, Some(i), stream, types, enums, is_instance) {
                                 results.push(field);
-                                i += 1;
-                                // Evaluate until condition
                                 let ctx = self.make_eval_ctx(stream);
-                                let stop = if let Some(ref ast) = attr.compiled_repeat_until {
+                                let until_holds = if let Some(ref ast) = attr.compiled_repeat_until {
                                     ExprEvaluator::eval_ast_bool(ast, &ctx)
                                 } else {
-                                    ExprEvaluator::eval_bool(expr, &ctx)
+                                    ExprEvaluator::eval_bool(until, &ctx)
                                 };
-                                if stop || (stream.pos() <= pos_before && attr.pos.is_none()) {
+                                if until_holds {
+                                    break;
+                                }
+                                if stream.pos() <= pos_before && attr.pos.is_none() {
                                     break;
                                 }
                             } else {
                                 break;
                             }
+                            i += 1;
                         }
                     }
                 }
                 _ => {}
             }
         } else {
-            if let Some(field) = self.parse_attr_once(attr, None, stream, types, enums) {
+            if let Some(field) = self.parse_attr_once(attr, None, stream, types, enums, is_instance) {
                 results.push(field);
             }
         }
@@ -253,6 +304,7 @@ impl KaitaiInterpreter {
         stream: &mut KaitaiStream,
         types: &HashMap<String, KsyType>,
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
+        is_instance: bool,
     ) -> Option<ParsedField> {
         if self.recursion_depth > MAX_RECURSION {
             return None;
@@ -310,33 +362,56 @@ impl KaitaiInterpreter {
         }
         let computed_size = size.unwrap_or(0);
 
-        // Resolve type
-        let resolved_type = attr.attr_type.as_ref().and_then(|v| {
-            if let Some(s) = type_as_str(v) {
-                Some(s)
-            } else if let Some((switch_on, cases)) = type_as_switch(v) {
-                let ctx = self.make_eval_ctx(stream);
-                let switch_val = ExprEvaluator::evaluate_rich(&switch_on, &ctx);
-                let switch_str = switch_val.to_string_val();
-                let switch_int = switch_val.to_i64();
-                if let Some(t) = cases.get(&switch_str) {
-                    Some(t.clone())
-                } else if let Some(t) = cases.get(&format!("\"{}\"", switch_str)) {
-                    Some(t.clone())
-                } else if let Some(t) = cases.get(&switch_int.to_string()) {
-                    Some(t.clone())
-                } else if let Some(t) = cases.get("_") {
-                    Some(t.clone())
+        // Resolve type and type arguments
+        let (raw_type_str, type_args) = attr
+            .attr_type
+            .as_ref()
+            .and_then(|v| {
+                if let Some(s) = type_as_str(v) {
+                    let (tname, args) = parse_type_with_args(&s);
+                    Some((tname, args))
+                } else if let Some((switch_on, cases)) = type_as_switch(v) {
+                    let ctx = self.make_eval_ctx(stream);
+                    let switch_val = ExprEvaluator::evaluate_rich(&switch_on, &ctx);
+                    let switch_str = switch_val.to_string_val();
+                    let switch_int = switch_val.to_i64();
+                    let chosen = if let Some(t) = cases.get(&switch_str) {
+                        Some(t.clone())
+                    } else if let Some(t) = cases.get(&format!("\"{}\"", switch_str)) {
+                        Some(t.clone())
+                    } else if let Some(t) = cases.get(&switch_int.to_string()) {
+                        Some(t.clone())
+                    } else if let Some(t) = cases.get("_") {
+                        Some(t.clone())
+                    } else {
+                        None
+                    };
+                    chosen.map(|s| {
+                        let (tname, args) = parse_type_with_args(&s);
+                        (tname, args)
+                    })
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        });
+            })
+            .unzip();
+
+        let resolved_type = raw_type_str;
+        let type_args = type_args.unwrap_or_default();
 
         let typed_result = if let Some(type_str) = &resolved_type {
-            self.parse_typed_value(type_str, is_little, computed_size, attr, start_offset, old_pos, stream, types, enums)
+            self.parse_typed_value(
+                type_str,
+                &type_args,
+                is_little,
+                computed_size,
+                attr,
+                start_offset,
+                old_pos,
+                stream,
+                types,
+                enums,
+            )
         } else if attr.size_eos {
             let buf = self.read_remaining(stream);
             let s = buf.len();
@@ -387,7 +462,8 @@ impl KaitaiInterpreter {
             } else {
                 format!("{}.{}", self.id_stack.join("."), raw_id)
             };
-            self.context.insert(unindexed_id, value.to_i64());
+            self.context.insert(unindexed_id.clone(), value.to_i64());
+            self.context.insert(raw_id.clone(), value.to_i64());
         }
         if let FieldValue::String(ref s) = value {
             self.string_context.insert(full_id.clone(), s.clone());
@@ -398,6 +474,19 @@ impl KaitaiInterpreter {
                     format!("{}.{}", self.id_stack.join("."), raw_id)
                 };
                 self.string_context.insert(unindexed_id, s.clone());
+                self.string_context.insert(raw_id.clone(), s.clone());
+            }
+        }
+        if let FieldValue::Bytes(ref b) = value {
+            self.byte_arrays.insert(full_id.clone(), b.clone());
+            if let Some(ref raw_id) = attr.id {
+                let unindexed_id = if self.id_stack.is_empty() {
+                    raw_id.clone()
+                } else {
+                    format!("{}.{}", self.id_stack.join("."), raw_id)
+                };
+                self.byte_arrays.insert(unindexed_id, b.clone());
+                self.byte_arrays.insert(raw_id.clone(), b.clone());
             }
         }
 
@@ -419,12 +508,14 @@ impl KaitaiInterpreter {
             description: attr.doc.clone(),
             children,
             enum_label,
+            is_instance,
         })
     }
 
     fn parse_typed_value(
         &mut self,
         type_str: &str,
+        type_args: &[String],
         is_little: bool,
         size: usize,
         attr: &KsyAttr,
@@ -523,7 +614,7 @@ impl KaitaiInterpreter {
                 }
             }
             // Custom type
-            custom => self.parse_custom_type(custom, attr, start_offset, old_pos, stream, types, enums),
+            custom => self.parse_custom_type(custom, type_args, attr, start_offset, old_pos, stream, types, enums),
         }
     }
 
@@ -594,6 +685,7 @@ impl KaitaiInterpreter {
     fn parse_custom_type(
         &mut self,
         type_name: &str,
+        type_args: &[String],
         attr: &KsyAttr,
         start_offset: usize,
         _old_pos: Option<u64>,
@@ -602,7 +694,7 @@ impl KaitaiInterpreter {
         enums: &HashMap<String, HashMap<String, serde_yaml::Value>>,
     ) -> Option<(FieldValue, usize, Vec<ParsedField>)> {
         let type_def = match types.get(type_name) {
-            Some(t) => t,
+            Some(t) => t.clone(),
             None => {
                 // Type not found (e.g. imported type like dos_datetime).
                 // Still consume the declared `size` bytes so the stream position stays correct.
@@ -623,6 +715,21 @@ impl KaitaiInterpreter {
         let field_id = attr.id.clone().unwrap_or_else(|| format!("field_{}", self.field_count));
         self.id_stack.push(field_id);
         self.recursion_depth += 1;
+
+        // Bind parameters from type_def.params using type_args evaluated in caller's context
+        for (i, param) in type_def.params.iter().enumerate() {
+            if let Some(arg_expr) = type_args.get(i) {
+                let ctx = self.make_eval_ctx(stream);
+                let val = ExprEvaluator::eval_i64(arg_expr, &ctx);
+                let scoped_param = if self.id_stack.is_empty() {
+                    param.id.clone()
+                } else {
+                    format!("{}.{}", self.id_stack.join("."), param.id)
+                };
+                self.context.insert(scoped_param, val);
+                self.context.insert(param.id.clone(), val);
+            }
+        }
 
         let mut nested_types = types.clone();
         nested_types.extend(type_def.types.clone());
@@ -656,16 +763,36 @@ impl KaitaiInterpreter {
                 self.stream_size = sub_size;
                 let mut fields = Vec::new();
 
-                let seq = type_def.seq.clone();
-                for nested_attr in &seq {
-                    fields.extend(self.parse_attr_repeated(nested_attr, &mut sub_stream, &nested_types, &nested_enums));
+                // Pre-evaluate pos-based instances before seq (in case seq size or elements depend on them)
+                let instances = type_def.instances.clone();
+                for (id, inst_attr) in &instances {
+                    if inst_attr.pos.is_some() && inst_attr.value.is_none() {
+                        let mut inst_copy = inst_attr.clone();
+                        inst_copy.id = Some(id.clone());
+                        self.parse_attr_repeated(&inst_copy, &mut sub_stream, &nested_types, &nested_enums, true);
+                    }
                 }
 
-                let instances = type_def.instances.clone();
-                for (id, mut inst_attr) in instances {
+                // Pre-evaluate value instances that do not depend on stream bytes
+                for (id, inst_attr) in &instances {
+                    if inst_attr.value.is_some() && inst_attr.pos.is_none() {
+                        let mut inst_copy = inst_attr.clone();
+                        inst_copy.id = Some(id.clone());
+                        self.parse_attr_repeated(&inst_copy, &mut sub_stream, &nested_types, &nested_enums, true);
+                    }
+                }
+
+                let seq = type_def.seq.clone();
+                for nested_attr in &seq {
+                    fields.extend(self.parse_attr_repeated(nested_attr, &mut sub_stream, &nested_types, &nested_enums, false));
+                }
+
+                // Evaluate remaining instances (e.g. value instances that compute over parsed bytes)
+                for (id, inst_attr) in instances {
                     if inst_attr.pos.is_some() || inst_attr.value.is_some() {
-                        inst_attr.id = Some(id);
-                        fields.extend(self.parse_attr_repeated(&inst_attr, &mut sub_stream, &nested_types, &nested_enums));
+                        let mut inst_copy = inst_attr;
+                        inst_copy.id = Some(id);
+                        fields.extend(self.parse_attr_repeated(&inst_copy, &mut sub_stream, &nested_types, &nested_enums, true));
                     }
                 }
 
@@ -683,16 +810,36 @@ impl KaitaiInterpreter {
                 adjust_offsets(&mut fields_adj, start_offset);
                 Some(fields_adj)
             } else {
+                let instances = type_def.instances.clone();
+                // Pre-evaluate pos-based instances before seq
+                for (id, inst_attr) in &instances {
+                    if inst_attr.pos.is_some() && inst_attr.value.is_none() {
+                        let mut inst_copy = inst_attr.clone();
+                        inst_copy.id = Some(id.clone());
+                        self.parse_attr_repeated(&inst_copy, stream, &nested_types, &nested_enums, true);
+                    }
+                }
+                // Pre-evaluate value instances
+                for (id, inst_attr) in &instances {
+                    if inst_attr.value.is_some() && inst_attr.pos.is_none() {
+                        let mut inst_copy = inst_attr.clone();
+                        inst_copy.id = Some(id.clone());
+                        self.parse_attr_repeated(&inst_copy, stream, &nested_types, &nested_enums, true);
+                    }
+                }
+
                 let seq = type_def.seq.clone();
                 let mut fields = Vec::new();
                 for nested_attr in &seq {
-                    fields.extend(self.parse_attr_repeated(nested_attr, stream, &nested_types, &nested_enums));
+                    fields.extend(self.parse_attr_repeated(nested_attr, stream, &nested_types, &nested_enums, false));
                 }
-                let instances = type_def.instances.clone();
-                for (id, mut inst_attr) in instances {
+
+                // Evaluate remaining instances
+                for (id, inst_attr) in instances {
                     if inst_attr.pos.is_some() || inst_attr.value.is_some() {
-                        inst_attr.id = Some(id);
-                        fields.extend(self.parse_attr_repeated(&inst_attr, stream, &nested_types, &nested_enums));
+                        let mut inst_copy = inst_attr;
+                        inst_copy.id = Some(id);
+                        fields.extend(self.parse_attr_repeated(&inst_copy, stream, &nested_types, &nested_enums, true));
                     }
                 }
                 Some(fields)

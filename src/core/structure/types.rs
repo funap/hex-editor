@@ -109,6 +109,7 @@ pub struct ParsedField {
     pub description: Option<String>,
     pub children: Vec<ParsedField>,
     pub enum_label: Option<String>,
+    pub is_instance: bool,
 }
 
 impl ParsedField {
@@ -260,11 +261,21 @@ impl ParseResult {
 
     fn collect_highlights(fields: &[ParsedField], highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>) {
         for field in fields {
-            if field.size > 0 {
+            if !field.is_instance && field.size > 0 {
                 highlights.push((field.offset..field.offset + field.size, field.color));
             }
             if !field.children.is_empty() {
                 Self::collect_highlights(&field.children, highlights);
+            }
+        }
+        for field in fields {
+            if field.is_instance && field.size > 0 && field.children.is_empty() {
+                if !highlights
+                    .iter()
+                    .any(|(range, _)| range.start <= field.offset && range.end >= field.offset + field.size)
+                {
+                    highlights.push((field.offset..field.offset + field.size, field.color));
+                }
             }
         }
     }
@@ -275,7 +286,9 @@ impl ParseResult {
 
     fn collect_field_breaks_recursive(fields: &[ParsedField], breaks: &mut Vec<usize>, collapsed_structs: &std::collections::HashSet<String>) {
         for field in fields {
-            if field.size > 0 {
+            // Sequence fields define physical stream boundaries and line breaks.
+            // Instance fields (computed values or pos-peeks) do not break the physical stream.
+            if !field.is_instance && field.size > 0 {
                 breaks.push(field.offset);
                 breaks.push(field.offset + field.size);
             }

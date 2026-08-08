@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct KsyDefinition {
     pub meta: KsyMeta,
     #[serde(default)]
+    pub params: Vec<KsyParam>,
+    #[serde(default)]
     pub seq: Vec<KsyAttr>,
     #[serde(default)]
     pub types: HashMap<String, KsyType>,
@@ -13,6 +15,14 @@ pub struct KsyDefinition {
     pub enums: HashMap<String, HashMap<String, serde_yaml::Value>>,
     #[serde(default)]
     pub instances: HashMap<String, KsyAttr>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KsyParam {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub param_type: Option<String>,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -72,6 +82,8 @@ pub enum KsyValue {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KsyType {
+    #[serde(default)]
+    pub params: Vec<KsyParam>,
     #[serde(default)]
     pub seq: Vec<KsyAttr>,
     #[serde(default)]

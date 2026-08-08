@@ -32,6 +32,8 @@ enum Token {
     Tilde,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Dot,
     Comma,
     Question,
@@ -76,6 +78,8 @@ impl<'a> Lexer<'a> {
             '%' => Token::Percent,
             '(' => Token::LParen,
             ')' => Token::RParen,
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
             '.' => Token::Dot,
             ',' => Token::Comma,
             '?' => Token::Question,
@@ -229,33 +233,39 @@ impl<'a> Lexer<'a> {
 pub struct EvalContext<'a> {
     pub values: &'a HashMap<String, i64>,
     pub string_values: &'a HashMap<String, String>,
+    pub byte_arrays: &'a HashMap<String, Vec<u8>>,
     pub base_path: &'a [String],
     pub stream_eof: bool,
     pub stream_size: usize,
     pub stream_pos: usize,
     pub enums: &'a HashMap<String, HashMap<String, String>>,
     pub errors: Option<&'a std::cell::RefCell<Vec<crate::core::structure::types::ParseError>>>,
+    pub instance_resolver: Option<&'a dyn Fn(&str) -> Option<i64>>,
 }
 
 impl<'a> EvalContext<'a> {
     pub fn simple(values: &'a HashMap<String, i64>, base_path: &'a [String]) -> Self {
         let empty_strings = &EMPTY_STRING_MAP;
         let empty_enums = &EMPTY_ENUM_MAP;
+        let empty_bytes = &EMPTY_BYTE_MAP;
         Self {
             values,
             string_values: empty_strings,
+            byte_arrays: empty_bytes,
             base_path,
             stream_eof: false,
             stream_size: 0,
             stream_pos: 0,
             enums: empty_enums,
             errors: None,
+            instance_resolver: None,
         }
     }
 }
 
-static EMPTY_STRING_MAP: std::sync::LazyLock<HashMap<String, String>> = std::sync::LazyLock::new(HashMap::new);
-static EMPTY_ENUM_MAP: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> = std::sync::LazyLock::new(HashMap::new);
+pub static EMPTY_STRING_MAP: std::sync::LazyLock<HashMap<String, String>> = std::sync::LazyLock::new(HashMap::new);
+pub static EMPTY_ENUM_MAP: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> = std::sync::LazyLock::new(HashMap::new);
+pub static EMPTY_BYTE_MAP: std::sync::LazyLock<HashMap<String, Vec<u8>>> = std::sync::LazyLock::new(HashMap::new);
 
 /// Expression value - can be integer, float, string, or bool
 #[derive(Debug, Clone)]
@@ -433,58 +443,28 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_and(&mut self) -> ExprValue {
-        let mut val = self.parse_bit_or();
+        let mut val = self.parse_comparison();
         while matches!(self.current_token, Token::And) {
             self.advance();
-            let right = self.parse_bit_or();
+            let right = self.parse_comparison();
             val = ExprValue::Bool(val.to_bool() && right.to_bool());
         }
         while matches!(self.current_token, Token::Identifier(ref s) if s == "and") {
             self.advance();
-            let right = self.parse_bit_or();
-            val = ExprValue::Bool(val.to_bool() && right.to_bool());
-        }
-        val
-    }
-
-    fn parse_bit_or(&mut self) -> ExprValue {
-        let mut val = self.parse_bit_xor();
-        while matches!(self.current_token, Token::Pipe) {
-            self.advance();
-            let right = self.parse_bit_xor();
-            val = ExprValue::Int(val.to_i64() | right.to_i64());
-        }
-        val
-    }
-
-    fn parse_bit_xor(&mut self) -> ExprValue {
-        let mut val = self.parse_bit_and();
-        while matches!(self.current_token, Token::Caret) {
-            self.advance();
-            let right = self.parse_bit_and();
-            val = ExprValue::Int(val.to_i64() ^ right.to_i64());
-        }
-        val
-    }
-
-    fn parse_bit_and(&mut self) -> ExprValue {
-        let mut val = self.parse_comparison();
-        while matches!(self.current_token, Token::Amp) {
-            self.advance();
             let right = self.parse_comparison();
-            val = ExprValue::Int(val.to_i64() & right.to_i64());
+            val = ExprValue::Bool(val.to_bool() && right.to_bool());
         }
         val
     }
 
     fn parse_comparison(&mut self) -> ExprValue {
-        let mut val = self.parse_shift();
+        let mut val = self.parse_bit_or();
         while matches!(
             self.current_token,
             Token::Equal | Token::NotEqual | Token::Greater | Token::GreaterEqual | Token::Less | Token::LessEqual
         ) {
             let op = self.take_token();
-            let right = self.parse_shift();
+            let right = self.parse_bit_or();
             // String comparison
             if matches!(val, ExprValue::Str(_)) || matches!(right, ExprValue::Str(_)) {
                 let ls = val.to_string_val();
@@ -519,6 +499,36 @@ impl<'a> Parser<'a> {
                     _ => ExprValue::Bool(false),
                 };
             }
+        }
+        val
+    }
+
+    fn parse_bit_or(&mut self) -> ExprValue {
+        let mut val = self.parse_bit_xor();
+        while matches!(self.current_token, Token::Pipe) {
+            self.advance();
+            let right = self.parse_bit_xor();
+            val = ExprValue::Int(val.to_i64() | right.to_i64());
+        }
+        val
+    }
+
+    fn parse_bit_xor(&mut self) -> ExprValue {
+        let mut val = self.parse_bit_and();
+        while matches!(self.current_token, Token::Caret) {
+            self.advance();
+            let right = self.parse_bit_and();
+            val = ExprValue::Int(val.to_i64() ^ right.to_i64());
+        }
+        val
+    }
+
+    fn parse_bit_and(&mut self) -> ExprValue {
+        let mut val = self.parse_shift();
+        while matches!(self.current_token, Token::Amp) {
+            self.advance();
+            let right = self.parse_shift();
+            val = ExprValue::Int(val.to_i64() & right.to_i64());
         }
         val
     }
@@ -646,7 +656,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> ExprValue {
-        match self.take_token() {
+        let mut val = match self.take_token() {
             Token::Number(n) => ExprValue::Int(n),
             Token::Float(f) => ExprValue::Float(f),
             Token::Identifier(id) => self.resolve_identifier(&id),
@@ -664,7 +674,25 @@ impl<'a> Parser<'a> {
                 self.record_error(format!("Unexpected token in expression: {:?}", tok));
                 ExprValue::Int(0)
             }
+        };
+
+        // Handle indexing on primary, e.g. bytes[0]
+        while self.current_token == Token::LBracket {
+            self.advance();
+            let idx = self.parse_ternary().to_i64() as usize;
+            if self.current_token == Token::RBracket {
+                self.advance();
+            }
+            if let ExprValue::Str(ref s) = val {
+                if idx < s.len() {
+                    val = ExprValue::Int(s.as_bytes()[idx] as i64);
+                } else {
+                    val = ExprValue::Int(0);
+                }
+            }
         }
+
+        val
     }
 
     fn resolve_identifier(&mut self, id: &str) -> ExprValue {
@@ -712,8 +740,28 @@ impl<'a> Parser<'a> {
             path_parts.push(id.to_string());
         }
 
-        // Handle dot-chain and :: (enum resolution)
-        while self.current_token == Token::Dot || self.current_token == Token::ColonColon {
+        // Handle dot-chain, :: (enum resolution), and [index] access
+        while self.current_token == Token::Dot || self.current_token == Token::ColonColon || self.current_token == Token::LBracket {
+            if self.current_token == Token::LBracket {
+                self.advance();
+                let idx = self.parse_ternary().to_i64() as usize;
+                if self.current_token == Token::RBracket {
+                    self.advance();
+                }
+                let full_id = path_parts.join(".");
+                if let Some(bytes) = self.ctx.byte_arrays.get(&full_id).or_else(|| self.ctx.byte_arrays.get(id)) {
+                    if idx < bytes.len() {
+                        return ExprValue::Int(bytes[idx] as i64);
+                    }
+                }
+                if let Some(s) = self.ctx.string_values.get(&full_id).or_else(|| self.ctx.string_values.get(id)) {
+                    if idx < s.len() {
+                        return ExprValue::Int(s.as_bytes()[idx] as i64);
+                    }
+                }
+                return ExprValue::Int(0);
+            }
+
             let is_enum_access = self.current_token == Token::ColonColon;
             self.advance();
             if let Token::Identifier(sub) = &self.current_token {
@@ -779,6 +827,13 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // Try instance resolver if provided
+        if let Some(resolver) = self.ctx.instance_resolver {
+            if let Some(val) = resolver(&full_id).or_else(|| resolver(id)) {
+                return ExprValue::Int(val);
+            }
+        }
+
         if !id.starts_with('_') && id != "true" && id != "false" {
             self.record_error(format!("Unresolved identifier: {}", full_id));
         }
@@ -814,6 +869,10 @@ pub enum ExprAST {
         base: Box<ExprAST>,
         member: String,
         is_enum: bool,
+    },
+    IndexAccess {
+        base: Box<ExprAST>,
+        index: Box<ExprAST>,
     },
     Unary {
         op: UnaryOp,
@@ -878,6 +937,44 @@ impl ExprAST {
             ExprAST::Bool(b) => ExprValue::Bool(*b),
             ExprAST::Identifier(id) => self.eval_identifier(id, ctx),
             ExprAST::MemberAccess { base, member, is_enum } => self.eval_member_access(base, member, *is_enum, ctx),
+            ExprAST::IndexAccess { base, index } => {
+                let idx_val = index.eval(ctx).to_i64() as usize;
+                let mut path = String::new();
+                match &**base {
+                    ExprAST::Identifier(id) => {
+                        path = id.clone();
+                    }
+                    _ => {
+                        let base_val = base.eval(ctx);
+                        if let ExprValue::Str(ref s) = base_val {
+                            if idx_val < s.len() {
+                                return ExprValue::Int(s.as_bytes()[idx_val] as i64);
+                            }
+                        }
+                    }
+                }
+                if let Some(bytes) = ctx.byte_arrays.get(&path) {
+                    if idx_val < bytes.len() {
+                        return ExprValue::Int(bytes[idx_val] as i64);
+                    }
+                }
+                let scoped_path = if ctx.base_path.is_empty() {
+                    path.clone()
+                } else {
+                    format!("{}.{}", ctx.base_path.join("."), path)
+                };
+                if let Some(bytes) = ctx.byte_arrays.get(&scoped_path) {
+                    if idx_val < bytes.len() {
+                        return ExprValue::Int(bytes[idx_val] as i64);
+                    }
+                }
+                if let Some(s) = ctx.string_values.get(&path).or_else(|| ctx.string_values.get(&scoped_path)) {
+                    if idx_val < s.len() {
+                        return ExprValue::Int(s.as_bytes()[idx_val] as i64);
+                    }
+                }
+                ExprValue::Int(0)
+            }
             ExprAST::Unary { op, operand } => {
                 let val = operand.eval(ctx);
                 match op {
@@ -1106,6 +1203,13 @@ impl ExprAST {
             return ExprValue::Str(val.clone());
         }
 
+        // Try instance resolver if provided
+        if let Some(resolver) = ctx.instance_resolver {
+            if let Some(val) = resolver(&full_id).or_else(|| resolver(id)) {
+                return ExprValue::Int(val);
+            }
+        }
+
         if !id.starts_with('_') && id != "true" && id != "false" && !full_id.contains("extra") {
             if let Some(err_cell) = ctx.errors {
                 err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
@@ -1322,12 +1426,38 @@ impl<'a> ASTParser<'a> {
     }
 
     fn parse_and(&mut self) -> ExprAST {
-        let mut left = self.parse_bit_or();
+        let mut left = self.parse_comparison();
         while matches!(self.current_token, Token::And) || matches!(self.current_token, Token::Identifier(ref s) if s == "and") {
             self.advance();
-            let right = self.parse_bit_or();
+            let right = self.parse_comparison();
             left = ExprAST::Binary {
                 op: BinaryOp::LogicalAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        left
+    }
+
+    fn parse_comparison(&mut self) -> ExprAST {
+        let mut left = self.parse_bit_or();
+        while matches!(
+            self.current_token,
+            Token::Equal | Token::NotEqual | Token::Greater | Token::GreaterEqual | Token::Less | Token::LessEqual
+        ) {
+            let tok = self.take_token();
+            let op = match tok {
+                Token::Equal => BinaryOp::Equal,
+                Token::NotEqual => BinaryOp::NotEqual,
+                Token::Greater => BinaryOp::Greater,
+                Token::GreaterEqual => BinaryOp::GreaterEqual,
+                Token::Less => BinaryOp::Less,
+                Token::LessEqual => BinaryOp::LessEqual,
+                _ => unreachable!(),
+            };
+            let right = self.parse_bit_or();
+            left = ExprAST::Binary {
+                op,
                 left: Box::new(left),
                 right: Box::new(right),
             };
@@ -1364,38 +1494,12 @@ impl<'a> ASTParser<'a> {
     }
 
     fn parse_bit_and(&mut self) -> ExprAST {
-        let mut left = self.parse_comparison();
+        let mut left = self.parse_shift();
         while matches!(self.current_token, Token::Amp) {
             self.advance();
-            let right = self.parse_comparison();
-            left = ExprAST::Binary {
-                op: BinaryOp::BitAnd,
-                left: Box::new(left),
-                right: Box::new(right),
-            };
-        }
-        left
-    }
-
-    fn parse_comparison(&mut self) -> ExprAST {
-        let mut left = self.parse_shift();
-        while matches!(
-            self.current_token,
-            Token::Equal | Token::NotEqual | Token::Greater | Token::GreaterEqual | Token::Less | Token::LessEqual
-        ) {
-            let tok = self.take_token();
-            let op = match tok {
-                Token::Equal => BinaryOp::Equal,
-                Token::NotEqual => BinaryOp::NotEqual,
-                Token::Greater => BinaryOp::Greater,
-                Token::GreaterEqual => BinaryOp::GreaterEqual,
-                Token::Less => BinaryOp::Less,
-                Token::LessEqual => BinaryOp::LessEqual,
-                _ => unreachable!(),
-            };
             let right = self.parse_shift();
             left = ExprAST::Binary {
-                op,
+                op: BinaryOp::BitAnd,
                 left: Box::new(left),
                 right: Box::new(right),
             };
@@ -1523,16 +1627,30 @@ impl<'a> ASTParser<'a> {
             _ => ExprAST::Number(0),
         };
 
-        while self.current_token == Token::Dot || self.current_token == Token::ColonColon {
-            let is_enum = self.current_token == Token::ColonColon;
-            self.advance();
-            if let Token::Identifier(member) = &self.current_token {
-                let member = member.clone();
+        loop {
+            if self.current_token == Token::Dot || self.current_token == Token::ColonColon {
+                let is_enum = self.current_token == Token::ColonColon;
                 self.advance();
-                node = ExprAST::MemberAccess {
+                if let Token::Identifier(member) = &self.current_token {
+                    let member = member.clone();
+                    self.advance();
+                    node = ExprAST::MemberAccess {
+                        base: Box::new(node),
+                        member,
+                        is_enum,
+                    };
+                } else {
+                    break;
+                }
+            } else if self.current_token == Token::LBracket {
+                self.advance();
+                let index = self.parse_expression();
+                if self.current_token == Token::RBracket {
+                    self.advance();
+                }
+                node = ExprAST::IndexAccess {
                     base: Box::new(node),
-                    member,
-                    is_enum,
+                    index: Box::new(index),
                 };
             } else {
                 break;

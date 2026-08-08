@@ -1151,14 +1151,17 @@ impl ExprAST {
 
         let candidate_paths = {
             let mut paths = Vec::new();
-            
+
             // Extract chain of member access identifiers, e.g. header.len_body_compressed
             let mut parts = Vec::new();
             parts.push(member.to_string());
             let mut curr = base;
             let mut valid = true;
             while let ExprAST::MemberAccess { base: b, member: m, is_enum } = curr {
-                if *is_enum { valid = false; break; }
+                if *is_enum {
+                    valid = false;
+                    break;
+                }
                 parts.push(m.clone());
                 curr = b;
             }
@@ -1169,7 +1172,9 @@ impl ExprAST {
                         (Vec::new(), None)
                     } else if root_id == "_parent" {
                         let mut p = ctx.base_path.to_vec();
-                        if !p.is_empty() { p.pop(); }
+                        if !p.is_empty() {
+                            p.pop();
+                        }
                         (p, None)
                     } else if root_id == "_" {
                         let mut p = ctx.base_path.to_vec();

@@ -192,4 +192,3 @@ impl OpenFileManager {
 }
 
 impl EventEmitter<OpenFileEvent> for OpenFileManager {}
-

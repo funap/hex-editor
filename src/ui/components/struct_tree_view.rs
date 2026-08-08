@@ -1,10 +1,10 @@
-use std::collections::HashSet;
 use crate::core::editor::Editor;
 use crate::core::structure::ParsedField;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, v_flex};
+use std::collections::HashSet;
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
 
@@ -53,7 +53,8 @@ pub struct FlattenedField {
 
 impl StructTreeView {
     pub fn new(fields: Vec<crate::core::structure::ParsedField>, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) -> Self {
-        let collapsed_paths = HashSet::new();
+        let mut collapsed_paths = HashSet::new();
+        Self::collect_all_container_paths(&fields, &Vec::new(), &mut collapsed_paths);
         let mut flattened = Vec::new();
         Self::flatten_fields(&fields, 0, &Vec::new(), &collapsed_paths, &mut flattened);
         let scroll_handle = UniformListScrollHandle::new();
@@ -79,6 +80,17 @@ impl StructTreeView {
         }
 
         this
+    }
+
+    fn collect_all_container_paths(fields: &[ParsedField], parent_path: &[usize], collapsed: &mut HashSet<Vec<usize>>) {
+        for (idx, field) in fields.iter().enumerate() {
+            let mut current_path = parent_path.to_vec();
+            current_path.push(idx);
+            if !field.children.is_empty() {
+                collapsed.insert(current_path.clone());
+                Self::collect_all_container_paths(&field.children, &current_path, collapsed);
+            }
+        }
     }
 
     pub fn set_editor(&mut self, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) {
@@ -176,6 +188,7 @@ impl StructTreeView {
 
     pub fn set_fields(&mut self, fields: Vec<ParsedField>, cx: &mut Context<Self>) {
         self.collapsed_paths.clear();
+        Self::collect_all_container_paths(&fields, &Vec::new(), &mut self.collapsed_paths);
         self.fields = fields;
         self.rebuild_flattened();
         self.selected_index = None;
@@ -189,13 +202,7 @@ impl StructTreeView {
         self.flattened_fields = flattened;
     }
 
-    fn flatten_fields(
-        fields: &[ParsedField],
-        depth: usize,
-        parent_path: &[usize],
-        collapsed_paths: &HashSet<Vec<usize>>,
-        results: &mut Vec<FlattenedField>,
-    ) {
+    fn flatten_fields(fields: &[ParsedField], depth: usize, parent_path: &[usize], collapsed_paths: &HashSet<Vec<usize>>, results: &mut Vec<FlattenedField>) {
         for (idx, field) in fields.iter().enumerate() {
             let mut current_path = parent_path.to_vec();
             current_path.push(idx);

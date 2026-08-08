@@ -655,9 +655,7 @@ impl Workspace {
 
     fn on_action_close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<Self>) {
         let active_panel = self.active_panel.clone();
-        let closed_paths = self.open_file_manager.update(cx, |manager, cx| {
-            manager.close_others(cx)
-        });
+        let closed_paths = self.open_file_manager.update(cx, |manager, cx| manager.close_others(cx));
         let editor_service = AppState::global(cx).editor_service.clone();
         for path in closed_paths {
             editor_service.close_file(&path);
@@ -673,9 +671,7 @@ impl Workspace {
     }
 
     fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, window: &mut Window, cx: &mut Context<Self>) {
-        let closed_paths = self.open_file_manager.update(cx, |manager, cx| {
-            manager.close_all(cx)
-        });
+        let closed_paths = self.open_file_manager.update(cx, |manager, cx| manager.close_all(cx));
         let editor_service = AppState::global(cx).editor_service.clone();
         for path in closed_paths {
             editor_service.close_file(&path);
@@ -702,7 +698,6 @@ impl Workspace {
             });
         }
     }
-
 
     fn on_action_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings_panel(window, cx);
@@ -798,8 +793,6 @@ impl Workspace {
     fn check_has_panels(&self, cx: &App) -> bool {
         self.active_panel.is_some() || !self.open_file_manager.read(cx).entries().is_empty()
     }
-
-
 
     fn on_focus_changed(&self, cx: &mut Context<Self>) {
         self.left_panel.update(cx, |panel, cx| {
@@ -928,7 +921,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_close_all_tabs))
             .on_action(cx.listener(Self::on_action_split_right))
             .on_action(cx.listener(Self::on_action_split_down))
-
             .on_drop(cx.listener(move |this, external_paths: &gpui::ExternalPaths, window, cx| {
                 for path in external_paths.paths() {
                     if path.is_file() {
@@ -970,25 +962,24 @@ impl Render for Workspace {
                                     .size_full()
                                     .flex()
                                     .flex_col()
-                                    .when(has_tabs, |el| el.child(crate::ui::components::tab_bar::render_zed_tab_bar(&tab_items, window, cx)))
+                                    .when(has_tabs, |el| {
+                                        el.child(crate::ui::components::tab_bar::render_zed_tab_bar(&tab_items, window, cx))
+                                    })
                                     .child(self.dock_area.clone())
-                                    .when(
-                                        !self.check_has_panels(cx),
-                                        |this| {
-                                            this.child(
-                                                div()
-                                                    .absolute()
-                                                    .top_0()
-                                                    .left_0()
-                                                    .size_full()
-                                                    .flex()
-                                                    .justify_center()
-                                                    .items_center()
-                                                    .bg(cx.theme().background)
-                                                    .child(div().text_xl().text_color(cx.theme().muted_foreground).child("Nothing is open")),
-                                            )
-                                        },
-                                    ),
+                                    .when(!self.check_has_panels(cx), |this| {
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .size_full()
+                                                .flex()
+                                                .justify_center()
+                                                .items_center()
+                                                .bg(cx.theme().background)
+                                                .child(div().text_xl().text_color(cx.theme().muted_foreground).child("Nothing is open")),
+                                        )
+                                    }),
                             ),
                         ),
                 ),
@@ -1000,20 +991,14 @@ impl Render for Workspace {
     }
 }
 
-pub fn set_kaitai_definition_async(
-    editor_entity: &Entity<Editor>,
-    ksy: Arc<crate::core::structure::KsyDefinition>,
-    cx: &mut App,
-) {
+pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crate::core::structure::KsyDefinition>, cx: &mut App) {
     let (bytes, generation) = editor_entity.update(cx, |editor, cx| {
         editor.ksy_definition = Some(ksy.clone());
         editor.is_parsing_structure = true;
         editor.parse_generation += 1;
+        editor.invalidate_line_map();
         cx.notify();
-        (
-            editor.document.read().unwrap().buffer.data().to_vec(),
-            editor.parse_generation,
-        )
+        (editor.document.read().unwrap().buffer.data().to_vec(), editor.parse_generation)
     });
 
     let editor_entity = editor_entity.clone();
@@ -1029,7 +1014,7 @@ pub fn set_kaitai_definition_async(
 
         let _ = editor_entity.update(cx, |editor, cx| {
             if editor.parse_generation == generation {
-                editor.parse_result = Some(result);
+                editor.set_parse_result(result);
                 editor.is_parsing_structure = false;
                 cx.notify();
             }

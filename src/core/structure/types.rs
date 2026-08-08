@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use gpui::Hsla;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum FieldValue {
@@ -153,18 +154,108 @@ pub struct ParseError {
 }
 
 #[derive(Debug, Clone)]
+pub struct ActiveStructRange {
+    pub start: usize,
+    pub end: usize,
+    pub depth: usize,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StructureIndex {
+    pub container_structs: Vec<ParsedField>,
+    pub leaf_fields: Vec<ParsedField>,
+    pub active_ranges: Vec<ActiveStructRange>,
+    pub highlights: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ParseResult {
     pub definition_id: String,
     pub fields: Vec<ParsedField>,
     pub total_parsed_bytes: usize,
     pub errors: Vec<ParseError>,
+    pub index: Arc<StructureIndex>,
 }
 
 impl ParseResult {
-    pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
+    pub fn new(definition_id: String, fields: Vec<ParsedField>, total_parsed_bytes: usize, errors: Vec<ParseError>) -> Self {
+        let index = Arc::new(Self::build_structure_index(&fields));
+        Self {
+            definition_id,
+            fields,
+            total_parsed_bytes,
+            errors,
+            index,
+        }
+    }
+
+    pub fn build_index(&mut self) {
+        self.index = Arc::new(Self::build_structure_index(&self.fields));
+    }
+
+    fn build_structure_index(fields: &[ParsedField]) -> StructureIndex {
         let mut highlights = Vec::new();
-        Self::collect_highlights(&self.fields, &mut highlights);
-        highlights
+        Self::collect_highlights(fields, &mut highlights);
+
+        let mut raw_containers = Vec::new();
+        Self::collect_all_containers(fields, &mut raw_containers);
+
+        let mut raw_leaves = Vec::new();
+        Self::collect_all_leaves(fields, &mut raw_leaves);
+
+        let mut active_ranges = Vec::new();
+        Self::collect_active_struct_ranges(fields, 0, &mut active_ranges);
+
+        StructureIndex {
+            container_structs: raw_containers,
+            leaf_fields: raw_leaves,
+            active_ranges,
+            highlights,
+        }
+    }
+
+    fn collect_all_containers(fields: &[ParsedField], result: &mut Vec<ParsedField>) {
+        for field in fields {
+            if field.is_struct() {
+                if !result
+                    .iter()
+                    .any(|existing| existing.offset == field.offset && existing.size == field.size && existing.id == field.id)
+                {
+                    result.push(field.clone());
+                }
+            }
+            if !field.children.is_empty() {
+                Self::collect_all_containers(&field.children, result);
+            }
+        }
+    }
+
+    fn collect_all_leaves(fields: &[ParsedField], result: &mut Vec<ParsedField>) {
+        for field in fields {
+            if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
+                if !result.iter().any(|existing| {
+                    existing.offset == field.offset
+                        && existing.size == field.size
+                        && (existing.id == field.id || existing.format_expression() == field.format_expression())
+                }) {
+                    result.push(field.clone());
+                }
+            }
+            if !field.children.is_empty() {
+                Self::collect_all_leaves(&field.children, result);
+            }
+        }
+    }
+
+    pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
+        if !self.index.highlights.is_empty() || self.fields.is_empty() {
+            self.index.highlights.clone()
+        } else {
+            let mut highlights = Vec::new();
+            Self::collect_highlights(&self.fields, &mut highlights);
+            highlights
+        }
     }
 
     fn collect_highlights(fields: &[ParsedField], highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>) {
@@ -195,21 +286,32 @@ impl ParseResult {
     }
 
     pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
+        let end_offset = start_offset + len;
+        let containers = &self.index.container_structs;
+        if containers.is_empty() && !self.fields.is_empty() {
+            let mut result = Vec::new();
+            Self::collect_container_structs_starting(&self.fields, start_offset, len, &mut result);
+            return result;
+        }
+        let start_idx = containers.partition_point(|f| f.offset < start_offset);
         let mut result = Vec::new();
-        Self::collect_container_structs_starting(&self.fields, start_offset, len, &mut result);
+        for field in &containers[start_idx..] {
+            if field.offset >= end_offset {
+                break;
+            }
+            result.push(field);
+        }
         result
     }
 
-    fn collect_container_structs_starting<'a>(
-        fields: &'a [ParsedField],
-        start_offset: usize,
-        len: usize,
-        result: &mut Vec<&'a ParsedField>,
-    ) {
+    fn collect_container_structs_starting<'a>(fields: &'a [ParsedField], start_offset: usize, len: usize, result: &mut Vec<&'a ParsedField>) {
         let end_offset = start_offset + len;
         for field in fields {
             if field.is_struct() && field.offset >= start_offset && field.offset < end_offset {
-                if !result.iter().any(|existing| existing.offset == field.offset && existing.size == field.size && existing.id == field.id) {
+                if !result
+                    .iter()
+                    .any(|existing| existing.offset == field.offset && existing.size == field.size && existing.id == field.id)
+                {
                     result.push(field);
                 }
             }
@@ -220,22 +322,34 @@ impl ParseResult {
     }
 
     pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
+        let end_offset = start_offset + len;
+        let leaves = &self.index.leaf_fields;
+        if leaves.is_empty() && !self.fields.is_empty() {
+            let mut result = Vec::new();
+            Self::collect_leaf_fields_starting(&self.fields, start_offset, len, &mut result);
+            return result;
+        }
+        let start_idx = leaves.partition_point(|f| f.offset < start_offset);
         let mut result = Vec::new();
-        Self::collect_leaf_fields_starting(&self.fields, start_offset, len, &mut result);
+        for field in &leaves[start_idx..] {
+            if field.offset >= end_offset {
+                break;
+            }
+            result.push(field);
+        }
         result
     }
 
-    fn collect_leaf_fields_starting<'a>(
-        fields: &'a [ParsedField],
-        start_offset: usize,
-        len: usize,
-        result: &mut Vec<&'a ParsedField>,
-    ) {
+    fn collect_leaf_fields_starting<'a>(fields: &'a [ParsedField], start_offset: usize, len: usize, result: &mut Vec<&'a ParsedField>) {
         let end_offset = start_offset + len;
         for field in fields {
             if field.offset >= start_offset && field.offset < end_offset {
                 if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
-                    if !result.iter().any(|existing| existing.offset == field.offset && existing.size == field.size && (existing.id == field.id || existing.format_expression() == field.format_expression())) {
+                    if !result.iter().any(|existing| {
+                        existing.offset == field.offset
+                            && existing.size == field.size
+                            && (existing.id == field.id || existing.format_expression() == field.format_expression())
+                    }) {
                         result.push(field);
                     }
                 }
@@ -247,25 +361,35 @@ impl ParseResult {
     }
 
     pub fn find_active_struct_ranges(&self, start_offset: usize, len: usize) -> Vec<(usize, usize, usize, String)> {
-        let mut ranges = Vec::new();
-        Self::collect_active_struct_ranges(&self.fields, 0, &mut ranges);
         let row_end = start_offset + len;
+        let ranges = &self.index.active_ranges;
+        if ranges.is_empty() && !self.fields.is_empty() {
+            let mut raw_ranges = Vec::new();
+            Self::collect_active_struct_ranges(&self.fields, 0, &mut raw_ranges);
+            return raw_ranges
+                .into_iter()
+                .filter(|r| r.start < row_end && r.end > start_offset)
+                .map(|r| (r.start, r.end, r.depth, r.id))
+                .collect();
+        }
         ranges
-            .into_iter()
-            .filter(|(s, e, _, _)| *s < row_end && *e > start_offset)
+            .iter()
+            .filter(|r| r.start < row_end && r.end > start_offset)
+            .map(|r| (r.start, r.end, r.depth, r.id.clone()))
             .collect()
     }
 
-    fn collect_active_struct_ranges(
-        fields: &[ParsedField],
-        depth: usize,
-        ranges: &mut Vec<(usize, usize, usize, String)>,
-    ) {
+    fn collect_active_struct_ranges(fields: &[ParsedField], depth: usize, ranges: &mut Vec<ActiveStructRange>) {
         for field in fields {
             if field.is_struct() {
                 let end = field.offset + field.size;
-                if !ranges.iter().any(|(s, e, _, id)| *s == field.offset && *e == end && *id == field.id) {
-                    ranges.push((field.offset, end, depth, field.id.clone()));
+                if !ranges.iter().any(|r| r.start == field.offset && r.end == end && r.id == field.id) {
+                    ranges.push(ActiveStructRange {
+                        start: field.offset,
+                        end,
+                        depth,
+                        id: field.id.clone(),
+                    });
                 }
                 if !field.children.is_empty() {
                     Self::collect_active_struct_ranges(&field.children, depth + 1, ranges);
@@ -274,4 +398,3 @@ impl ParseResult {
         }
     }
 }
-

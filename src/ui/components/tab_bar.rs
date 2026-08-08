@@ -3,9 +3,7 @@ use gpui::*;
 use gpui_component::{ActiveTheme, Icon, IconName};
 use std::path::PathBuf;
 
-use crate::actions::{
-    ActivateTab, CloseActivePanel,
-};
+use crate::actions::{ActivateTab, CloseActivePanel};
 
 pub struct TabItemInfo {
     pub id: usize,
@@ -15,11 +13,7 @@ pub struct TabItemInfo {
     pub path: Option<PathBuf>,
 }
 
-pub fn render_zed_tab_bar(
-    tabs: &[TabItemInfo],
-    _window: &mut Window,
-    cx: &mut App,
-) -> impl IntoElement {
+pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut App) -> impl IntoElement {
     let theme = cx.theme();
     let tab_bar_bg = theme.tab_bar;
 
@@ -56,39 +50,25 @@ pub fn render_zed_tab_bar(
                 .border_r_1()
                 .border_color(theme.border)
                 .when(is_active, |s| {
-                    s.bg(rgb(0xffffff))
-                        .text_color(theme.foreground)
-                        .font_weight(gpui::FontWeight::MEDIUM)
+                    s.bg(rgb(0xffffff)).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
                 })
                 .when(!is_active, |s| {
                     s.bg(tab_bar_bg)
                         .text_color(theme.muted_foreground)
                         .hover(|style| style.bg(theme.accent.opacity(0.12)))
                 })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    move |_, window, cx| {
-                        window.dispatch_action(Box::new(ActivateTab { index: one_based_index }), cx);
-                    },
-                )
-                .on_mouse_down(
-                    MouseButton::Middle,
-                    move |_, window, cx| {
-                        window.dispatch_action(Box::new(CloseActivePanel), cx);
-                    },
-                )
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    window.dispatch_action(Box::new(ActivateTab { index: one_based_index }), cx);
+                })
+                .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
+                    window.dispatch_action(Box::new(CloseActivePanel), cx);
+                })
                 .child(
                     Icon::new(IconName::File)
                         .size(px(14.0))
                         .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .text_sm()
-                        .child(title),
-                )
+                .child(div().flex_1().truncate().text_sm().child(title))
                 .child(
                     div()
                         .id(ElementId::NamedInteger("tab-close-area".into(), tab_id as u64))
@@ -99,28 +79,15 @@ pub fn render_zed_tab_bar(
                         .h(px(18.0))
                         .rounded_sm()
                         .hover(|style| style.bg(theme.accent.opacity(0.2)).text_color(theme.accent_foreground))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            move |_, window, cx| {
-                                window.dispatch_action(Box::new(ActivateTab { index: one_based_index }), cx);
-                                window.dispatch_action(Box::new(CloseActivePanel), cx);
-                            },
-                        )
-                        .child(
-                            if is_dirty && !is_active {
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded_full()
-                                    .bg(theme.accent)
-                                    .into_any_element()
-                            } else {
-                                Icon::new(IconName::Close)
-                                    .size(px(12.0))
-                                    .text_color(theme.muted_foreground)
-                                    .into_any_element()
-                            },
-                        ),
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            window.dispatch_action(Box::new(ActivateTab { index: one_based_index }), cx);
+                            window.dispatch_action(Box::new(CloseActivePanel), cx);
+                        })
+                        .child(if is_dirty && !is_active {
+                            div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent).into_any_element()
+                        } else {
+                            Icon::new(IconName::Close).size(px(12.0)).text_color(theme.muted_foreground).into_any_element()
+                        }),
                 )
         }))
 }

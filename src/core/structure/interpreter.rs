@@ -126,12 +126,7 @@ impl KaitaiInterpreter {
                 fields.extend(self.parse_attr_repeated(&attr, stream, &types, &enums));
             }
         }
-        ParseResult {
-            definition_id: self.ksy.meta.id.clone(),
-            fields,
-            total_parsed_bytes: stream.pos() as usize,
-            errors: self.errors.into_inner(),
-        }
+        ParseResult::new(self.ksy.meta.id.clone(), fields, stream.pos() as usize, self.errors.into_inner())
     }
 
     fn make_eval_ctx<'b>(&'b self, stream: &KaitaiStream) -> EvalContext<'b> {

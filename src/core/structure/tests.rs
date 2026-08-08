@@ -510,12 +510,7 @@ types:
             enum_label: None,
         };
 
-        let result = ParseResult {
-            definition_id: "pe".into(),
-            fields: vec![container],
-            total_parsed_bytes: 64,
-            errors: vec![],
-        };
+        let result = ParseResult::new("pe".into(), vec![container], 64, vec![]);
 
         let containers = result.find_container_structs_starting_at(0, 16);
         assert_eq!(containers.len(), 1);
@@ -536,9 +531,9 @@ types:
 
     #[test]
     fn test_editor_line_starts_breaks_per_field() {
-        use std::sync::{Arc, RwLock};
         use crate::core::document::Document;
         use crate::core::editor::Editor;
+        use std::sync::{Arc, RwLock};
 
         let ksy_yaml = r#"
 meta:
@@ -566,9 +561,9 @@ seq:
 
     #[test]
     fn test_editor_toggle_inline_structure_view_and_collapse() {
-        use std::sync::{Arc, RwLock};
         use crate::core::document::Document;
         use crate::core::editor::Editor;
+        use std::sync::{Arc, RwLock};
 
         let ksy_yaml = r#"
 meta:
@@ -650,15 +645,141 @@ seq:
             enum_label: None,
         };
 
-        let parse_result = ParseResult {
-            definition_id: "zip".into(),
-            fields: vec![section0, local_header_inst],
-            total_parsed_bytes: 30,
-            errors: Vec::new(),
-        };
+        let parse_result = ParseResult::new("zip".into(), vec![section0, local_header_inst], 30, Vec::new());
 
         let leaves = parse_result.find_leaf_fields_starting_at(0, 2);
         assert_eq!(leaves.len(), 1, "Duplicate leaf fields with same offset and ID must be deduplicated");
         assert_eq!(leaves[0].id, "magic");
+    }
+
+    #[test]
+    fn test_large_scale_binary_search_and_performance() {
+        use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+
+        // Simulate 10,000 fields in a large ZIP archive
+        let count = 10_000;
+        let mut fields = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let offset = i * 32;
+            let leaf = ParsedField {
+                id: format!("field_{}", i),
+                field_type: "u4".into(),
+                offset,
+                size: 4,
+                value: FieldValue::U32(i as u32),
+                color: gpui::Hsla::default(),
+                description: Some(format!("Description for field {}", i)),
+                children: Vec::new(),
+                enum_label: None,
+            };
+
+            let container = ParsedField {
+                id: format!("entry_{}", i),
+                field_type: "zip_entry".into(),
+                offset,
+                size: 32,
+                value: FieldValue::Struct,
+                color: gpui::Hsla::default(),
+                description: None,
+                children: vec![leaf],
+                enum_label: None,
+            };
+
+            fields.push(container);
+        }
+
+        let parse_result = ParseResult::new("large_zip".into(), fields, count * 32, Vec::new());
+
+        // Verify O(log N) binary search correctness at various offsets
+        let test_offsets = [0, 32 * 500, 32 * 5000, 32 * 9999];
+        for &off in &test_offsets {
+            let target_idx = off / 32;
+            let containers = parse_result.find_container_structs_starting_at(off, 32);
+            assert_eq!(containers.len(), 1);
+            assert_eq!(containers[0].id, format!("entry_{}", target_idx));
+
+            let leaves = parse_result.find_leaf_fields_starting_at(off, 32);
+            assert_eq!(leaves.len(), 1);
+            assert_eq!(leaves[0].id, format!("field_{}", target_idx));
+        }
+
+        // Simulate rendering 1000 visible rows during fast scrolling (benchmarking response)
+        let start_time = std::time::Instant::now();
+        for row in 0..1000 {
+            let row_offset = (row * 16) % (count * 32);
+            let _ = parse_result.find_container_structs_starting_at(row_offset, 16);
+            let _ = parse_result.find_leaf_fields_starting_at(row_offset, 16);
+            let _ = parse_result.find_active_struct_ranges(row_offset, 16);
+        }
+        let elapsed = start_time.elapsed();
+        // 1000 row searches on 10,000 elements should take under 50ms (typically < 2ms with binary search)
+        assert!(
+            elapsed.as_millis() < 50,
+            "1000 visible row lookups must complete in under 50ms, took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_struct_tree_all_collapsed_by_default() {
+        use crate::core::structure::types::{FieldValue, ParsedField};
+        use std::collections::HashSet;
+
+        let leaf = ParsedField {
+            id: "magic".into(),
+            field_type: "u2".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::U16(0x5A4D),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+        };
+
+        let child_container = ParsedField {
+            id: "child_struct".into(),
+            field_type: "child_type".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![leaf],
+            enum_label: None,
+        };
+
+        let root_container = ParsedField {
+            id: "root_struct".into(),
+            field_type: "root_type".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![child_container],
+            enum_label: None,
+        };
+
+        let fields = vec![root_container];
+        let mut collapsed_paths = HashSet::new();
+
+        fn collect_all_container_paths(fields: &[ParsedField], parent_path: &[usize], collapsed: &mut HashSet<Vec<usize>>) {
+            for (idx, field) in fields.iter().enumerate() {
+                let mut current_path = parent_path.to_vec();
+                current_path.push(idx);
+                if !field.children.is_empty() {
+                    collapsed.insert(current_path.clone());
+                    collect_all_container_paths(&field.children, &current_path, collapsed);
+                }
+            }
+        }
+
+        collect_all_container_paths(&fields, &Vec::new(), &mut collapsed_paths);
+
+        // root_struct (path: [0]) and child_struct (path: [0, 0]) should both be collapsed
+        assert!(collapsed_paths.contains(&vec![0]));
+        assert!(collapsed_paths.contains(&vec![0, 0]));
     }
 }

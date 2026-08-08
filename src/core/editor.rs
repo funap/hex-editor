@@ -38,7 +38,7 @@ pub struct Editor {
     pub empty_lines: std::collections::BTreeMap<usize, usize>,
     pub encoding: Encoding,
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
-    pub parse_result: Option<ParseResult>,
+    pub parse_result: Option<Arc<ParseResult>>,
     pub is_parsing_structure: bool,
     pub parse_generation: usize,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
@@ -564,7 +564,11 @@ impl Editor {
                     while event_idx < layout_events.len() && layout_events[event_idx] <= current {
                         event_idx += 1;
                     }
-                    let next_event = if event_idx < layout_events.len() { Some(layout_events[event_idx]) } else { None };
+                    let next_event = if event_idx < layout_events.len() {
+                        Some(layout_events[event_idx])
+                    } else {
+                        None
+                    };
 
                     match next_event {
                         Some(ev) if ev - current > BYTES_PER_ROW => {
@@ -615,7 +619,11 @@ impl Editor {
                             while event_idx < layout_events.len() && layout_events[event_idx] < current {
                                 event_idx += 1;
                             }
-                            let next_ev = if event_idx < layout_events.len() { Some(layout_events[event_idx]) } else { None };
+                            let next_ev = if event_idx < layout_events.len() {
+                                Some(layout_events[event_idx])
+                            } else {
+                                None
+                            };
 
                             let can_transition = match next_ev {
                                 Some(ev) => ev - current > BYTES_PER_ROW,
@@ -1379,13 +1387,27 @@ impl Editor {
         self.reparse_structure();
     }
 
+    pub fn set_parse_result(&mut self, result: ParseResult) {
+        self.parse_result = Some(Arc::new(result));
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
+        self.parse_result = Some(result);
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn invalidate_line_map(&self) {
+        self.cached_line_map.replace(None);
+    }
+
     pub fn reparse_structure(&mut self) {
         if let Some(ksy) = &self.ksy_definition {
             let buffer_lock = self.document.read().unwrap();
             let bytes = buffer_lock.buffer.data();
             let mut stream = crate::core::structure::KaitaiStream::new(bytes);
             let interpreter = crate::core::structure::KaitaiInterpreter::new((**ksy).clone());
-            self.parse_result = Some(interpreter.parse(&mut stream));
+            self.parse_result = Some(Arc::new(interpreter.parse(&mut stream)));
             self.cached_line_map.replace(None);
         }
     }

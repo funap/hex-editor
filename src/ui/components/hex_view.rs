@@ -638,6 +638,7 @@ impl HexView {
         desc_col_width: f32,
         comment_col_width: f32,
         _font_family: &SharedString,
+        font_size: Pixels,
         view: Entity<Self>,
         _focus_handle: &FocusHandle,
     ) -> AnyElement {
@@ -684,7 +685,6 @@ impl HexView {
                         )
                     };
                     let line_height = px(ROW_HEIGHT);
-                    let font_size = px(13.0);
                     let font = window.text_style().font();
 
                     // 1. Draw Left Columns (Address OR Offset)
@@ -989,6 +989,7 @@ impl Render for HexView {
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
         let font_family = self.font_family_prop.clone();
+        let font_size = self.font_size_prop;
 
         let (total_rows, max_bytes_per_row, is_struct_mode) = {
             let editor = self.editor.read(cx);
@@ -1396,6 +1397,7 @@ impl Render for HexView {
                                             desc_col_width,
                                             comment_col_width,
                                             &font_family,
+                                            font_size,
                                             view.clone(),
                                             &focus_handle,
                                         )

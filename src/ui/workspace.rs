@@ -524,6 +524,15 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_action_toggle_inline_structure_view(&mut self, _: &crate::actions::ToggleInlineStructureView, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, cx| {
+                editor.toggle_inline_structure_view();
+                cx.notify();
+            });
+        }
+    }
+
     fn on_action_open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
         let path = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
@@ -909,6 +918,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_show_checksum_tab))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
             .on_action(cx.listener(Self::on_action_clear_structure_definition))
+            .on_action(cx.listener(Self::on_action_toggle_inline_structure_view))
             .on_action(cx.listener(Self::on_action_open_folder))
             .on_action(cx.listener(Self::on_action_close_folder))
             .on_action(cx.listener(Self::on_action_activate_next_tab))

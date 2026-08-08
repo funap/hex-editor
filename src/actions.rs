@@ -159,3 +159,6 @@ pub struct SplitRight;
 #[derive(Clone, PartialEq, Action)]
 pub struct SplitDown;
 
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleInlineStructureView;
+

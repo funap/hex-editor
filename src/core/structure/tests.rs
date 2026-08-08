@@ -469,4 +469,196 @@ types:
 
         assert!(result.fields.len() <= 1, "Should terminate loop when stream position does not advance");
     }
+
+    #[test]
+    fn test_parse_result_inline_helpers() {
+        use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+
+        let leaf1 = ParsedField {
+            id: "e_magic".into(),
+            field_type: "u2".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::U16(0x5A4D),
+            color: gpui::Hsla::default(),
+            description: Some("Magic number".into()),
+            children: vec![],
+            enum_label: None,
+        };
+
+        let leaf2 = ParsedField {
+            id: "e_cblp".into(),
+            field_type: "u2".into(),
+            offset: 2,
+            size: 2,
+            value: FieldValue::U16(50),
+            color: gpui::Hsla::default(),
+            description: Some("Bytes on last page".into()),
+            children: vec![],
+            enum_label: None,
+        };
+
+        let container = ParsedField {
+            id: "IMAGE_DOS_HEADER".into(),
+            field_type: "dos_header".into(),
+            offset: 0,
+            size: 64,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![leaf1.clone(), leaf2.clone()],
+            enum_label: None,
+        };
+
+        let result = ParseResult {
+            definition_id: "pe".into(),
+            fields: vec![container],
+            total_parsed_bytes: 64,
+            errors: vec![],
+        };
+
+        let containers = result.find_container_structs_starting_at(0, 16);
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].id, "IMAGE_DOS_HEADER");
+
+        let leaves = result.find_leaf_fields_starting_at(0, 16);
+        assert_eq!(leaves.len(), 2);
+        assert_eq!(leaves[0].id, "e_magic");
+        assert_eq!(leaves[1].id, "e_cblp");
+
+        let active_ranges = result.find_active_struct_ranges(0, 16);
+        assert_eq!(active_ranges.len(), 1);
+        assert_eq!(active_ranges[0].3, "IMAGE_DOS_HEADER");
+
+        assert_eq!(leaf1.format_expression(), "e_magic = 5A4Dh (23117)");
+        assert_eq!(leaf1.format_comment(), Some("Magic number".into()));
+    }
+
+    #[test]
+    fn test_editor_line_starts_breaks_per_field() {
+        use std::sync::{Arc, RwLock};
+        use crate::core::document::Document;
+        use crate::core::editor::Editor;
+
+        let ksy_yaml = r#"
+meta:
+  id: test_header
+seq:
+  - id: field_a
+    type: u2
+  - id: field_b
+    type: u2
+  - id: field_c
+    type: u4
+"#;
+        let ksy = Arc::new(parse_ksy_yaml(ksy_yaml));
+        let buffer = crate::core::buffer::Buffer::new(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A]);
+        let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+        let mut editor = Editor::new(doc);
+        editor.set_kaitai_definition(ksy);
+
+        let line_map = editor.line_starts();
+        assert_eq!(line_map.get(0), Some(0)); // field_a (0..2)
+        assert_eq!(line_map.get(1), Some(2)); // field_b (2..4)
+        assert_eq!(line_map.get(2), Some(4)); // field_c (4..8)
+        assert_eq!(line_map.get(3), Some(8)); // unparsed tail (8..10)
+    }
+
+    #[test]
+    fn test_editor_toggle_inline_structure_view_and_collapse() {
+        use std::sync::{Arc, RwLock};
+        use crate::core::document::Document;
+        use crate::core::editor::Editor;
+
+        let ksy_yaml = r#"
+meta:
+  id: test_header
+seq:
+  - id: field_a
+    type: u2
+  - id: field_b
+    type: u2
+"#;
+        let ksy = Arc::new(parse_ksy_yaml(ksy_yaml));
+        let buffer = crate::core::buffer::Buffer::new(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A]);
+        let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+        let mut editor = Editor::new(doc);
+        editor.set_kaitai_definition(ksy);
+
+        assert!(editor.has_custom_layout());
+
+        // Toggle inline structure view off
+        editor.toggle_inline_structure_view();
+        assert!(!editor.show_inline_structure_view);
+        assert!(!editor.has_custom_layout());
+
+        // Toggle back on
+        editor.toggle_inline_structure_view();
+        assert!(editor.show_inline_structure_view);
+        assert!(editor.has_custom_layout());
+    }
+
+    #[test]
+    fn test_deduplicate_leaf_fields_sharing_offset() {
+        use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+
+        let magic1 = ParsedField {
+            id: "magic".into(),
+            field_type: "bytes".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::Bytes(vec![0x50, 0x4B]),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+        };
+
+        let magic2 = ParsedField {
+            id: "magic".into(),
+            field_type: "bytes".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::Bytes(vec![0x50, 0x4B]),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+        };
+
+        let section0 = ParsedField {
+            id: "sections[0]".into(),
+            field_type: "pk_section".into(),
+            offset: 0,
+            size: 30,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![magic1],
+            enum_label: None,
+        };
+
+        let local_header_inst = ParsedField {
+            id: "local_header".into(),
+            field_type: "pk_section".into(),
+            offset: 0,
+            size: 30,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![magic2],
+            enum_label: None,
+        };
+
+        let parse_result = ParseResult {
+            definition_id: "zip".into(),
+            fields: vec![section0, local_header_inst],
+            total_parsed_bytes: 30,
+            errors: Vec::new(),
+        };
+
+        let leaves = parse_result.find_leaf_fields_starting_at(0, 2);
+        assert_eq!(leaves.len(), 1, "Duplicate leaf fields with same offset and ID must be deduplicated");
+        assert_eq!(leaves[0].id, "magic");
+    }
 }

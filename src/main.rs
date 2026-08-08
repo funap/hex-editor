@@ -90,6 +90,8 @@ fn main() {
                 items: vec![
                     gpui::MenuItem::action("Load Definition...", crate::actions::LoadStructureDefinition),
                     gpui::MenuItem::action("Clear Definition", crate::actions::ClearStructureDefinition),
+                    gpui::MenuItem::separator(),
+                    gpui::MenuItem::action("Toggle Inline Structure View", crate::actions::ToggleInlineStructureView),
                 ],
             },
             gpui::Menu {
@@ -148,7 +150,8 @@ fn main() {
             gpui::KeyBinding::new("cmd-end", crate::actions::GoToEnd, None),
             gpui::KeyBinding::new("cmd-,", crate::actions::OpenSettings, None),
             gpui::KeyBinding::new("cmd-shift-s", crate::actions::LoadStructureDefinition, None),
-            gpui::KeyBinding::new("cmd-shift-v", crate::actions::OpenVisualMap, None),
+            gpui::KeyBinding::new("cmd-shift-v", crate::actions::ToggleInlineStructureView, None),
+            gpui::KeyBinding::new("cmd-shift-m", crate::actions::OpenVisualMap, None),
             gpui::KeyBinding::new("cmd-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
         ]);
 

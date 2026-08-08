@@ -4,6 +4,7 @@ use crate::actions::{
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
+use crate::core::structure::ParseResult;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
@@ -53,6 +54,10 @@ pub const OFFSET_WIDTH: f32 = 80.0;
 pub const HEX_BYTE_WIDTH: f32 = 22.0;
 pub const HEX_GAP: f32 = 4.0;
 pub const SECTION_GAP: f32 = 16.0;
+
+pub const ADDRESS_WIDTH: f32 = 148.0;
+pub const DESC_WIDTH: f32 = 240.0;
+pub const COMMENT_WIDTH: f32 = 300.0;
 
 #[inline]
 fn format_offset_08(offset: usize) -> SharedString {
@@ -156,6 +161,14 @@ pub fn init(cx: &mut App) {
 
 use gpui_component::scroll::{Scrollbar, ScrollbarAxis};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizingColumn {
+    Address,
+    Hex,
+    Description,
+    Comment,
+}
+
 pub struct HexView {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
@@ -174,6 +187,11 @@ pub struct HexView {
     encoding: Encoding,
     font_family_prop: SharedString,
     font_size_prop: Pixels,
+    pub address_col_width: f32,
+    pub hex_col_width: f32,
+    pub desc_col_width: f32,
+    pub comment_col_width: f32,
+    resizing_column: Option<(ResizingColumn, f32, f32)>,
     _editor_subscription: Subscription,
 }
 
@@ -209,6 +227,11 @@ impl HexView {
             encoding: Encoding::Ascii,
             font_family_prop: "Zed Sans Mono".into(),
             font_size_prop: px(14.0),
+            address_col_width: ADDRESS_WIDTH,
+            hex_col_width: 16.0 * (HEX_BYTE_WIDTH + HEX_GAP),
+            desc_col_width: DESC_WIDTH,
+            comment_col_width: COMMENT_WIDTH,
+            resizing_column: None,
             _editor_subscription,
         }
     }
@@ -570,15 +593,36 @@ impl HexView {
             return Some(line_offset);
         }
 
-        let max_bytes_per_row = line_starts.max_bytes_per_row();
-        let offset_width = if self.show_offset { OFFSET_WIDTH } else { 0.0 };
-        let hex_start_x = f32::from(sample_left) + offset_width + 8.0;
-        let hex_end_x = hex_start_x + (max_bytes_per_row as f32 * (HEX_BYTE_WIDTH + HEX_GAP));
-        let ascii_start_x = hex_end_x + SECTION_GAP;
+        let parse_result = editor.parse_result.as_ref();
+        let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+        let _max_bytes_per_row = line_starts.max_bytes_per_row();
+
+        let offset_width = if is_struct_mode {
+            self.address_col_width + SECTION_GAP
+        } else if self.show_offset {
+            OFFSET_WIDTH + SECTION_GAP
+        } else {
+            0.0
+        };
+
+        let base_x = f32::from(sample_left) + 8.0;
+        let hex_start_x = base_x + offset_width;
+        let hex_end_x = hex_start_x + self.hex_col_width;
+        let desc_start_x = hex_end_x + SECTION_GAP;
         let rel_x = f32::from(point.x);
 
-        let col_idx = if self.show_ascii && rel_x >= ascii_start_x {
-            let ascii_x = (rel_x - ascii_start_x).max(0.0);
+        if is_struct_mode && rel_x >= desc_start_x {
+            if let Some(parse_res) = parse_result {
+                let leaf_fields = parse_res.find_leaf_fields_starting_at(line_offset, chunk_len);
+                if let Some(first) = leaf_fields.first() {
+                    return Some(first.offset);
+                }
+            }
+            return Some(line_offset);
+        }
+
+        let col_idx = if !is_struct_mode && self.show_ascii && rel_x >= hex_end_x + SECTION_GAP {
+            let ascii_x = (rel_x - (hex_end_x + SECTION_GAP)).max(0.0);
             (ascii_x / 10.0) as usize
         } else {
             let col_x = (rel_x - hex_start_x).max(0.0);
@@ -593,7 +637,9 @@ impl HexView {
         row_idx: usize,
         doc: &Document,
         line_starts: &crate::core::editor::LineMap,
-        max_bytes_per_row: usize,
+        parse_result: Option<Arc<ParseResult>>,
+        collapsed_structs: Option<Arc<std::collections::HashSet<String>>>,
+        _max_bytes_per_row: usize,
         encoding: Encoding,
         cursor_offset: usize,
         min_sel: usize,
@@ -603,12 +649,14 @@ impl HexView {
         show_offset: bool,
         show_ascii: bool,
         is_focused: bool,
+        address_col_width: f32,
+        hex_col_width: f32,
+        desc_col_width: f32,
+        comment_col_width: f32,
         _font_family: &SharedString,
         view: Entity<Self>,
         _focus_handle: &FocusHandle,
-        cx: &App,
     ) -> AnyElement {
-        let theme = cx.theme();
         let offset = match line_starts.get(row_idx) {
             Some(o) => o,
             None => return div().into_any_element(),
@@ -621,17 +669,13 @@ impl HexView {
 
         let chunk_len = next_offset - offset;
         let chunk = doc.buffer.get_range(offset, chunk_len).to_vec();
-        let offset_str = format_offset_08(offset);
-
-        let selection_bg = if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) };
-        let cursor_bg = theme.accent;
-        let muted_color = theme.muted_foreground;
-        let fg_color = theme.foreground;
-        let accent_fg_color = theme.accent_foreground;
 
         let active_row_highlights = row_highlights(highlights, max_highlight_len, offset, next_offset).to_vec();
 
+        let is_struct_mode = parse_result.is_some();
         let visible_row_view = view.clone();
+        let collapsed_structs_arc = collapsed_structs.clone();
+
         div()
             .id(row_idx)
             .w_full()
@@ -644,119 +688,204 @@ impl HexView {
                         });
                     },
                     move |bounds, _prepaint, window, cx| {
+                        let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg) = {
+                            let theme = cx.theme();
+                            (
+                                if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
+                                theme.accent,
+                                theme.muted_foreground,
+                                theme.foreground,
+                                theme.accent_foreground,
+                                theme.border,
+                                theme.sidebar,
+                            )
+                        };
                         let line_height = px(ROW_HEIGHT);
                         let font_size = px(13.0);
                         let font = window.text_style().font();
 
-                        // 1. Draw Offset Column
-                        if show_offset {
+                        // 1. Draw Left Columns (Address OR Offset)
+                        let (offset_w, gap) = if is_struct_mode {
+                            let addr_str = SharedString::from(format!("{:016X}", offset));
                             let run = gpui::TextRun {
-                                len: offset_str.len(),
+                                len: addr_str.len(),
                                 font: font.clone(),
                                 color: muted_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
-                            let shaped = window.text_system().shape_line(offset_str.clone(), font_size, &[run], None);
-                            let offset_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
-                            let _ = shaped.paint(offset_pos, line_height, window, cx);
+                            let shaped = window.text_system().shape_line(addr_str, font_size, &[run], None);
+                            let addr_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
+                            let _ = shaped.paint(addr_pos, line_height, window, cx);
+                            (address_col_width, SECTION_GAP)
+                        } else {
+                            if show_offset {
+                                let offset_str = format_offset_08(offset);
+                                let run = gpui::TextRun {
+                                    len: offset_str.len(),
+                                    font: font.clone(),
+                                    color: muted_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped = window.text_system().shape_line(offset_str, font_size, &[run], None);
+                                let offset_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
+                                let _ = shaped.paint(offset_pos, line_height, window, cx);
+                            }
+                            (if show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
+                        };
+
+                        let base_x = bounds.left() + px(8.0);
+                        let hex_start_x = base_x + px(offset_w + gap);
+                        let hex_end_x = hex_start_x + px(hex_col_width);
+                        let desc_start_x = hex_end_x + px(gap);
+                        let comment_start_x = desc_start_x + px(desc_col_width + gap);
+
+                        // Vertical Column Divider Borders (matching header splitters exactly)
+                        let border_line_color = border_color.opacity(0.4);
+                        if is_struct_mode || show_offset {
+                            let div1_x = base_x + px(offset_w + (gap / 2.0));
+                            window.paint_quad(gpui::fill(Bounds::new(point(div1_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))), border_line_color));
+                        }
+                        if is_struct_mode {
+                            let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
+                            let div3_x = desc_start_x + px(desc_col_width + (gap / 2.0));
+                            let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
+                            window.paint_quad(gpui::fill(Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))), border_line_color));
+                            window.paint_quad(gpui::fill(Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))), border_line_color));
+                            window.paint_quad(gpui::fill(Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))), border_line_color));
                         }
 
-                        let offset_w = if show_offset { OFFSET_WIDTH } else { 0.0 };
-                        let hex_start_x = bounds.left() + px(offset_w + 8.0);
-                        let ascii_start_x = hex_start_x + px(max_bytes_per_row as f32 * (HEX_BYTE_WIDTH + HEX_GAP) + SECTION_GAP);
+                        // 2. Background Quads Pass for Hex Bytes (with clipping mask)
+                        let hex_mask_bounds = Bounds::new(
+                            point(hex_start_x, bounds.top()),
+                            size(px(hex_col_width), px(ROW_HEIGHT)),
+                        );
+                        window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
+                            for (j, &byte_val) in chunk.iter().enumerate() {
+                                let byte_pos = offset + j;
+                                let is_cursor = byte_pos == cursor_offset;
+                                let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
 
-                        // 2. Background Quads Pass
-                        for (j, &byte_val) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
-                            let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
+                                let mut bg_color = if is_cursor {
+                                    cursor_bg
+                                } else if is_selected {
+                                    selection_bg
+                                } else {
+                                    hsla(0.0, 0.0, 0.0, 0.0)
+                                };
 
-                            let mut bg_color = if is_cursor {
-                                cursor_bg
-                            } else if is_selected {
-                                selection_bg
-                            } else {
-                                hsla(0.0, 0.0, 0.0, 0.0)
-                            };
-
-                            if !is_cursor && !is_selected && !active_row_highlights.is_empty() {
-                                let mut smallest_len = usize::MAX;
-                                for (range, color) in active_row_highlights.iter() {
-                                    if range.contains(&byte_pos) {
-                                        let len = range.end.saturating_sub(range.start);
-                                        if len <= smallest_len {
-                                            smallest_len = len;
-                                            bg_color = *color;
+                                if !is_cursor && !is_selected && !active_row_highlights.is_empty() {
+                                    let mut smallest_len = usize::MAX;
+                                    for (range, color) in active_row_highlights.iter() {
+                                        if range.contains(&byte_pos) {
+                                            let len = range.end.saturating_sub(range.start);
+                                            if len <= smallest_len {
+                                                smallest_len = len;
+                                                bg_color = *color;
+                                            }
                                         }
                                     }
                                 }
+
+                                if bg_color.a > 0.0 {
+                                    let hex_bg_bounds = Bounds::new(
+                                        point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP)), bounds.top()),
+                                        size(px(HEX_BYTE_WIDTH + HEX_GAP), px(ROW_HEIGHT)),
+                                    );
+                                    window.paint_quad(gpui::fill(hex_bg_bounds, bg_color));
+                                }
+
+                                let _ = byte_val;
                             }
 
-                            if bg_color.a > 0.0 {
-                                let hex_bg_bounds = Bounds::new(
-                                    point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP)), bounds.top()),
-                                    size(px(HEX_BYTE_WIDTH + HEX_GAP), px(ROW_HEIGHT)),
-                                );
-                                window.paint_quad(gpui::fill(hex_bg_bounds, bg_color));
+                            // 3. Text Pass for Hex Bytes
+                            for (j, &byte) in chunk.iter().enumerate() {
+                                let byte_pos = offset + j;
+                                let is_cursor = byte_pos == cursor_offset;
 
-                                if show_ascii {
+                                let text_color = if is_cursor {
+                                    accent_fg_color
+                                } else if byte == 0 {
+                                    muted_color.opacity(0.5)
+                                } else {
+                                    fg_color
+                                };
+
+                                let hex_str = SharedString::from(HEX_STR_TABLE[byte as usize]);
+                                let run = gpui::TextRun {
+                                    len: hex_str.len(),
+                                    font: font.clone(),
+                                    color: text_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped_hex = window.text_system().shape_line(hex_str, font_size, &[run], None);
+                                let hex_pos = point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP) + 2.0), bounds.top() + px(2.0));
+                                let _ = shaped_hex.paint(hex_pos, line_height, window, cx);
+                            }
+                        });
+
+                        // 3. ASCII Column (when not in structure definition mode and ASCII view is enabled)
+                        if !is_struct_mode && show_ascii {
+                            let ascii_start_x = hex_end_x + px(gap);
+                            let char_map: Vec<Option<(char, usize)>> = {
+                                let mut map = vec![None; chunk.len()];
+                                let mut j = 0;
+                                while j < chunk.len() {
+                                    if let Some((c, byte_len)) = encoding.decode_char_at(&chunk, j) {
+                                        map[j] = Some((c, byte_len));
+                                        j += byte_len.max(1);
+                                    } else {
+                                        j += 1;
+                                    }
+                                }
+                                map
+                            };
+
+                            for (j, _) in chunk.iter().enumerate() {
+                                let byte_pos = offset + j;
+                                let is_cursor = byte_pos == cursor_offset;
+                                let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
+
+                                let mut bg_color = if is_cursor {
+                                    cursor_bg
+                                } else if is_selected {
+                                    selection_bg
+                                } else {
+                                    hsla(0.0, 0.0, 0.0, 0.0)
+                                };
+
+                                if !is_cursor && !is_selected && !active_row_highlights.is_empty() {
+                                    let mut smallest_len = usize::MAX;
+                                    for (range, color) in active_row_highlights.iter() {
+                                        if range.contains(&byte_pos) {
+                                            let len = range.end.saturating_sub(range.start);
+                                            if len <= smallest_len {
+                                                smallest_len = len;
+                                                bg_color = *color;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if bg_color.a > 0.0 {
                                     let ascii_bg_bounds = Bounds::new(
                                         point(ascii_start_x + px(j as f32 * 10.0), bounds.top()),
                                         size(px(10.0), px(ROW_HEIGHT)),
                                     );
                                     window.paint_quad(gpui::fill(ascii_bg_bounds, bg_color));
                                 }
-                            }
 
-                            let _ = byte_val;
-                        }
-
-                        // 3. Text Pass
-                        // Build a decoded char map for ASCII column: chunk index -> Option<(char, span_len)>
-                        // For multi-byte encodings, each start byte carries the char and span;
-                        // continuation bytes carry None so we skip them.
-                        let char_map: Vec<Option<(char, usize)>> = {
-                            let mut map = vec![None; chunk.len()];
-                            let mut j = 0;
-                            while j < chunk.len() {
-                                if let Some((c, byte_len)) = encoding.decode_char_at(&chunk, j) {
-                                    map[j] = Some((c, byte_len));
-                                    j += byte_len.max(1);
+                                let text_color = if is_cursor {
+                                    accent_fg_color
                                 } else {
-                                    j += 1;
-                                }
-                            }
-                            map
-                        };
+                                    fg_color
+                                };
 
-                        for (j, &byte) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
-
-                            let text_color = if is_cursor {
-                                accent_fg_color
-                            } else if byte == 0 {
-                                muted_color.opacity(0.5)
-                            } else {
-                                fg_color
-                            };
-
-                            let hex_str = SharedString::from(HEX_STR_TABLE[byte as usize]);
-                            let run = gpui::TextRun {
-                                len: hex_str.len(),
-                                font: font.clone(),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped_hex = window.text_system().shape_line(hex_str, font_size, &[run], None);
-                            let hex_pos = point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP) + 2.0), bounds.top() + px(2.0));
-                            let _ = shaped_hex.paint(hex_pos, line_height, window, cx);
-
-                            if show_ascii {
                                 if let Some((ch, _span)) = char_map[j] {
                                     let s = SharedString::from(ch.to_string());
                                     let run = gpui::TextRun {
@@ -771,7 +900,89 @@ impl HexView {
                                     let ascii_pos = point(ascii_start_x + px(j as f32 * 10.0 + 1.0), bounds.top() + px(2.0));
                                     let _ = shaped_ascii.paint(ascii_pos, line_height, window, cx);
                                 }
-                                // continuation bytes: no character drawn (already covered by the start byte's char)
+                            }
+                        }
+
+                        // 4. Description & Comment Columns (when structure definition is present)
+                        if let Some(ref parse_res) = parse_result {
+                            let desc_start_x = hex_end_x + px(SECTION_GAP);
+                            let comment_start_x = desc_start_x + px(desc_col_width + 8.0);
+
+                            let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
+                            let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
+                            let leaf_fields = parse_res.find_leaf_fields_starting_at(offset, chunk_len);
+
+                            let is_collapsed = container_structs.first().map(|c| collapsed_structs_arc.as_ref().map(|s| s.contains(&c.id)).unwrap_or(false)).unwrap_or(false);
+
+                            let struct_depth = active_ranges.len().saturating_sub(1);
+                            let indent_level = if !container_structs.is_empty() {
+                                active_ranges.iter().find(|r| container_structs.first().map(|c| c.id == r.3).unwrap_or(false)).map(|r| r.2).unwrap_or(struct_depth)
+                            } else {
+                                active_ranges.len()
+                            };
+                            let indent_px = indent_level as f32 * 14.0;
+
+                            let mut desc_parts = Vec::new();
+                            if let Some(container) = container_structs.first() {
+                                let icon = if is_collapsed { "▶" } else { "▼" };
+                                if is_collapsed {
+                                    desc_parts.push(format!("{} {} ({} bytes)", icon, container.id, container.size));
+                                } else {
+                                    desc_parts.push(format!("{} {}", icon, container.id));
+                                }
+                            }
+                            if !is_collapsed {
+                                for f in &leaf_fields {
+                                    desc_parts.push(f.format_expression());
+                                }
+                            }
+
+                            if !desc_parts.is_empty() {
+                                let expr_shared = SharedString::from(desc_parts.join("  "));
+                                let text_color = if !container_structs.is_empty() { accent_fg_color } else { fg_color };
+                                let run = gpui::TextRun {
+                                    len: expr_shared.len(),
+                                    font: font.clone(),
+                                    color: text_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped_expr = window.text_system().shape_line(expr_shared, font_size, &[run], None);
+                                let desc_mask_bounds = Bounds::new(
+                                    point(desc_start_x, bounds.top()),
+                                    size(px(desc_col_width), px(ROW_HEIGHT)),
+                                );
+                                window.with_content_mask(Some(gpui::ContentMask { bounds: desc_mask_bounds }), |window| {
+                                    let _ = shaped_expr.paint(point(desc_start_x + px(indent_px), bounds.top() + px(2.0)), line_height, window, cx);
+                                });
+                            }
+
+                            if !is_collapsed {
+                                let comment_str: String = leaf_fields
+                                    .iter()
+                                    .filter_map(|f: &&crate::core::structure::ParsedField| f.format_comment())
+                                    .collect::<Vec<_>>()
+                                    .join(" | ");
+                                if !comment_str.is_empty() {
+                                    let comment_shared = SharedString::from(comment_str);
+                                    let run = gpui::TextRun {
+                                        len: comment_shared.len(),
+                                        font: font.clone(),
+                                        color: muted_color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
+                                    let shaped_comment = window.text_system().shape_line(comment_shared, font_size, &[run], None);
+                                    let comment_mask_bounds = Bounds::new(
+                                        point(comment_start_x, bounds.top()),
+                                        size(px(comment_col_width), px(ROW_HEIGHT)),
+                                    );
+                                    window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
+                                        let _ = shaped_comment.paint(point(comment_start_x, bounds.top() + px(2.0)), line_height, window, cx);
+                                    });
+                                }
                             }
                         }
                     },
@@ -794,20 +1005,28 @@ impl Render for HexView {
         let theme = cx.theme();
         let font_family = self.font_family_prop.clone();
 
-        let (total_rows, max_bytes_per_row) = {
+        let (total_rows, max_bytes_per_row, is_struct_mode) = {
             let editor = self.editor.read(cx);
             let line_starts = editor.line_starts();
-            (line_starts.len().max(1), line_starts.max_bytes_per_row())
+            (
+                line_starts.len().max(1),
+                line_starts.max_bytes_per_row(),
+                editor.show_inline_structure_view && editor.parse_result.is_some(),
+            )
         };
 
         let total_width = {
             let mut w = 8.0;
-            if self.show_offset {
-                w += OFFSET_WIDTH;
+            if is_struct_mode {
+                w += self.address_col_width + SECTION_GAP;
+            } else if self.show_offset {
+                w += OFFSET_WIDTH + SECTION_GAP;
             }
-            w += max_bytes_per_row as f32 * (HEX_BYTE_WIDTH + HEX_GAP);
-            if self.show_ascii {
-                w += SECTION_GAP + (max_bytes_per_row as f32 * 10.0);
+            w += self.hex_col_width + SECTION_GAP;
+            if is_struct_mode {
+                w += self.desc_col_width + SECTION_GAP + self.comment_col_width + SECTION_GAP;
+            } else if self.show_ascii {
+                w += (max_bytes_per_row as f32 * 10.0) + SECTION_GAP;
             }
             w + 16.0
         };
@@ -852,22 +1071,123 @@ impl Render for HexView {
                 .border_color(theme.border)
                 .font_family(font_family.clone())
                 .px_2()
-                .child(if self.show_offset {
-                    div().w(px(OFFSET_WIDTH)).text_xs().text_color(theme.muted_foreground).child("Offset")
+                .child(if is_struct_mode {
+                    h_flex()
+                        .w(px(self.address_col_width + SECTION_GAP))
+                        .child(div().w(px(self.address_col_width)).text_xs().text_color(theme.muted_foreground).child("Address"))
+                        .child(
+                            div()
+                                .w(px(SECTION_GAP))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                    this.resizing_column = Some((ResizingColumn::Address, event.position.x.into(), this.address_col_width));
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element()
+                } else if self.show_offset {
+                    h_flex()
+                        .w(px(OFFSET_WIDTH + SECTION_GAP))
+                        .child(div().w(px(OFFSET_WIDTH)).text_xs().text_color(theme.muted_foreground).child("Offset"))
+                        .child(
+                            div()
+                                .w(px(SECTION_GAP))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border)),
+                        )
+                        .into_any_element()
                 } else {
-                    div()
+                    div().into_any_element()
                 })
-                .child(h_flex().children(hex_cols))
-                .child(if self.show_ascii {
+                .child(
+                    h_flex()
+                        .w(px(self.hex_col_width + SECTION_GAP))
+                        .child(
+                            div()
+                                .w(px(self.hex_col_width))
+                                .overflow_hidden()
+                                .child(h_flex().children(hex_cols)),
+                        )
+                        .child(
+                            div()
+                                .w(px(SECTION_GAP))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                    this.resizing_column = Some((ResizingColumn::Hex, event.position.x.into(), this.hex_col_width));
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(if is_struct_mode {
+                    h_flex()
+                        .child(
+                            h_flex()
+                                .w(px(self.desc_col_width + SECTION_GAP))
+                                .child(div().w(px(self.desc_col_width)).text_xs().text_color(theme.muted_foreground).child("Description"))
+                                .child(
+                                    div()
+                                        .w(px(SECTION_GAP))
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                        .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                            this.resizing_column = Some((ResizingColumn::Description, event.position.x.into(), this.desc_col_width));
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .w(px(self.comment_col_width + SECTION_GAP))
+                                .child(div().w(px(self.comment_col_width)).text_xs().text_color(theme.muted_foreground).child("Comment"))
+                                .child(
+                                    div()
+                                        .w(px(SECTION_GAP))
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                        .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                            this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                } else if self.show_ascii {
                     let label = match self.encoding {
                         Encoding::Ascii => "ASCII",
                         Encoding::Utf8 => "UTF-8",
                         Encoding::Utf16Le => "UTF-16 LE",
                         Encoding::Utf16Be => "UTF-16 BE",
                     };
-                    div().ml(px(SECTION_GAP)).text_xs().text_color(theme.muted_foreground).child(label)
+                    div().ml(px(SECTION_GAP)).text_xs().text_color(theme.muted_foreground).child(label).into_any_element()
                 } else {
-                    div()
+                    div().into_any_element()
                 })
                 .into_any_element()
         } else {
@@ -930,6 +1250,26 @@ impl Render for HexView {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if let Some((col, start_x, start_w)) = this.resizing_column {
+                    let current_x: f32 = event.position.x.into();
+                    let delta = current_x - start_x;
+                    match col {
+                        ResizingColumn::Address => {
+                            this.address_col_width = (start_w + delta).max(60.0);
+                        }
+                        ResizingColumn::Hex => {
+                            this.hex_col_width = (start_w + delta).max(100.0);
+                        }
+                        ResizingColumn::Description => {
+                            this.desc_col_width = (start_w + delta).max(80.0);
+                        }
+                        ResizingColumn::Comment => {
+                            this.comment_col_width = (start_w + delta).max(80.0);
+                        }
+                    }
+                    cx.notify();
+                    return;
+                }
                 if this.is_selecting {
                     if let Some(target_pos) = this.offset_from_point(event.position, cx) {
                         this.editor.update(cx, |editor, cx| {
@@ -945,6 +1285,10 @@ impl Render for HexView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.resizing_column.is_some() {
+                        this.resizing_column = None;
+                        cx.notify();
+                    }
                     if this.is_selecting {
                         this.is_selecting = false;
                         let (start, end, cursor_offset) = {
@@ -988,14 +1332,23 @@ impl Render for HexView {
                         .inset_0(),
                     )
                     .child(
-                        uniform_list("hex-view-list", total_rows, move |range, _window, cx| {
+                        uniform_list(
+                            if is_struct_mode { "hex-view-list-struct" } else { "hex-view-list-std" },
+                            total_rows,
+                            move |range, _window, cx| {
                             let top_row = range.start;
                             let bottom_row = range.end.saturating_sub(2);
                             view.update(cx, |this, _cx| {
                                 this.visible_range.set(Some((top_row, bottom_row)));
                             });
                             let view_read = view.read(cx);
+                            let address_col_width = view_read.address_col_width;
+                            let hex_col_width = view_read.hex_col_width;
+                            let desc_col_width = view_read.desc_col_width;
+                            let comment_col_width = view_read.comment_col_width;
                             let editor = view_read.editor.read(cx);
+                            let parse_result = editor.parse_result.clone().map(Arc::new);
+                            let collapsed_structs = Arc::new(editor.collapsed_struct_ids.clone());
                             let doc = editor.document.read().unwrap();
                             let line_starts = editor.line_starts();
                             let cursor_offset = editor.cursor_offset;
@@ -1011,6 +1364,8 @@ impl Render for HexView {
                                         row_idx,
                                         &doc,
                                         &line_starts,
+                                        parse_result.clone(),
+                                        Some(collapsed_structs.clone()),
                                         max_bytes_per_row,
                                         encoding,
                                         cursor_offset,
@@ -1021,10 +1376,13 @@ impl Render for HexView {
                                         show_offset,
                                         show_ascii,
                                         is_focused,
+                                        address_col_width,
+                                        hex_col_width,
+                                        desc_col_width,
+                                        comment_col_width,
                                         &font_family,
                                         view.clone(),
                                         &focus_handle,
-                                        cx,
                                     )
                                 })
                                 .collect::<Vec<_>>()

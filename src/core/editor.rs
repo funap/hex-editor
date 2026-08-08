@@ -41,6 +41,8 @@ pub struct Editor {
     pub parse_result: Option<ParseResult>,
     pub is_parsing_structure: bool,
     pub parse_generation: usize,
+    pub collapsed_struct_ids: std::collections::HashSet<String>,
+    pub show_inline_structure_view: bool,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
@@ -60,6 +62,8 @@ impl Editor {
             parse_result: None,
             is_parsing_structure: false,
             parse_generation: 0,
+            collapsed_struct_ids: std::collections::HashSet::new(),
+            show_inline_structure_view: true,
             cached_line_map: RefCell::new(None),
         }
     }
@@ -530,21 +534,37 @@ impl Editor {
                 let mut current = 0;
                 let mut current_line = 0;
 
-                let mut events: Vec<usize> = Vec::new();
-                events.extend(self.custom_breaks.iter().copied());
-                events.extend(self.custom_joins.iter().copied());
-                events.extend(self.empty_lines.keys().copied());
-                events.sort_unstable();
-                events.dedup();
+                let mut layout_events: Vec<usize> = Vec::new();
+                layout_events.extend(self.custom_breaks.iter().copied());
+                layout_events.extend(self.custom_joins.iter().copied());
+                layout_events.extend(self.empty_lines.keys().copied());
+                if self.show_inline_structure_view {
+                    if let Some(parse_res) = &self.parse_result {
+                        parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
+                    }
+                }
+                layout_events.sort_unstable();
+                layout_events.dedup();
+
+                let mut break_events: Vec<usize> = Vec::new();
+                break_events.extend(self.custom_breaks.iter().copied());
+                break_events.extend(self.empty_lines.keys().copied());
+                if self.show_inline_structure_view {
+                    if let Some(parse_res) = &self.parse_result {
+                        parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
+                    }
+                }
+                break_events.sort_unstable();
+                break_events.dedup();
 
                 let mut event_idx = 0;
 
                 while current < total_size {
                     // Find next event > current
-                    while event_idx < events.len() && events[event_idx] <= current {
+                    while event_idx < layout_events.len() && layout_events[event_idx] <= current {
                         event_idx += 1;
                     }
-                    let next_event = if event_idx < events.len() { Some(events[event_idx]) } else { None };
+                    let next_event = if event_idx < layout_events.len() { Some(layout_events[event_idx]) } else { None };
 
                     match next_event {
                         Some(ev) if ev - current > BYTES_PER_ROW => {
@@ -592,10 +612,10 @@ impl Editor {
                     while current < total_size {
                         // Check if we can transition back to Standard mode.
                         if !starts.is_empty() {
-                            while event_idx < events.len() && events[event_idx] < current {
+                            while event_idx < layout_events.len() && layout_events[event_idx] < current {
                                 event_idx += 1;
                             }
-                            let next_ev = if event_idx < events.len() { Some(events[event_idx]) } else { None };
+                            let next_ev = if event_idx < layout_events.len() { Some(layout_events[event_idx]) } else { None };
 
                             let can_transition = match next_ev {
                                 Some(ev) => ev - current > BYTES_PER_ROW,
@@ -616,8 +636,8 @@ impl Editor {
 
                         starts.push(current);
 
-                        // Find next custom break after current
-                        let next_custom_break = self.custom_breaks.range((current + 1)..).next().copied();
+                        // Find next event break after current (includes structure field breaks, custom breaks, etc.)
+                        let next_event_break = break_events.iter().copied().find(|&ev| ev > current);
 
                         // Advance in BYTES_PER_ROW increments, skipping joined boundaries
                         let mut next_pos = current + BYTES_PER_ROW;
@@ -625,7 +645,7 @@ impl Editor {
                             next_pos += BYTES_PER_ROW;
                         }
 
-                        match next_custom_break {
+                        match next_event_break {
                             Some(break_pos) if break_pos < next_pos && break_pos > current => {
                                 current = break_pos;
                             }
@@ -806,7 +826,24 @@ impl Editor {
     }
 
     pub fn has_custom_layout(&self) -> bool {
-        !self.custom_breaks.is_empty() || !self.custom_joins.is_empty() || !self.empty_lines.is_empty()
+        !self.custom_breaks.is_empty()
+            || !self.custom_joins.is_empty()
+            || !self.empty_lines.is_empty()
+            || (self.show_inline_structure_view && self.parse_result.is_some())
+    }
+
+    pub fn toggle_struct_collapsed(&mut self, struct_id: &str) {
+        if self.collapsed_struct_ids.contains(struct_id) {
+            self.collapsed_struct_ids.remove(struct_id);
+        } else {
+            self.collapsed_struct_ids.insert(struct_id.to_string());
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn toggle_inline_structure_view(&mut self) {
+        self.show_inline_structure_view = !self.show_inline_structure_view;
+        self.cached_line_map.replace(None);
     }
 
     pub fn custom_layout_count(&self) -> usize {
@@ -1349,11 +1386,13 @@ impl Editor {
             let mut stream = crate::core::structure::KaitaiStream::new(bytes);
             let interpreter = crate::core::structure::KaitaiInterpreter::new((**ksy).clone());
             self.parse_result = Some(interpreter.parse(&mut stream));
+            self.cached_line_map.replace(None);
         }
     }
 
     pub fn clear_structure_definition(&mut self) {
         self.ksy_definition = None;
         self.parse_result = None;
+        self.cached_line_map.replace(None);
     }
 }

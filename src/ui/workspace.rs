@@ -460,16 +460,17 @@ impl Workspace {
     }
 
     fn on_action_load_structure_definition(&mut self, _: &LoadStructureDefinition, window: &mut Window, cx: &mut Context<Self>) {
+        let path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select a Kaitai Struct definition (.ksy, .yaml)".into()),
+        });
+
         let view = cx.entity().clone();
 
         cx.spawn_in(window, async move |_, window| {
-            let file = rfd::AsyncFileDialog::new()
-                .add_filter("Kaitai Struct Definitions", &["ksy", "yaml"])
-                .pick_file()
-                .await;
-
-            if let Some(handle) = file {
-                let path = handle.path().to_path_buf();
+            if let Some(path) = path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut p| p.pop()) {
                 match std::fs::read_to_string(&path) {
                     Ok(contents) => match serde_yaml::from_str::<crate::core::structure::KsyDefinition>(&contents) {
                         Ok(ksy) => {

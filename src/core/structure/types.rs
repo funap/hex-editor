@@ -271,9 +271,7 @@ impl ParseResult {
                         id: field.id.clone(),
                     });
                 }
-            } else if field.children.is_empty()
-                && !matches!(field.value, FieldValue::Struct)
-                && leaf_seen.insert((field.offset, field.size, field.id.as_str()))
+            } else if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) && leaf_seen.insert((field.offset, field.size, field.id.as_str()))
             {
                 leaf_fields.push(field.clone());
             }

@@ -1267,3 +1267,5 @@ types:
     println!("Parsed 50,000 nested records in {:?}", elapsed);
     assert!(elapsed.as_secs_f64() < 2.0, "Parsing 50,000 records took too long: {:?}", elapsed);
 }
+
+

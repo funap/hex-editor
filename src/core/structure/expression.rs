@@ -1150,32 +1150,45 @@ impl ExprAST {
         match id {
             "true" => return ExprValue::Bool(true),
             "false" => return ExprValue::Bool(false),
+            "_io" => return ExprValue::Int(0),
             _ => {}
         }
 
-        let mut path_parts: Vec<String>;
-
-        if id == "_io" {
-            return ExprValue::Int(0);
-        }
-
-        if id == "_root" {
-            path_parts = Vec::new();
-        } else if id == "_parent" {
-            let mut p = ctx.base_path.to_vec();
-            if !p.is_empty() {
-                p.pop();
+        // Fast path: if base_path is empty, direct lookup
+        if ctx.base_path.is_empty() {
+            if let Some(val) = ctx.values.get(id) {
+                return ExprValue::Int(*val);
             }
-            path_parts = p;
-        } else if id == "_" {
-            path_parts = ctx.base_path.to_vec();
-            path_parts.push("_".to_string());
-        } else {
-            path_parts = ctx.base_path.to_vec();
-            path_parts.push(id.to_string());
+            if let Some(val) = ctx.string_values.get(id) {
+                return ExprValue::Str(val.clone());
+            }
+            if let Some(resolver) = ctx.instance_resolver
+                && let Some(val) = resolver(id)
+            {
+                return ExprValue::Int(val);
+            }
         }
 
-        let full_id = path_parts.join(".");
+        let full_id = if id == "_root" {
+            String::new()
+        } else if id == "_parent" {
+            if ctx.base_path.len() > 1 {
+                ctx.base_path[..ctx.base_path.len() - 1].join(".")
+            } else {
+                String::new()
+            }
+        } else if id == "_" {
+            if ctx.base_path.is_empty() {
+                "_".to_string()
+            } else {
+                format!("{}._", ctx.base_path.join("."))
+            }
+        } else if ctx.base_path.is_empty() {
+            id.to_string()
+        } else {
+            format!("{}.{}", ctx.base_path.join("."), id)
+        };
+
         if let Some(val) = ctx.values.get(&full_id) {
             return ExprValue::Int(*val);
         }
@@ -1184,17 +1197,19 @@ impl ExprAST {
         }
 
         // Walk up scope hierarchy from base_path
-        let mut scope = ctx.base_path.to_vec();
-        while !scope.is_empty() {
-            scope.pop();
-            let mut p = scope.clone();
-            p.push(id.to_string());
-            let scope_id = p.join(".");
-            if let Some(val) = ctx.values.get(&scope_id) {
-                return ExprValue::Int(*val);
-            }
-            if let Some(val) = ctx.string_values.get(&scope_id) {
-                return ExprValue::Str(val.clone());
+        if !ctx.base_path.is_empty() {
+            for i in (0..ctx.base_path.len()).rev() {
+                let scope_id = if i == 0 {
+                    id.to_string()
+                } else {
+                    format!("{}.{}", ctx.base_path[..i].join("."), id)
+                };
+                if let Some(val) = ctx.values.get(&scope_id) {
+                    return ExprValue::Int(*val);
+                }
+                if let Some(val) = ctx.string_values.get(&scope_id) {
+                    return ExprValue::Str(val.clone());
+                }
             }
         }
 

@@ -208,71 +208,94 @@ impl ParseResult {
 
     fn build_structure_index(fields: &[ParsedField]) -> StructureIndex {
         let mut highlights = Vec::new();
-        Self::collect_highlights(fields, &mut highlights);
-        highlights.sort_by_key(|(range, _)| range.start);
-
-        let mut raw_containers = Vec::new();
-        let mut container_seen = std::collections::HashSet::new();
-        Self::collect_all_containers(fields, &mut raw_containers, &mut container_seen);
-
-        let mut raw_leaves = Vec::new();
-        let mut leaf_seen = std::collections::HashSet::new();
-        Self::collect_all_leaves(fields, &mut raw_leaves, &mut leaf_seen);
-
+        let mut container_structs = Vec::new();
+        let mut leaf_fields = Vec::new();
         let mut active_ranges = Vec::new();
+
+        let mut container_seen = std::collections::HashSet::new();
+        let mut leaf_seen = std::collections::HashSet::new();
         let mut range_seen = std::collections::HashSet::new();
-        Self::collect_active_struct_ranges(fields, 0, &mut active_ranges, &mut range_seen);
+
+        Self::collect_index_data(
+            fields,
+            0,
+            &mut highlights,
+            &mut container_structs,
+            &mut leaf_fields,
+            &mut active_ranges,
+            &mut container_seen,
+            &mut leaf_seen,
+            &mut range_seen,
+        );
+
+        highlights.sort_unstable_by_key(|(range, _)| range.start);
         active_ranges.sort_unstable_by_key(|r| r.start);
 
         StructureIndex {
-            container_structs: raw_containers,
-            leaf_fields: raw_leaves,
+            container_structs,
+            leaf_fields,
             active_ranges,
             highlights: Arc::new(highlights),
         }
     }
 
-    fn collect_all_containers(fields: &[ParsedField], result: &mut Vec<ParsedField>, seen: &mut std::collections::HashSet<(usize, usize, String)>) {
+    #[allow(clippy::too_many_arguments)]
+    fn collect_index_data<'a>(
+        fields: &'a [ParsedField],
+        depth: usize,
+        highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+        container_structs: &mut Vec<ParsedField>,
+        leaf_fields: &mut Vec<ParsedField>,
+        active_ranges: &mut Vec<ActiveStructRange>,
+        container_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
+        leaf_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
+        range_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
+    ) {
         for field in fields {
-            if field.is_struct() {
-                let key = (field.offset, field.size, field.id.clone());
-                if seen.insert(key) {
-                    result.push(field.clone());
-                }
+            let is_str = field.is_struct();
+            if field.size > 0 && !is_str {
+                highlights.push((field.offset..field.offset + field.size, field.color));
             }
-            if !field.children.is_empty() {
-                Self::collect_all_containers(&field.children, result, seen);
-            }
-        }
-    }
 
-    fn collect_all_leaves(fields: &[ParsedField], result: &mut Vec<ParsedField>, seen: &mut std::collections::HashSet<(usize, usize, String)>) {
-        for field in fields {
-            if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
-                let key = (field.offset, field.size, field.id.clone());
-                if seen.insert(key) {
-                    result.push(field.clone());
+            if is_str {
+                let end = field.offset + field.size;
+                let key = (field.offset, end, field.id.as_str());
+                if container_seen.insert((field.offset, field.size, field.id.as_str())) {
+                    container_structs.push(field.clone());
                 }
+                if range_seen.insert(key) {
+                    active_ranges.push(ActiveStructRange {
+                        start: field.offset,
+                        end,
+                        depth,
+                        id: field.id.clone(),
+                    });
+                }
+            } else if field.children.is_empty()
+                && !matches!(field.value, FieldValue::Struct)
+                && leaf_seen.insert((field.offset, field.size, field.id.as_str()))
+            {
+                leaf_fields.push(field.clone());
             }
+
             if !field.children.is_empty() {
-                Self::collect_all_leaves(&field.children, result, seen);
+                Self::collect_index_data(
+                    &field.children,
+                    depth + 1,
+                    highlights,
+                    container_structs,
+                    leaf_fields,
+                    active_ranges,
+                    container_seen,
+                    leaf_seen,
+                    range_seen,
+                );
             }
         }
     }
 
     pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
         self.index.highlights.as_ref().clone()
-    }
-
-    fn collect_highlights(fields: &[ParsedField], highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>) {
-        for field in fields {
-            if field.size > 0 && !field.is_struct() {
-                highlights.push((field.offset..field.offset + field.size, field.color));
-            }
-            if !field.children.is_empty() {
-                Self::collect_highlights(&field.children, highlights);
-            }
-        }
     }
 
     pub fn collect_field_breaks(&self, breaks: &mut Vec<usize>, collapsed_structs: &std::collections::HashSet<String>) {
@@ -324,45 +347,10 @@ impl ParseResult {
     pub fn find_active_struct_ranges(&self, start_offset: usize, len: usize) -> Vec<(usize, usize, usize, String)> {
         let row_end = start_offset + len;
         let ranges = &self.index.active_ranges;
-        if ranges.is_empty() && !self.fields.is_empty() {
-            let mut raw_ranges = Vec::new();
-            let mut range_seen = std::collections::HashSet::new();
-            Self::collect_active_struct_ranges(&self.fields, 0, &mut raw_ranges, &mut range_seen);
-            return raw_ranges
-                .into_iter()
-                .filter(|r| r.start < row_end && r.end > start_offset)
-                .map(|r| (r.start, r.end, r.depth, r.id))
-                .collect();
-        }
         ranges
             .iter()
             .filter(|r| r.start < row_end && r.end > start_offset)
             .map(|r| (r.start, r.end, r.depth, r.id.clone()))
             .collect()
-    }
-
-    fn collect_active_struct_ranges(
-        fields: &[ParsedField],
-        depth: usize,
-        ranges: &mut Vec<ActiveStructRange>,
-        seen: &mut std::collections::HashSet<(usize, usize, String)>,
-    ) {
-        for field in fields {
-            if field.is_struct() {
-                let end = field.offset + field.size;
-                let key = (field.offset, end, field.id.clone());
-                if seen.insert(key) {
-                    ranges.push(ActiveStructRange {
-                        start: field.offset,
-                        end,
-                        depth,
-                        id: field.id.clone(),
-                    });
-                }
-                if !field.children.is_empty() {
-                    Self::collect_active_struct_ranges(&field.children, depth + 1, ranges, seen);
-                }
-            }
-        }
     }
 }

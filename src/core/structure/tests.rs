@@ -1201,3 +1201,69 @@ fn test_editor_parse_progress_tracking() {
     assert_eq!(editor.parse_total_size, 0);
     assert!(!editor.is_parsing_structure);
 }
+
+#[test]
+fn test_large_scale_struct_parsing_speed() {
+    // Test parsing 50,000 array elements with nested custom types and expressions
+    let ksy_yaml = r#"
+meta:
+  id: test_perf
+  endian: le
+seq:
+  - id: count
+    type: u4
+  - id: records
+    type: record
+    repeat: expr
+    repeat-expr: count
+types:
+  record:
+    seq:
+      - id: id
+        type: u4
+      - id: flags
+        type: u2
+      - id: tag
+        type: str
+        size: 4
+        encoding: utf-8
+      - id: val
+        type: u4
+    instances:
+      is_special:
+        value: '(flags & 0x8000 != 0) ? 1 : 0'
+      computed_sum:
+        value: 'id + val'
+"#;
+
+    let ksy = parse_ksy_yaml(ksy_yaml);
+
+    let count = 50_000u32;
+    let mut data = Vec::with_capacity(4 + count as usize * 14);
+    data.extend_from_slice(&count.to_le_bytes());
+    for i in 0..count {
+        data.extend_from_slice(&i.to_le_bytes()); // id: u4
+        data.extend_from_slice(&0x8001u16.to_le_bytes()); // flags: u2
+        data.extend_from_slice(b"TAG_"); // tag: 4 bytes utf-8
+        data.extend_from_slice(&(i * 2).to_le_bytes()); // val: u4
+    }
+
+    let start = std::time::Instant::now();
+    let mut stream = KaitaiStream::new(&data);
+    let interpreter = KaitaiInterpreter::new(ksy);
+    let result = interpreter.parse(&mut stream);
+    let elapsed = start.elapsed();
+
+    assert_eq!(result.fields.len(), 50_001);
+    if let FieldValue::U32(c) = result.fields[0].value {
+        assert_eq!(c, count);
+    } else {
+        panic!("count mismatch");
+    }
+
+    assert_eq!(result.fields[1].id, "records[0]");
+    assert_eq!(result.fields[1].children.len(), 4);
+
+    println!("Parsed 50,000 nested records in {:?}", elapsed);
+    assert!(elapsed.as_secs_f64() < 2.0, "Parsing 50,000 records took too long: {:?}", elapsed);
+}

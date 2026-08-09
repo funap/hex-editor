@@ -200,21 +200,33 @@ impl<'a> KaitaiStream<'a> {
         self.read_fixed::<8>().map(f64::from_be_bytes)
     }
 
-    pub fn read_bytes(&mut self, size: usize) -> Option<Vec<u8>> {
+    #[inline(always)]
+    pub fn read_bytes_slice(&mut self, size: usize) -> Option<&'a [u8]> {
         self.align_to_byte();
         if self.pos + size <= self.data.len() {
-            let val = self.data[self.pos..self.pos + size].to_vec();
+            let slice = &self.data[self.pos..self.pos + size];
             self.pos += size;
-            Some(val)
+            Some(slice)
         } else {
             None
         }
     }
 
-    pub fn read_bytes_remaining(&mut self) -> Option<Vec<u8>> {
+    #[inline(always)]
+    pub fn read_bytes(&mut self, size: usize) -> Option<Vec<u8>> {
+        self.read_bytes_slice(size).map(|s| s.to_vec())
+    }
+
+    #[inline(always)]
+    pub fn read_bytes_remaining_slice(&mut self) -> Option<&'a [u8]> {
         self.align_to_byte();
         let size = self.data.len() - self.pos;
-        self.read_bytes(size)
+        self.read_bytes_slice(size)
+    }
+
+    #[inline(always)]
+    pub fn read_bytes_remaining(&mut self) -> Option<Vec<u8>> {
+        self.read_bytes_remaining_slice().map(|s| s.to_vec())
     }
 
     /// Reads bytes until the terminator byte is found.
@@ -224,29 +236,18 @@ impl<'a> KaitaiStream<'a> {
     /// - `eos_error`: if true, returns None when EOF is reached without finding the terminator.
     pub fn read_bytes_term(&mut self, term: u8, include: bool, consume: bool, eos_error: bool) -> Option<Vec<u8>> {
         self.align_to_byte();
-        let mut buf = Vec::new();
-        let mut idx = self.pos;
-        let mut found = false;
-        while idx < self.data.len() {
-            let b = self.data[idx];
-            if b == term {
-                found = true;
-                if include {
-                    buf.push(b);
-                }
-                if consume {
-                    idx += 1;
-                }
-                break;
-            }
-            buf.push(b);
-            idx += 1;
-        }
-        if eos_error && !found {
+        let rem = &self.data[self.pos..];
+        if let Some(idx) = rem.iter().position(|&b| b == term) {
+            let result_len = if include { idx + 1 } else { idx };
+            let result = rem[..result_len].to_vec();
+            self.pos += if consume { idx + 1 } else { idx };
+            Some(result)
+        } else if eos_error {
             None
         } else {
-            self.pos = idx;
-            Some(buf)
+            let result = rem.to_vec();
+            self.pos = self.data.len();
+            Some(result)
         }
     }
 
@@ -257,44 +258,31 @@ impl<'a> KaitaiStream<'a> {
             return Some(Vec::new());
         }
 
-        let data = &self.data[self.pos..];
-        let len = data.len();
-        let mut i_data = 0;
-        let mut i_term = 0;
-        let mut term_found = false;
-
-        while i_data < len {
-            if data[i_data] != terminator[i_term] {
-                i_data = i_data - i_term + 1;
-                i_term = 0;
-                continue;
-            }
-            i_data += 1;
-            i_term += 1;
-            if i_term == unit_size {
-                term_found = true;
-                break;
-            }
-        }
-
-        if term_found {
-            let match_len = i_data;
-            let result_len = if include { match_len } else { match_len - unit_size };
-            let result = data[..result_len].to_vec();
-            self.pos += if consume { match_len } else { match_len - unit_size };
+        let rem = &self.data[self.pos..];
+        if let Some(idx) = rem.windows(unit_size).position(|w| w == terminator) {
+            let result_len = if include { idx + unit_size } else { idx };
+            let result = rem[..result_len].to_vec();
+            self.pos += if consume { idx + unit_size } else { idx };
             Some(result)
         } else if eos_error {
             None
         } else {
-            let result = data.to_vec();
+            let result = rem.to_vec();
             self.pos = self.data.len();
             Some(result)
         }
     }
 
     pub fn ensure_fixed_contents(&mut self, expected: &[u8]) -> Option<Vec<u8>> {
-        let actual = self.read_bytes(expected.len())?;
-        if actual == expected { Some(actual) } else { None }
+        self.align_to_byte();
+        if self.pos + expected.len() <= self.data.len() {
+            let slice = &self.data[self.pos..self.pos + expected.len()];
+            if slice == expected {
+                self.pos += expected.len();
+                return Some(slice.to_vec());
+            }
+        }
+        None
     }
 }
 

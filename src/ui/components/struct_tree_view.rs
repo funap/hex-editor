@@ -45,7 +45,6 @@ pub struct FlattenedField {
     pub offset: usize,
     pub size: usize,
     pub value_str: SharedString,
-    pub color: Hsla,
     pub depth: usize,
     pub has_children: bool,
     pub is_collapsed: bool,
@@ -225,7 +224,6 @@ impl StructTreeView {
                 offset: field.offset,
                 size: field.size,
                 value_str: val_str,
-                color: field.color,
                 depth,
                 has_children,
                 is_collapsed: !is_expanded,
@@ -284,12 +282,20 @@ impl StructTreeView {
             item.offset
         };
 
-        // Don't move cursor for 0-byte leaf nodes (e.g. zero-size structs)
-        let should_move_cursor = item.size > 0 || item.has_children;
-
-        if should_move_cursor && let Some(editor) = &self.editor {
+        if let Some(editor) = &self.editor {
             editor.update(cx, |editor, cx| {
-                editor.set_cursor_offset(offset);
+                let total = editor.total_size();
+                if total > 0 && item.size > 0 {
+                    let start = item.offset.min(total.saturating_sub(1));
+                    let end = (item.offset + item.size.saturating_sub(1)).min(total.saturating_sub(1));
+                    editor.selection_start = Some(start);
+                    editor.selection_end = Some(end);
+                    editor.cursor_offset = start;
+                } else {
+                    editor.selection_start = None;
+                    editor.selection_end = None;
+                    editor.cursor_offset = offset.min(total);
+                }
                 cx.notify();
             });
         }
@@ -440,15 +446,6 @@ impl StructTreeView {
                             this.toggle_collapse_at(ix, cx);
                         }),
                     ),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(10.0))
-                    .h(px(10.0))
-                    .bg(field.color)
-                    .border_1()
-                    .border_color(theme.border),
             )
             .child(div().text_sm().text_color(theme.foreground).child(field.id.clone()))
             .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(field.value_str.clone()))

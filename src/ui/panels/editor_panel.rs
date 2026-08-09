@@ -37,8 +37,6 @@ pub struct EditorPanel {
     search_bar: Entity<SearchBar>,
     search_task: Option<Task<()>>,
     viewport_search_task: Option<Task<()>>,
-    cached_structure_highlights: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
-    last_parse_id: Option<String>,
     _appearance_subscription: Subscription,
     _editor_subscription: Subscription,
 }
@@ -69,9 +67,7 @@ impl EditorPanel {
             }
             SearchBarEvent::Dismiss => {
                 this.is_search_visible = false;
-                this.hex_view.update(cx, |view, cx| {
-                    view.set_highlights(Vec::new(), cx);
-                });
+                this.update_highlights(cx);
                 cx.dispatch_action(&FocusHexView);
                 cx.notify();
             }
@@ -145,8 +141,6 @@ impl EditorPanel {
             search_bar,
             search_task: None,
             viewport_search_task: None,
-            cached_structure_highlights: Vec::new(),
-            last_parse_id: None,
             _appearance_subscription,
             _editor_subscription,
         }
@@ -180,9 +174,7 @@ impl EditorPanel {
                 editor.clear_search();
                 cx.notify();
             });
-            self.hex_view.update(cx, |view, cx| {
-                view.set_highlights(Vec::new(), cx);
-            });
+            self.update_highlights(cx);
             return;
         }
 
@@ -236,41 +228,22 @@ impl EditorPanel {
     }
 
     fn update_highlights(&mut self, cx: &mut Context<Self>) {
-        let (parse_highlights_arc, search_query) = {
-            let editor = self.editor.read(cx);
-            let search_query = if self.is_search_visible {
-                self.search_bar.read(cx).query(cx)
-            } else {
-                String::new()
-            };
-            let highlights_arc = editor.parse_result.as_ref().map(|res| res.index.highlights.clone());
-            (highlights_arc, search_query)
-        };
-
-        if !self.is_search_visible || search_query.is_empty() {
-            let arc = parse_highlights_arc.unwrap_or_else(|| std::sync::Arc::new(Vec::new()));
-            self.hex_view.update(cx, |view, cx| {
-                view.set_highlights_arc(arc, cx);
-            });
-            return;
-        }
-
-        let editor = self.editor.read(cx);
-        // 1. Update structure highlights cache if needed
-        let current_parse_id = editor.parse_result.as_ref().map(|r| format!("{}-{}", r.definition_id, r.total_parsed_bytes));
-        if current_parse_id != self.last_parse_id {
-            self.cached_structure_highlights = editor.parse_result.as_ref().map(|res| res.to_highlights()).unwrap_or_default();
-            self.last_parse_id = current_parse_id;
-        }
-
         let mut highlights = Vec::new();
 
-        // 2. Add all structure highlights from cache
-        highlights.extend(self.cached_structure_highlights.iter().cloned());
+        // 1. Add user custom highlights from editor
+        let editor = self.editor.read(cx);
+        highlights.extend(editor.custom_highlights.iter().cloned());
 
-        let bar = self.search_bar.read(cx);
-        let query = bar.query(cx);
-        if !query.is_empty() {
+        // 2. Add search highlights if search is active
+        let search_query = if self.is_search_visible {
+            self.search_bar.read(cx).query(cx)
+        } else {
+            String::new()
+        };
+
+        if self.is_search_visible && !search_query.is_empty() {
+            let bar = self.search_bar.read(cx);
+            let query = bar.query(cx);
             let mode = bar.mode();
             let pattern_len = match mode {
                 crate::core::search::SearchMode::Text => query.len(),

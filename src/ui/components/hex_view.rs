@@ -1,6 +1,7 @@
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
-    CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext,
+    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
+    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, HighlightBlue, HighlightCyan, HighlightGreen,
+    HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext,
     SearchPrev, SelectAll as AppSelectAll, ToggleSearch,
 };
 use crate::core::document::Document;
@@ -620,6 +621,62 @@ impl HexView {
 
     fn copy_as_json_array(&mut self, _: &CopyAsJsonArray, _window: &mut Window, cx: &mut Context<Self>) {
         self.copy_formatted(CopyFormat::JsonArray, cx);
+    }
+
+    fn apply_highlight(&mut self, color: Option<Hsla>, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            if let Some(range) = editor.selected_range_or_cursor() {
+                if let Some(color) = color {
+                    editor.add_custom_highlight(range, color);
+                } else {
+                    editor.clear_custom_highlight(range);
+                }
+                cx.notify();
+            }
+        });
+    }
+
+    fn highlight_red(&mut self, _: &HighlightRed, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(0.0, 0.75, 0.55, 0.35)), cx);
+    }
+
+    fn highlight_orange(&mut self, _: &HighlightOrange, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(30.0 / 360.0, 0.85, 0.55, 0.35)), cx);
+    }
+
+    fn highlight_yellow(&mut self, _: &HighlightYellow, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(50.0 / 360.0, 0.85, 0.50, 0.35)), cx);
+    }
+
+    fn highlight_green(&mut self, _: &HighlightGreen, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(120.0 / 360.0, 0.65, 0.45, 0.35)), cx);
+    }
+
+    fn highlight_cyan(&mut self, _: &HighlightCyan, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(180.0 / 360.0, 0.70, 0.45, 0.35)), cx);
+    }
+
+    fn highlight_blue(&mut self, _: &HighlightBlue, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(215.0 / 360.0, 0.75, 0.55, 0.35)), cx);
+    }
+
+    fn highlight_purple(&mut self, _: &HighlightPurple, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(280.0 / 360.0, 0.70, 0.55, 0.35)), cx);
+    }
+
+    fn highlight_pink(&mut self, _: &HighlightPink, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(330.0 / 360.0, 0.75, 0.55, 0.35)), cx);
+    }
+
+    fn clear_highlight(&mut self, _: &ClearHighlight, _window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(None, cx);
+    }
+
+    fn clear_all_highlights(&mut self, _: &ClearAllHighlights, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            editor.clear_all_custom_highlights();
+            cx.notify();
+        });
     }
 
     fn offset_from_point(&self, point: Point<Pixels>, cx: &App) -> Option<usize> {
@@ -1352,6 +1409,16 @@ impl Render for HexView {
             .on_action(cx.listener(Self::remove_custom_break_forward))
             .on_action(cx.listener(Self::join_line))
             .on_action(cx.listener(Self::clear_all_custom_breaks))
+            .on_action(cx.listener(Self::highlight_red))
+            .on_action(cx.listener(Self::highlight_orange))
+            .on_action(cx.listener(Self::highlight_yellow))
+            .on_action(cx.listener(Self::highlight_green))
+            .on_action(cx.listener(Self::highlight_cyan))
+            .on_action(cx.listener(Self::highlight_blue))
+            .on_action(cx.listener(Self::highlight_purple))
+            .on_action(cx.listener(Self::highlight_pink))
+            .on_action(cx.listener(Self::clear_highlight))
+            .on_action(cx.listener(Self::clear_all_highlights))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1378,7 +1445,13 @@ impl Render for HexView {
                     this.focus_handle.focus(window);
                     if let Some(target_pos) = this.offset_from_point(event.position, cx) {
                         this.editor.update(cx, |editor, cx| {
-                            let in_selection = editor.selection_range().map(|r| r.contains(&target_pos)).unwrap_or(false);
+                            let in_selection = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
+                                let min = s.min(e);
+                                let max = s.max(e);
+                                target_pos >= min && target_pos <= max
+                            } else {
+                                false
+                            };
                             if !in_selection {
                                 editor.set_cursor_offset(target_pos);
                                 cx.notify();
@@ -1561,6 +1634,20 @@ impl Render for HexView {
                                 .menu("as Binary", Box::new(CopyAsBinary))
                                 .menu("as Rust Array", Box::new(CopyAsRustArray))
                                 .menu("as JSON Array", Box::new(CopyAsJsonArray))
+                        })
+                        .separator()
+                        .submenu("Highlight", window, cx, move |menu, _window, _cx| {
+                            menu.menu("Red", Box::new(HighlightRed))
+                                .menu("Orange", Box::new(HighlightOrange))
+                                .menu("Yellow", Box::new(HighlightYellow))
+                                .menu("Green", Box::new(HighlightGreen))
+                                .menu("Cyan", Box::new(HighlightCyan))
+                                .menu("Blue", Box::new(HighlightBlue))
+                                .menu("Purple", Box::new(HighlightPurple))
+                                .menu("Pink", Box::new(HighlightPink))
+                                .separator()
+                                .menu("Clear Highlight", Box::new(ClearHighlight))
+                                .menu("Clear All Highlights", Box::new(ClearAllHighlights))
                         })
                         .separator()
                         .menu("Select All", Box::new(SelectAll))

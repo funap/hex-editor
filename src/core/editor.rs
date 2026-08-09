@@ -4,6 +4,7 @@ use crate::core::command::Command;
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
 use crate::core::structure::ParseResult;
+use gpui::Hsla;
 use std::cell::RefCell;
 use std::cmp;
 use std::collections::BTreeSet;
@@ -46,6 +47,7 @@ pub struct Editor {
     pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
+    pub custom_highlights: Vec<(Range<usize>, Hsla)>,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
@@ -70,6 +72,7 @@ impl Editor {
             parse_cancel_token: None,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
+            custom_highlights: Vec::new(),
             cached_line_map: RefCell::new(None),
         }
     }
@@ -161,6 +164,90 @@ impl Editor {
         } else {
             None
         }
+    }
+
+    pub fn selected_range_or_cursor(&self) -> Option<Range<usize>> {
+        let total = self.total_size();
+        if total == 0 {
+            return None;
+        }
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            let min = cmp::min(start, end);
+            let max = cmp::max(start, end);
+            let s = min.min(total);
+            let e = (max + 1).min(total);
+            if s < e {
+                return Some(s..e);
+            }
+        }
+        let cur = self.cursor_offset.min(total.saturating_sub(1));
+        Some(cur..cur + 1)
+    }
+
+    pub fn add_custom_highlight(&mut self, range: Range<usize>, color: Hsla) {
+        if range.is_empty() {
+            return;
+        }
+        let total_len = self.total_size();
+        let clamped_start = range.start.min(total_len);
+        let clamped_end = range.end.min(total_len);
+        if clamped_start >= clamped_end {
+            return;
+        }
+        let new_range = clamped_start..clamped_end;
+
+        let mut updated = Vec::new();
+        for (r, c) in self.custom_highlights.drain(..) {
+            if r.end <= new_range.start || r.start >= new_range.end {
+                updated.push((r, c));
+            } else {
+                if r.start < new_range.start {
+                    updated.push((r.start..new_range.start, c));
+                }
+                if r.end > new_range.end {
+                    updated.push((new_range.end..r.end, c));
+                }
+            }
+        }
+        updated.push((new_range, color));
+        updated.sort_by_key(|(r, _)| r.start);
+
+        let mut merged: Vec<(Range<usize>, Hsla)> = Vec::new();
+        for (r, c) in updated {
+            if let Some(last) = merged.last_mut()
+                && last.0.end == r.start
+                && last.1 == c
+            {
+                last.0.end = r.end;
+                continue;
+            }
+            merged.push((r, c));
+        }
+        self.custom_highlights = merged;
+    }
+
+    pub fn clear_custom_highlight(&mut self, range: Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        let mut updated = Vec::new();
+        for (r, c) in self.custom_highlights.drain(..) {
+            if r.end <= range.start || r.start >= range.end {
+                updated.push((r, c));
+            } else {
+                if r.start < range.start {
+                    updated.push((r.start..range.start, c));
+                }
+                if r.end > range.end {
+                    updated.push((range.end..r.end, c));
+                }
+            }
+        }
+        self.custom_highlights = updated;
+    }
+
+    pub fn clear_all_custom_highlights(&mut self) {
+        self.custom_highlights.clear();
     }
 
     pub fn set_cursor_offset(&mut self, offset: usize) {
@@ -1451,5 +1538,35 @@ mod tests {
 
         editor.toggle_custom_break(20);
         assert!(!editor.custom_breaks.contains(&20));
+    }
+
+    #[test]
+    fn test_custom_highlights() {
+        use gpui::hsla;
+        let mut editor = create_editor_with_content(b"01234567890123456789"); // 20 bytes
+        let red = hsla(0.0, 1.0, 0.5, 0.5);
+        let blue = hsla(0.6, 1.0, 0.5, 0.5);
+
+        // Add red highlight on 0..10
+        editor.add_custom_highlight(0..10, red);
+        assert_eq!(editor.custom_highlights.len(), 1);
+        assert_eq!(editor.custom_highlights[0].0, 0..10);
+        assert_eq!(editor.custom_highlights[0].1, red);
+
+        // Add overlapping blue highlight on 5..15
+        editor.add_custom_highlight(5..15, blue);
+        assert_eq!(editor.custom_highlights.len(), 2);
+        assert_eq!(editor.custom_highlights[0], (0..5, red));
+        assert_eq!(editor.custom_highlights[1], (5..15, blue));
+
+        // Clear sub-range 3..7
+        editor.clear_custom_highlight(3..7);
+        assert_eq!(editor.custom_highlights.len(), 2);
+        assert_eq!(editor.custom_highlights[0], (0..3, red));
+        assert_eq!(editor.custom_highlights[1], (7..15, blue));
+
+        // Clear all
+        editor.clear_all_custom_highlights();
+        assert!(editor.custom_highlights.is_empty());
     }
 }

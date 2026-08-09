@@ -194,3 +194,33 @@ pub struct CopyAsRustArray;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct CopyAsJsonArray;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightRed;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightOrange;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightYellow;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightGreen;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightCyan;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightBlue;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightPurple;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HighlightPink;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ClearHighlight;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ClearAllHighlights;

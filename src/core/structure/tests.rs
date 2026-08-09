@@ -571,6 +571,10 @@ types:
         size: len_extra
       - id: comment
         size: len_comment
+    instances:
+      local_header:
+        pos: ofs_local_header
+        type: pk_section
   end_of_central_dir:
     seq:
       - id: disk_number
@@ -656,6 +660,74 @@ types:
     assert_eq!(last_p.0, total_size);
     assert_eq!(last_p.1, total_size);
     assert!(last_p.2, "Final progress should have is_done = true");
+}
+
+#[test]
+fn test_parse_full_zip_ksy_without_errors() {
+    let zip_ksy_path = std::path::Path::new("/Users/af/Downloads/zip.ksy");
+    if !zip_ksy_path.exists() {
+        return;
+    }
+    let zip_ksy_content = std::fs::read_to_string(zip_ksy_path).expect("Failed to read /Users/af/Downloads/zip.ksy");
+    let ksy = parse_ksy_yaml(&zip_ksy_content);
+
+    let mut sample = Vec::new();
+    // 1. Local File: PK\x03\x04
+    sample.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+    sample.extend_from_slice(&[20, 0]); // version
+    sample.extend_from_slice(&[0, 0]); // flags (gp_flags: 2 bytes)
+    sample.extend_from_slice(&[0, 0]); // comp method (0: none)
+    sample.extend_from_slice(&[0, 0, 0, 0]); // time + date (dos_datetime: 4 bytes)
+    sample.extend_from_slice(&[0, 0, 0, 0]); // crc
+    sample.extend_from_slice(&[5, 0, 0, 0]); // compressed
+    sample.extend_from_slice(&[5, 0, 0, 0]); // uncompressed
+    sample.extend_from_slice(&[8, 0]); // name len
+    sample.extend_from_slice(&[0, 0]); // extra len
+    sample.extend_from_slice(b"test.txt");
+    sample.extend_from_slice(b"hello");
+
+    // 2. Central Dir: PK\x01\x02
+    let cd_ofs = sample.len();
+    sample.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+    sample.extend_from_slice(&[20, 0]); // version made by
+    sample.extend_from_slice(&[20, 0]); // version needed
+    sample.extend_from_slice(&[0, 0]); // flags
+    sample.extend_from_slice(&[0, 0]); // comp method
+    sample.extend_from_slice(&[0, 0, 0, 0]); // time + date
+    sample.extend_from_slice(&[0, 0, 0, 0]); // crc
+    sample.extend_from_slice(&[5, 0, 0, 0]); // comp len
+    sample.extend_from_slice(&[5, 0, 0, 0]); // uncomp len
+    sample.extend_from_slice(&[8, 0]); // name len
+    sample.extend_from_slice(&[0, 0]); // extra len
+    sample.extend_from_slice(&[0, 0]); // comment len
+    sample.extend_from_slice(&[0, 0]); // disk
+    sample.extend_from_slice(&[0, 0]); // int attr
+    sample.extend_from_slice(&[0, 0, 0, 0]); // ext attr
+    sample.extend_from_slice(&[0, 0, 0, 0]); // local header ofs
+    sample.extend_from_slice(b"test.txt");
+
+    // 3. End of Central Dir: PK\x05\x06
+    let cd_len = sample.len() - cd_ofs;
+    sample.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+    sample.extend_from_slice(&[0, 0]); // disk
+    sample.extend_from_slice(&[0, 0]); // cd disk
+    sample.extend_from_slice(&[1, 0]); // num entries disk
+    sample.extend_from_slice(&[1, 0]); // num entries total
+    sample.extend_from_slice(&(cd_len as u32).to_le_bytes()); // len cd
+    sample.extend_from_slice(&(cd_ofs as u32).to_le_bytes()); // ofs cd
+    sample.extend_from_slice(&[0, 0]); // comment len
+
+    let mut stream = KaitaiStream::new(&sample);
+    let interpreter = KaitaiInterpreter::new(ksy);
+    let result = interpreter.parse(&mut stream);
+
+    assert_eq!(
+        result.errors.len(),
+        0,
+        "No errors expected when parsing zip with zip.ksy, got: {:?}",
+        result.errors
+    );
+    assert_eq!(result.fields.len(), 3, "3 sections expected");
 }
 
 #[test]
@@ -1267,5 +1339,3 @@ types:
     println!("Parsed 50,000 nested records in {:?}", elapsed);
     assert!(elapsed.as_secs_f64() < 2.0, "Parsing 50,000 records took too long: {:?}", elapsed);
 }
-
-

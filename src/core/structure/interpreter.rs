@@ -501,11 +501,9 @@ impl KaitaiInterpreter {
                 }
                 _ => {}
             }
-        } else {
-            if let Some(field) = self.parse_attr_once(attr, None, stream, scope, is_instance) {
-                results.push(field);
-                on_item(&results, stream.pos() as usize);
-            }
+        } else if let Some(field) = self.parse_attr_once(attr, None, stream, scope, is_instance) {
+            results.push(field);
+            on_item(&results, stream.pos() as usize);
         }
         results
     }
@@ -968,6 +966,7 @@ impl KaitaiInterpreter {
                 let mut fields = Vec::new();
 
                 // Pre-evaluate pos-based instances before seq (e.g. byte0 at pos: ofs)
+                let errors_before_sub = self.errors.borrow().len();
                 for (id, inst_attr) in &type_def.instances {
                     if inst_attr.pos.is_some() && inst_attr.value.is_none() {
                         let mut inst_copy = inst_attr.clone();
@@ -975,6 +974,7 @@ impl KaitaiInterpreter {
                         self.parse_attr_repeated(&inst_copy, &mut sub_stream, nested_scope, true);
                     }
                 }
+                self.errors.borrow_mut().truncate(errors_before_sub);
 
                 // Pre-evaluate value instances without recording errors (in case seq sizes depend on them)
                 for (id, inst_attr) in &type_def.instances {
@@ -1026,6 +1026,7 @@ impl KaitaiInterpreter {
                 Some(fields_adj)
             } else {
                 // Pre-evaluate pos-based instances before seq
+                let errors_before = self.errors.borrow().len();
                 for (id, inst_attr) in &type_def.instances {
                     if inst_attr.pos.is_some() && inst_attr.value.is_none() {
                         let mut inst_copy = inst_attr.clone();
@@ -1033,6 +1034,7 @@ impl KaitaiInterpreter {
                         self.parse_attr_repeated(&inst_copy, stream, nested_scope, true);
                     }
                 }
+                self.errors.borrow_mut().truncate(errors_before);
 
                 // Pre-evaluate value instances without recording errors (in case seq sizes depend on them)
                 for (id, inst_attr) in &type_def.instances {

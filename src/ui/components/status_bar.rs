@@ -37,25 +37,37 @@ impl Render for StatusBar {
             (0, 0)
         };
 
-        let has_custom_layout = if let Some(editor) = &active_editor {
+        let current_byte_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            editor.has_custom_layout()
+            let doc = editor.document.read().ok();
+            doc.and_then(|d| d.buffer.get_range(editor.cursor_offset, 1).first().copied()).map(|b| {
+                let ascii_repr = if (0x20..=0x7E).contains(&b) {
+                    format!(", '{}'", b as char)
+                } else {
+                    String::new()
+                };
+                format!("Val: 0x{:02X} ({}{}, 0b{:08b})", b, b, ascii_repr, b)
+            })
+        } else {
+            None
+        };
+
+        let selection_info = if let Some(editor) = &active_editor {
+            let editor = editor.read(cx);
+            editor.selection_range().map(|range| {
+                let len = range.len();
+                let end_inclusive = range.end.saturating_sub(1);
+                format!("Sel: 0x{:08X}..0x{:08X} ({} B)", range.start, end_inclusive, len)
+            })
+        } else {
+            None
+        };
+
+        let is_dirty = if let Some(editor) = &active_editor {
+            let editor = editor.read(cx);
+            editor.document.read().map(|d| d.is_dirty()).unwrap_or(false)
         } else {
             false
-        };
-
-        let custom_layout_count = if let Some(editor) = &active_editor {
-            let editor = editor.read(cx);
-            editor.custom_layout_count()
-        } else {
-            0
-        };
-
-        let encoding_name = if let Some(editor) = &active_editor {
-            let editor = editor.read(cx);
-            format!("{:?}", editor.encoding)
-        } else {
-            "--".to_string()
         };
 
         let (is_parsing, parse_offset, parse_total, parse_result_info) = if let Some(editor) = &active_editor {
@@ -77,135 +89,142 @@ impl Render for StatusBar {
         div()
             .flex()
             .items_center()
+            .justify_between()
             .h_8()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.background)
             .font_family(cx.global::<Appearance>().font_family.clone())
             .px_4()
-            .gap_4()
             .child(
+                // Left side: cursor offset, selection, current byte, and structure parsing status
                 div()
                     .flex()
                     .items_center()
-                    .gap_4()
-                    .text_sm()
-                    .child(format!("Offset: 0x{:08X} ({})", cursor_offset, cursor_offset))
-                    .child(format!("Size: {} bytes", total_size))
-                    .when(has_custom_layout, |el| {
-                        el.child(
+                    .gap_3()
+                    .text_xs()
+                    .child(
+                        div()
+                            .text_color(theme.foreground)
+                            .child(format!("Offset: 0x{:08X} ({})", cursor_offset, cursor_offset)),
+                    )
+                    .when_some(selection_info, |el, sel_str| {
+                        el.child(div().w_px().h_3().bg(theme.border)).child(
                             div()
-                                .px_2()
+                                .px_1p5()
+                                .py_0p5()
                                 .rounded_md()
-                                .bg(theme.yellow.opacity(0.2))
-                                .text_color(theme.yellow)
-                                .child(format!("Layout: {} breaks", custom_layout_count)),
+                                .bg(theme.blue.opacity(0.15))
+                                .text_color(theme.blue)
+                                .child(sel_str),
                         )
-                    }),
-            )
-            .when(is_parsing || parse_result_info.is_some(), |el| {
-                el.child(div().w_px().h_4().bg(theme.border)).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .when(is_parsing, |el| {
-                            let pct = if parse_total > 0 {
-                                ((parse_offset as f64 / parse_total as f64) * 100.0).min(100.0)
-                            } else {
-                                0.0
-                            };
-                            let editor_handle = active_editor.clone();
-                            el.child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(theme.blue.opacity(0.2))
-                                    .text_color(theme.blue)
-                                    .text_xs()
-                                    .font_bold()
-                                    .child("Parsing..."),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.foreground)
-                                    .child(format!("Parsed: 0x{:08X} / 0x{:08X} ({:.1}%)", parse_offset, parse_total, pct)),
-                            )
-                            .child(
-                                div()
-                                    .id("stop-parsing-button")
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(theme.red.opacity(0.2))
-                                    .hover(|s| s.bg(theme.red.opacity(0.35)))
-                                    .text_color(theme.red)
-                                    .text_xs()
-                                    .font_bold()
-                                    .cursor_pointer()
-                                    .child("⏹ Stop")
-                                    .on_click(cx.listener(move |_, _, _window, cx| {
-                                        if let Some(ref editor) = editor_handle {
-                                            editor.update(cx, |ed, cx| {
-                                                ed.cancel_structure_parsing();
-                                                cx.notify();
-                                            });
-                                        }
-                                    })),
-                            )
-                        })
-                        .when(!is_parsing, |el| {
-                            if let Some((def_id, parsed_bytes, err_count)) = parse_result_info {
-                                let pct = if parse_total > 0 {
-                                    ((parsed_bytes as f64 / parse_total as f64) * 100.0).min(100.0)
-                                } else {
-                                    0.0
-                                };
-                                el.child(
-                                    div()
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_md()
-                                        .bg(theme.green.opacity(0.2))
-                                        .text_color(theme.green)
-                                        .text_xs()
-                                        .font_bold()
-                                        .child(format!("Struct: {}", def_id)),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("0x{:08X} / 0x{:08X} ({:.1}%)", parsed_bytes, parse_total, pct)),
-                                )
-                                .when(err_count > 0, |el| {
+                    })
+                    .when_some(current_byte_info, |el, val_str| {
+                        el.child(div().w_px().h_3().bg(theme.border))
+                            .child(div().text_color(theme.muted_foreground).child(val_str))
+                    })
+                    .when(is_parsing || parse_result_info.is_some(), |el| {
+                        el.child(div().w_px().h_3().bg(theme.border)).child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .when(is_parsing, |el| {
+                                    let pct = if parse_total > 0 {
+                                        ((parse_offset as f64 / parse_total as f64) * 100.0).min(100.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let editor_handle = active_editor.clone();
                                     el.child(
                                         div()
                                             .px_1p5()
                                             .py_0p5()
                                             .rounded_md()
+                                            .bg(theme.blue.opacity(0.2))
+                                            .text_color(theme.blue)
+                                            .font_bold()
+                                            .child("Parsing..."),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(theme.foreground)
+                                            .child(format!("0x{:08X} / 0x{:08X} ({:.1}%)", parse_offset, parse_total, pct)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("stop-parsing-button")
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_md()
                                             .bg(theme.red.opacity(0.2))
+                                            .hover(|s| s.bg(theme.red.opacity(0.35)))
                                             .text_color(theme.red)
-                                            .text_xs()
-                                            .child(format!("{} errors", err_count)),
+                                            .font_bold()
+                                            .cursor_pointer()
+                                            .child("⏹ Stop")
+                                            .on_click(cx.listener(move |_, _, _window, cx| {
+                                                if let Some(ref editor) = editor_handle {
+                                                    editor.update(cx, |ed, cx| {
+                                                        ed.cancel_structure_parsing();
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            })),
                                     )
                                 })
-                            } else {
-                                el
-                            }
-                        }),
-                )
-            })
-            .child(div().w_px().h_4().bg(theme.border))
+                                .when(!is_parsing, |el| {
+                                    if let Some((def_id, _parsed_bytes, err_count)) = parse_result_info {
+                                        el.child(
+                                            div()
+                                                .px_1p5()
+                                                .py_0p5()
+                                                .rounded_md()
+                                                .bg(theme.green.opacity(0.2))
+                                                .text_color(theme.green)
+                                                .font_bold()
+                                                .child(format!("Struct: {}", def_id)),
+                                        )
+                                        .when(err_count > 0, |el| {
+                                            el.child(div().px_1p5().py_0p5().rounded_md().bg(theme.red.opacity(0.2)).text_color(theme.red).child(
+                                                if err_count == 1 {
+                                                    "1 error".to_string()
+                                                } else {
+                                                    format!("{} errors", err_count)
+                                                },
+                                            ))
+                                        })
+                                    } else {
+                                        el
+                                    }
+                                }),
+                        )
+                    }),
+            )
             .child(
+                // Right side: document state, custom layout, file size, encoding
                 div()
                     .flex()
                     .items_center()
+                    .gap_3()
                     .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(format!("Encoding: {}", encoding_name)),
+                    .when(is_dirty, |el| {
+                        el.child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_md()
+                                .bg(theme.yellow.opacity(0.2))
+                                .text_color(theme.yellow)
+                                .font_bold()
+                                .child("Modified"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("Size: {} B (0x{:X})", total_size, total_size)),
+                    ),
             )
     }
 }

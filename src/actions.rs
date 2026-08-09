@@ -161,3 +161,36 @@ pub struct SplitDown;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ToggleInlineStructureView;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct Copy;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsHexDump;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsCppArray;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsHexStream;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsHexSpaces;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsPrintableText;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsBase64;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsEscapedString;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsBinary;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsRustArray;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyAsJsonArray;

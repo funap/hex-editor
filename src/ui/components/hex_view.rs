@@ -1,13 +1,17 @@
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, ToggleSearch,
+    AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
+    CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext,
+    SearchPrev, SelectAll as AppSelectAll, ToggleSearch,
 };
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
+use crate::core::format::{CopyFormat, format_bytes};
 use crate::core::structure::ParseResult;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::menu::ContextMenuExt;
 use gpui_component::{ActiveTheme, h_flex};
 use std::ops::Range;
 use std::sync::Arc;
@@ -107,6 +111,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
         KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
+        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
+        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-c", CopyAsHexDump, Some(CONTEXT)),
         KeyBinding::new("pageup", PageUp, Some(CONTEXT)),
         KeyBinding::new("pagedown", PageDown, Some(CONTEXT)),
         KeyBinding::new("home", Home, Some(CONTEXT)),
@@ -543,6 +550,76 @@ impl HexView {
             editor.clear_all_custom_breaks();
             cx.notify();
         });
+    }
+
+    fn copy_formatted(&self, format: CopyFormat, cx: &mut Context<Self>) {
+        let formatted = {
+            let editor = self.editor.read(cx);
+            let doc = editor.document.read().expect("document read lock");
+            let total = doc.buffer.len();
+            if total == 0 {
+                String::new()
+            } else {
+                let (start_offset, slice) = if let Some(range) = editor.selection_range() {
+                    if !range.is_empty() {
+                        (range.start, doc.buffer.get_range(range.start, range.len()))
+                    } else {
+                        let off = editor.cursor_offset.min(total.saturating_sub(1));
+                        (off, doc.buffer.get_range(off, 1))
+                    }
+                } else {
+                    let off = editor.cursor_offset.min(total.saturating_sub(1));
+                    (off, doc.buffer.get_range(off, 1))
+                };
+                format_bytes(slice, start_offset, format)
+            }
+        };
+
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(formatted));
+    }
+
+    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexStream, cx);
+    }
+
+    fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexDump, cx);
+    }
+
+    fn copy_as_cpp_array(&mut self, _: &CopyAsCppArray, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::CppArray, cx);
+    }
+
+    fn copy_as_hex_stream(&mut self, _: &CopyAsHexStream, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexStream, cx);
+    }
+
+    fn copy_as_hex_spaces(&mut self, _: &CopyAsHexSpaces, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexWithSpaces, cx);
+    }
+
+    fn copy_as_printable_text(&mut self, _: &CopyAsPrintableText, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::PrintableText, cx);
+    }
+
+    fn copy_as_base64(&mut self, _: &CopyAsBase64, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::Base64, cx);
+    }
+
+    fn copy_as_escaped_string(&mut self, _: &CopyAsEscapedString, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::EscapedString, cx);
+    }
+
+    fn copy_as_binary(&mut self, _: &CopyAsBinary, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::Binary, cx);
+    }
+
+    fn copy_as_rust_array(&mut self, _: &CopyAsRustArray, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::RustArray, cx);
+    }
+
+    fn copy_as_json_array(&mut self, _: &CopyAsJsonArray, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::JsonArray, cx);
     }
 
     fn offset_from_point(&self, point: Point<Pixels>, cx: &App) -> Option<usize> {
@@ -1247,6 +1324,20 @@ impl Render for HexView {
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(|this, _: &AppSelectAll, window, cx| {
+                this.select_all(&SelectAll, window, cx);
+            }))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::copy_as_hexdump))
+            .on_action(cx.listener(Self::copy_as_cpp_array))
+            .on_action(cx.listener(Self::copy_as_hex_stream))
+            .on_action(cx.listener(Self::copy_as_hex_spaces))
+            .on_action(cx.listener(Self::copy_as_printable_text))
+            .on_action(cx.listener(Self::copy_as_base64))
+            .on_action(cx.listener(Self::copy_as_escaped_string))
+            .on_action(cx.listener(Self::copy_as_binary))
+            .on_action(cx.listener(Self::copy_as_rust_array))
+            .on_action(cx.listener(Self::copy_as_json_array))
             .on_action(cx.listener(Self::page_up))
             .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::home))
@@ -1277,6 +1368,21 @@ impl Render for HexView {
                                 editor.start_drag(target_pos);
                             }
                             cx.notify();
+                        });
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.focus_handle.focus(window);
+                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
+                        this.editor.update(cx, |editor, cx| {
+                            let in_selection = editor.selection_range().map(|r| r.contains(&target_pos)).unwrap_or(false);
+                            if !in_selection {
+                                editor.set_cursor_offset(target_pos);
+                                cx.notify();
+                            }
                         });
                     }
                 }),
@@ -1439,5 +1545,30 @@ impl Render for HexView {
                         ),
                     ),
             )
+            .context_menu({
+                let focus_handle = self.focus_handle.clone();
+                move |menu, window, cx| {
+                    menu.action_context(focus_handle.clone())
+                        .menu("Copy", Box::new(Copy))
+                        .submenu("Copy As", window, cx, move |menu, _window, _cx| {
+                            menu.menu("as Hex Dump", Box::new(CopyAsHexDump))
+                                .menu("as C++ Array", Box::new(CopyAsCppArray))
+                                .menu("as Hex Stream", Box::new(CopyAsHexStream))
+                                .menu("as Hex with Spaces", Box::new(CopyAsHexSpaces))
+                                .menu("as Printable Text", Box::new(CopyAsPrintableText))
+                                .menu("as Base64", Box::new(CopyAsBase64))
+                                .menu("as Escaped String", Box::new(CopyAsEscapedString))
+                                .menu("as Binary", Box::new(CopyAsBinary))
+                                .menu("as Rust Array", Box::new(CopyAsRustArray))
+                                .menu("as JSON Array", Box::new(CopyAsJsonArray))
+                        })
+                        .separator()
+                        .menu("Select All", Box::new(SelectAll))
+                        .separator()
+                        .menu("Break Line", Box::new(AddCustomBreak))
+                        .menu("Join Lines", Box::new(JoinLine))
+                        .menu("Reset Layout", Box::new(ClearAllCustomBreaks))
+                }
+            })
     }
 }

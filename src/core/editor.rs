@@ -3,6 +3,7 @@
 use crate::core::command::Command;
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
+use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::ParseResult;
 use gpui::Hsla;
 use std::cell::RefCell;
@@ -38,6 +39,9 @@ pub struct Editor {
     /// 特定のオフセットに挿入された空行の数を記録する。
     pub empty_lines: std::collections::BTreeMap<usize, usize>,
     pub encoding: Encoding,
+    pub radix: DisplayRadix,
+    pub group_size: ByteGroupSize,
+    pub is_big_endian: bool,
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub parse_result: Option<Arc<ParseResult>>,
     pub is_parsing_structure: bool,
@@ -63,6 +67,9 @@ impl Editor {
             custom_joins: BTreeSet::new(),
             empty_lines: std::collections::BTreeMap::new(),
             encoding: Encoding::default(),
+            radix: DisplayRadix::default(),
+            group_size: ByteGroupSize::default(),
+            is_big_endian: false,
             ksy_definition: None,
             parse_result: None,
             is_parsing_structure: false,
@@ -154,6 +161,22 @@ impl Editor {
 
     pub fn set_encoding(&mut self, encoding: Encoding) {
         self.encoding = encoding;
+    }
+
+    pub fn set_radix(&mut self, radix: DisplayRadix) {
+        self.radix = radix;
+    }
+
+    pub fn set_group_size(&mut self, group_size: ByteGroupSize) {
+        self.group_size = group_size;
+    }
+
+    pub fn set_is_big_endian(&mut self, is_big_endian: bool) {
+        self.is_big_endian = is_big_endian;
+    }
+
+    pub fn toggle_byte_order(&mut self) {
+        self.is_big_endian = !self.is_big_endian;
     }
 
     pub fn selection_range(&self) -> Option<Range<usize>> {
@@ -897,9 +920,24 @@ impl Editor {
     }
 
     /// カーソルの現在行と次の行を結合する。
-    /// 次の行の開始位置がCustom Breakなら削除し、
-    /// 16バイト自然境界ならcustom_joinsに追加して改行を抑制する。
+    /// 範囲選択中（複数バイト選択時）は、その選択範囲全体が1行になるように結合する。
+    /// 選択がない場合は、現在行と次の行を結合する。
     pub fn join_line(&mut self) {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end)
+            && start != end
+        {
+            let total = self.total_size();
+            let min = start.min(end).min(total);
+            let max = start.max(end).min(total);
+            let s = min;
+            let e = (max + 1).min(total);
+
+            if s < e {
+                self.join_range(s..e);
+                return;
+            }
+        }
+
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -920,6 +958,56 @@ impl Editor {
             self.custom_joins.insert(next_line_start);
             self.cached_line_map.replace(None);
         }
+    }
+
+    /// 指定した範囲 [s..e) を1行に結合する。
+    pub fn join_range(&mut self, range: Range<usize>) {
+        let total = self.total_size();
+        let s = range.start.min(total);
+        let e = range.end.min(total);
+
+        if s >= e {
+            return;
+        }
+
+        let line_starts = self.line_starts();
+        let current_line_idx = Self::find_line_index(s, &line_starts);
+        let line_start_of_s = line_starts.get(current_line_idx).unwrap_or(0);
+
+        // 1. s が行の先頭でなければ、s に custom_break を追加して s から始まるようにする
+        if s > 0 && s != line_start_of_s {
+            self.custom_breaks.insert(s);
+        }
+        self.custom_joins.remove(&s);
+
+        // 2. e がファイル末尾でなく、e で改行する必要がある場合は e に custom_break を追加する
+        if e < total {
+            self.custom_breaks.insert(e);
+        }
+        self.custom_joins.remove(&e);
+
+        // 3. (s..e) 内の custom_breaks, custom_joins, empty_lines をすべて削除する
+        let breaks_to_remove: Vec<usize> = self.custom_breaks.range((s + 1)..e).copied().collect();
+        for b in breaks_to_remove {
+            self.custom_breaks.remove(&b);
+        }
+        let joins_to_remove: Vec<usize> = self.custom_joins.range((s + 1)..e).copied().collect();
+        for j in joins_to_remove {
+            self.custom_joins.remove(&j);
+        }
+        let empty_lines_to_remove: Vec<usize> = self.empty_lines.range((s + 1)..e).map(|(&k, _)| k).collect();
+        for el in empty_lines_to_remove {
+            self.empty_lines.remove(&el);
+        }
+
+        // 4. s から BYTES_PER_ROW ずつ進むステップを custom_joins に追加し、1行に結合する
+        let mut step = s + BYTES_PER_ROW;
+        while step < e {
+            self.custom_joins.insert(step);
+            step += BYTES_PER_ROW;
+        }
+
+        self.cached_line_map.replace(None);
     }
 
     /// 全ての Custom Break と Join をクリアし、デフォルトの16バイト表示に戻す。
@@ -1568,5 +1656,78 @@ mod tests {
         // Clear all
         editor.clear_all_custom_highlights();
         assert!(editor.custom_highlights.is_empty());
+    }
+
+    #[test]
+    fn test_editor_radix_group_size_and_endian() {
+        let mut editor = create_editor_with_content(b"Hello World 12345678");
+        assert_eq!(editor.radix, DisplayRadix::Hexadecimal);
+        assert_eq!(editor.group_size, ByteGroupSize::One);
+        assert!(!editor.is_big_endian);
+
+        editor.set_radix(DisplayRadix::Decimal);
+        assert_eq!(editor.radix, DisplayRadix::Decimal);
+
+        editor.set_group_size(ByteGroupSize::Four);
+        assert_eq!(editor.group_size, ByteGroupSize::Four);
+
+        editor.set_is_big_endian(true);
+        assert!(editor.is_big_endian);
+
+        editor.toggle_byte_order();
+        assert!(!editor.is_big_endian);
+    }
+
+    #[test]
+    fn test_join_line_with_selection_multiple_lines() {
+        let mut editor = create_editor_with_content(&[0u8; 64]);
+        assert_eq!(editor.line_starts().len(), 4); // 0, 16, 32, 48
+
+        // Select 0..32 (first 2 lines: bytes 0..=31)
+        editor.selection_start = Some(0);
+        editor.selection_end = Some(31);
+
+        editor.join_line();
+
+        let line_starts = editor.line_starts();
+        assert_eq!(line_starts.len(), 3);
+        assert_eq!(line_starts.get(0), Some(0));
+        assert_eq!(line_starts.get(1), Some(32));
+        assert_eq!(line_starts.get(2), Some(48));
+    }
+
+    #[test]
+    fn test_join_line_with_selection_arbitrary_sub_range() {
+        let mut editor = create_editor_with_content(&[0u8; 100]);
+        // Initially 16-byte chunks: 0, 16, 32, 48, 64, 80, 96
+
+        // Select bytes 10..=49 (range 10..50, 40 bytes)
+        editor.selection_start = Some(10);
+        editor.selection_end = Some(49);
+
+        editor.join_line();
+
+        let line_starts = editor.line_starts();
+        assert_eq!(line_starts.get(0), Some(0)); // 0..10
+        assert_eq!(line_starts.get(1), Some(10)); // 10..50 (joined line!)
+        assert_eq!(line_starts.get(2), Some(50)); // 50..66
+    }
+
+    #[test]
+    fn test_join_line_with_selection_cleans_custom_breaks() {
+        let mut editor = create_editor_with_content(&[0u8; 32]);
+        editor.add_custom_break(4);
+        editor.add_custom_break(8);
+        editor.add_custom_break(12);
+
+        // Select bytes 0..=15 (0..16)
+        editor.selection_start = Some(0);
+        editor.selection_end = Some(15);
+
+        editor.join_line();
+
+        let line_starts = editor.line_starts();
+        assert_eq!(line_starts.get(0), Some(0)); // 0..16
+        assert_eq!(line_starts.get(1), Some(16)); // 16..32
     }
 }

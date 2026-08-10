@@ -86,6 +86,32 @@ impl Render for StatusBar {
             (false, 0, 0, None)
         };
 
+        let format_badge_info = if let Some(editor) = &active_editor {
+            let editor = editor.read(cx);
+            let radix_str = editor.radix.short_label();
+            let group_str = editor.group_size.short_label();
+            let endian_str = if editor.group_size.byte_count() > 1 {
+                if editor.is_big_endian { " BE" } else { " LE" }
+            } else {
+                ""
+            };
+            Some(format!("{} {}{}", radix_str, group_str, endian_str))
+        } else {
+            None
+        };
+
+        let encoding_info = if let Some(editor) = &active_editor {
+            let editor = editor.read(cx);
+            Some(match editor.encoding {
+                crate::core::encoding::Encoding::Ascii => "ASCII",
+                crate::core::encoding::Encoding::Utf8 => "UTF-8",
+                crate::core::encoding::Encoding::Utf16Le => "UTF-16 LE",
+                crate::core::encoding::Encoding::Utf16Be => "UTF-16 BE",
+            })
+        } else {
+            None
+        };
+
         div()
             .flex()
             .items_center()
@@ -202,7 +228,7 @@ impl Render for StatusBar {
                     }),
             )
             .child(
-                // Right side: document state, custom layout, file size, encoding
+                // Right side: document state, custom layout, file size, format badge, encoding
                 div()
                     .flex()
                     .items_center()
@@ -224,7 +250,30 @@ impl Render for StatusBar {
                         div()
                             .text_color(theme.muted_foreground)
                             .child(format!("Size: {} B (0x{:X})", total_size, total_size)),
-                    ),
+                    )
+                    .when_some(format_badge_info, |el, badge| {
+                        el.child(div().w_px().h_3().bg(theme.border)).child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_md()
+                                .bg(theme.accent.opacity(0.15))
+                                .text_color(theme.accent_foreground)
+                                .font_bold()
+                                .child(badge),
+                        )
+                    })
+                    .when_some(encoding_info, |el, enc| {
+                        el.child(div().w_px().h_3().bg(theme.border)).child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_md()
+                                .bg(theme.muted_foreground.opacity(0.15))
+                                .text_color(theme.muted_foreground)
+                                .child(enc),
+                        )
+                    }),
             )
     }
 }

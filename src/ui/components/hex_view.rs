@@ -2,18 +2,20 @@ use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
     CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, HighlightBlue, HighlightCyan, HighlightGreen,
     HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext,
-    SearchPrev, SelectAll as AppSelectAll, ToggleSearch,
+    SearchPrev, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8,
+    SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ToggleByteOrder, ToggleSearch,
 };
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::format::{CopyFormat, format_bytes};
+use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, format_group, is_group_zero};
 use crate::core::structure::ParseResult;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt;
-use gpui_component::{ActiveTheme, h_flex};
+use gpui_component::{ActiveTheme, StyledExt, h_flex};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -56,13 +58,27 @@ const CONTEXT: &str = "HexView";
 pub const HEADER_HEIGHT: f32 = 28.0;
 pub const ROW_HEIGHT: f32 = 22.0;
 pub const OFFSET_WIDTH: f32 = 80.0;
-pub const HEX_BYTE_WIDTH: f32 = 22.0;
-pub const HEX_GAP: f32 = 4.0;
 pub const SECTION_GAP: f32 = 16.0;
 
-pub const ADDRESS_WIDTH: f32 = 148.0;
+pub const ADDRESS_WIDTH: f32 = 80.0;
 pub const DESC_WIDTH: f32 = 240.0;
 pub const COMMENT_WIDTH: f32 = 300.0;
+
+#[inline]
+pub fn item_metrics(radix: DisplayRadix, group_size: ByteGroupSize, font_size: Pixels) -> (f32, f32) {
+    let digits = digit_count(radix, group_size);
+    let char_w = f32::from(font_size) * 0.61;
+    let item_w = (char_w * digits as f32 + 6.0).ceil().max(20.0);
+    let item_gap = 4.0;
+    (item_w, item_gap)
+}
+
+#[inline]
+pub fn calculate_data_col_width(radix: DisplayRadix, group_size: ByteGroupSize, max_bytes_per_row: usize, font_size: Pixels) -> f32 {
+    let (item_w, item_gap) = item_metrics(radix, group_size, font_size);
+    let items_in_row = max_bytes_per_row.div_ceil(group_size.byte_count()).max(1);
+    items_in_row as f32 * (item_w + item_gap)
+}
 
 #[inline]
 fn format_offset_08(offset: usize) -> SharedString {
@@ -76,20 +92,23 @@ fn format_offset_08(offset: usize) -> SharedString {
     SharedString::from(std::str::from_utf8(&buf).expect("valid ascii utf8").to_string())
 }
 
-const HEX_STR_TABLE: [&str; 256] = [
-    "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0a", "0b", "0c", "0d", "0e", "0f", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
-    "1a", "1b", "1c", "1d", "1e", "1f", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "2a", "2b", "2c", "2d", "2e", "2f", "30", "31", "32", "33",
-    "34", "35", "36", "37", "38", "39", "3a", "3b", "3c", "3d", "3e", "3f", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "4a", "4b", "4c", "4d",
-    "4e", "4f", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "5a", "5b", "5c", "5d", "5e", "5f", "60", "61", "62", "63", "64", "65", "66", "67",
-    "68", "69", "6a", "6b", "6c", "6d", "6e", "6f", "70", "71", "72", "73", "74", "75", "76", "77", "78", "79", "7a", "7b", "7c", "7d", "7e", "7f", "80", "81",
-    "82", "83", "84", "85", "86", "87", "88", "89", "8a", "8b", "8c", "8d", "8e", "8f", "90", "91", "92", "93", "94", "95", "96", "97", "98", "99", "9a", "9b",
-    "9c", "9d", "9e", "9f", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "aa", "ab", "ac", "ad", "ae", "af", "b0", "b1", "b2", "b3", "b4", "b5",
-    "b6", "b7", "b8", "b9", "ba", "bb", "bc", "bd", "be", "bf", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "ca", "cb", "cc", "cd", "ce", "cf",
-    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "da", "db", "dc", "dd", "de", "df", "e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9",
-    "ea", "eb", "ec", "ed", "ee", "ef", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "fa", "fb", "fc", "fd", "fe", "ff",
-];
-
-const HEADER_HEX_LABELS: [&str; 16] = ["+0", "+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8", "+9", "+A", "+B", "+C", "+D", "+E", "+F"];
+#[inline]
+fn paint_border_box(window: &mut Window, bounds: Bounds<Pixels>, border_width: Pixels, color: Hsla) {
+    let top = Bounds::new(bounds.origin, size(bounds.size.width, border_width));
+    let bottom = Bounds::new(
+        point(bounds.origin.x, bounds.origin.y + bounds.size.height - border_width),
+        size(bounds.size.width, border_width),
+    );
+    let left = Bounds::new(bounds.origin, size(border_width, bounds.size.height));
+    let right = Bounds::new(
+        point(bounds.origin.x + bounds.size.width - border_width, bounds.origin.y),
+        size(border_width, bounds.size.height),
+    );
+    window.paint_quad(gpui::fill(top, color));
+    window.paint_quad(gpui::fill(bottom, color));
+    window.paint_quad(gpui::fill(left, color));
+    window.paint_quad(gpui::fill(right, color));
+}
 
 fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
     if highlights.is_empty() {
@@ -178,6 +197,9 @@ pub struct HexView {
     show_header: bool,
     show_ascii: bool,
     encoding: Encoding,
+    radix: DisplayRadix,
+    group_size: ByteGroupSize,
+    is_big_endian: bool,
     font_family_prop: SharedString,
     font_size_prop: Pixels,
     pub address_col_width: f32,
@@ -193,10 +215,29 @@ impl EventEmitter<HexViewEvent> for HexView {}
 #[allow(dead_code)]
 impl HexView {
     pub fn new(editor: Entity<Editor>, cx: &mut Context<Self>) -> Self {
+        let (radix, group_size, is_big_endian, encoding) = {
+            let ed = editor.read(cx);
+            (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
+        };
+        let font_size_prop = px(14.0);
+        let hex_col_width = calculate_data_col_width(radix, group_size, 16, font_size_prop);
+
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
-            let new_encoding = editor_entity.read(cx).encoding;
+            let ed = editor_entity.read(cx);
+            let new_encoding = ed.encoding;
+            let new_radix = ed.radix;
+            let new_group_size = ed.group_size;
+            let new_endian = ed.is_big_endian;
+
             if this.encoding != new_encoding {
                 this.encoding = new_encoding;
+            }
+            if this.radix != new_radix || this.group_size != new_group_size || this.is_big_endian != new_endian {
+                this.radix = new_radix;
+                this.group_size = new_group_size;
+                this.is_big_endian = new_endian;
+                let max_bytes = ed.line_starts().max_bytes_per_row();
+                this.hex_col_width = calculate_data_col_width(new_radix, new_group_size, max_bytes, this.font_size_prop);
             }
             this.ensure_cursor_visible(cx);
             cx.notify();
@@ -217,11 +258,14 @@ impl HexView {
             show_offset: true,
             show_header: true,
             show_ascii: true,
-            encoding: Encoding::Ascii,
+            encoding,
+            radix,
+            group_size,
+            is_big_endian,
             font_family_prop: "Zed Sans Mono".into(),
-            font_size_prop: px(14.0),
+            font_size_prop,
             address_col_width: ADDRESS_WIDTH,
-            hex_col_width: 16.0 * (HEX_BYTE_WIDTH + HEX_GAP),
+            hex_col_width,
             desc_col_width: DESC_WIDTH,
             comment_col_width: COMMENT_WIDTH,
             resizing_column: None,
@@ -679,6 +723,83 @@ impl HexView {
         });
     }
 
+    fn set_radix_hex(&mut self, _: &SetRadixHex, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_radix(DisplayRadix::Hexadecimal);
+            cx.notify();
+        });
+    }
+
+    fn set_radix_dec(&mut self, _: &SetRadixDec, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_radix(DisplayRadix::Decimal);
+            cx.notify();
+        });
+    }
+
+    fn set_radix_oct(&mut self, _: &SetRadixOct, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_radix(DisplayRadix::Octal);
+            cx.notify();
+        });
+    }
+
+    fn set_radix_bin(&mut self, _: &SetRadixBin, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_radix(DisplayRadix::Binary);
+            cx.notify();
+        });
+    }
+
+    fn set_group_size_1(&mut self, _: &SetGroupSize1, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_group_size(ByteGroupSize::One);
+            cx.notify();
+        });
+    }
+
+    fn set_group_size_2(&mut self, _: &SetGroupSize2, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_group_size(ByteGroupSize::Two);
+            cx.notify();
+        });
+    }
+
+    fn set_group_size_4(&mut self, _: &SetGroupSize4, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_group_size(ByteGroupSize::Four);
+            cx.notify();
+        });
+    }
+
+    fn set_group_size_8(&mut self, _: &SetGroupSize8, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_group_size(ByteGroupSize::Eight);
+            cx.notify();
+        });
+    }
+
+    fn set_byte_order_le(&mut self, _: &SetByteOrderLittleEndian, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_is_big_endian(false);
+            cx.notify();
+        });
+    }
+
+    fn set_byte_order_be(&mut self, _: &SetByteOrderBigEndian, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_is_big_endian(true);
+            cx.notify();
+        });
+    }
+
+    fn toggle_byte_order(&mut self, _: &ToggleByteOrder, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| {
+            ed.toggle_byte_order();
+            cx.notify();
+        });
+    }
+
     fn offset_from_point(&self, point: Point<Pixels>, cx: &App) -> Option<usize> {
         let root_bounds = self.bounds.get()?;
         let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
@@ -745,15 +866,54 @@ impl HexView {
             return Some(line_offset);
         }
 
-        let col_idx = if !is_struct_mode && self.show_ascii && rel_x >= hex_end_x + SECTION_GAP {
+        let group_bytes = self.group_size.byte_count();
+        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, self.font_size_prop);
+        let item_step = item_width + item_gap;
+
+        let byte_offset_in_row = if !is_struct_mode && self.show_ascii && rel_x >= hex_end_x + SECTION_GAP {
             let ascii_x = (rel_x - (hex_end_x + SECTION_GAP)).max(0.0);
             (ascii_x / 10.0) as usize
         } else {
             let col_x = (rel_x - hex_start_x).max(0.0);
-            (col_x / (HEX_BYTE_WIDTH + HEX_GAP)) as usize
+            let item_idx = (col_x / item_step) as usize;
+            let within_item_x = col_x - item_idx as f32 * item_step;
+
+            let mut chunk_idx = 0;
+            let mut curr_item = 0;
+            let mut target_item_info = None;
+
+            while chunk_idx < chunk_len {
+                let item_start_offset = line_offset + chunk_idx;
+                let start_slot = item_start_offset % group_bytes;
+                let max_in_group = group_bytes - start_slot;
+                let item_slice_len = (chunk_len - chunk_idx).min(max_in_group);
+
+                if curr_item == item_idx {
+                    target_item_info = Some((chunk_idx, start_slot, item_slice_len));
+                    break;
+                }
+
+                chunk_idx += item_slice_len;
+                curr_item += 1;
+                if chunk_idx < chunk_len {
+                    let next_start_slot = (line_offset + chunk_idx) % group_bytes;
+                    let next_max = group_bytes - next_start_slot;
+                    target_item_info = Some((chunk_idx, next_start_slot, (chunk_len - chunk_idx).min(next_max)));
+                }
+            }
+
+            let (item_chunk_start, start_slot, item_slice_len) = target_item_info.unwrap_or((0, line_offset % group_bytes, chunk_len.min(group_bytes)));
+            let slot_w = item_width / group_bytes as f32;
+            let slot_idx = ((within_item_x / slot_w) as usize).min(group_bytes.saturating_sub(1));
+            let byte_in_item = if slot_idx < start_slot {
+                0
+            } else {
+                (slot_idx - start_slot).min(item_slice_len.saturating_sub(1))
+            };
+            item_chunk_start + byte_in_item
         };
 
-        let byte_idx = col_idx.min(chunk_len.saturating_sub(1));
+        let byte_idx = byte_offset_in_row.min(chunk_len.saturating_sub(1));
         Some(line_offset + byte_idx)
     }
 
@@ -766,6 +926,9 @@ impl HexView {
         collapsed_structs: Option<Arc<std::collections::HashSet<String>>>,
         _max_bytes_per_row: usize,
         encoding: Encoding,
+        radix: DisplayRadix,
+        group_size: ByteGroupSize,
+        is_big_endian: bool,
         cursor_offset: usize,
         min_sel: usize,
         max_sel: usize,
@@ -813,7 +976,7 @@ impl HexView {
                 },
                 move |bounds, _prepaint, window, cx| {
                     let active_row_highlights = row_highlights(&highlights_arc, max_highlight_len, offset, next_offset);
-                    let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg) = {
+                    let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
                         let theme = cx.theme();
                         (
                             if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
@@ -823,6 +986,7 @@ impl HexView {
                             theme.accent_foreground,
                             theme.border,
                             theme.sidebar,
+                            theme.background,
                         )
                     };
                     let line_height = px(ROW_HEIGHT);
@@ -830,7 +994,7 @@ impl HexView {
 
                     // 1. Draw Left Columns (Address OR Offset)
                     let (offset_w, gap) = if is_struct_mode {
-                        let addr_str = SharedString::from(format!("{:016X}", offset));
+                        let addr_str = format_offset_08(offset);
                         let run = gpui::TextRun {
                             len: addr_str.len(),
                             font: font.clone(),
@@ -894,71 +1058,150 @@ impl HexView {
                         ));
                     }
 
-                    // 2. Background Quads Pass for Hex Bytes (with clipping mask)
+                    // 2. Background Quads Pass for Data Items (with clipping mask)
                     let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
-                    window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
-                        for (j, &byte_val) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
-                            let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
+                    let group_bytes = group_size.byte_count();
+                    let (item_width, item_gap) = item_metrics(radix, group_size, font_size);
+                    let item_step = item_width + item_gap;
 
-                            let mut bg_color = if is_cursor {
-                                cursor_bg
-                            } else if is_selected {
-                                selection_bg
+                    window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
+                        let mut chunk_idx = 0;
+                        let mut item_idx = 0;
+                        while chunk_idx < chunk.len() {
+                            let item_start_offset = offset + chunk_idx;
+                            let start_slot = item_start_offset % group_bytes;
+                            let max_in_group = group_bytes - start_slot;
+                            let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
+                            let item_end_offset = item_start_offset + item_slice_len;
+
+                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
+                            let is_selected = if min_sel <= max_sel {
+                                let sel_start = min_sel;
+                                let sel_end = max_sel;
+                                item_start_offset <= sel_end && item_end_offset > sel_start
                             } else {
-                                hsla(0.0, 0.0, 0.0, 0.0)
+                                false
                             };
 
-                            if !is_cursor && !is_selected && !active_row_highlights.is_empty() {
+                            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
+                            let mut current_hl_color = None;
+
+                            if !active_row_highlights.is_empty() {
                                 let mut smallest_len = usize::MAX;
                                 for (range, color) in active_row_highlights.iter() {
-                                    if range.contains(&byte_pos) {
+                                    if range.start < item_end_offset && range.end > item_start_offset {
                                         let len = range.end.saturating_sub(range.start);
                                         if len <= smallest_len {
                                             smallest_len = len;
                                             bg_color = *color;
+                                            current_hl_color = Some(*color);
                                         }
                                     }
                                 }
                             }
 
+                            let next_start_offset = item_end_offset;
+                            let next_is_selected =
+                                is_selected && min_sel <= max_sel && next_start_offset <= max_sel && (chunk_idx + item_slice_len < chunk.len());
+                            let next_has_same_highlight = if let Some(cur_col) = current_hl_color {
+                                if chunk_idx + item_slice_len < chunk.len() {
+                                    let mut next_col = None;
+                                    let mut smallest_len = usize::MAX;
+                                    for (range, color) in active_row_highlights.iter() {
+                                        if range.start < next_start_offset + 1 && range.end > next_start_offset {
+                                            let len = range.end.saturating_sub(range.start);
+                                            if len <= smallest_len {
+                                                smallest_len = len;
+                                                next_col = Some(*color);
+                                            }
+                                        }
+                                    }
+                                    next_col == Some(cur_col)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            let fill_width = if next_is_selected || next_has_same_highlight { item_step } else { item_width };
+
+                            let item_fill_bounds = Bounds::new(
+                                point(hex_start_x + px(item_idx as f32 * item_step), bounds.top() + px(1.0)),
+                                size(px(fill_width), px(ROW_HEIGHT - 2.0)),
+                            );
+
+                            let item_box_bounds = Bounds::new(
+                                point(hex_start_x + px(item_idx as f32 * item_step), bounds.top() + px(1.0)),
+                                size(px(item_width), px(ROW_HEIGHT - 2.0)),
+                            );
+
                             if bg_color.a > 0.0 {
-                                let hex_bg_bounds = Bounds::new(
-                                    point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP)), bounds.top()),
-                                    size(px(HEX_BYTE_WIDTH + HEX_GAP), px(ROW_HEIGHT)),
-                                );
-                                window.paint_quad(gpui::fill(hex_bg_bounds, bg_color));
+                                window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
                             }
 
-                            let _ = byte_val;
+                            if is_cursor {
+                                let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                                paint_border_box(window, item_box_bounds, px(1.5), cursor_border_color);
+                            }
+
+                            chunk_idx += item_slice_len;
+                            item_idx += 1;
                         }
 
-                        // 3. Text Pass for Hex Bytes
-                        for (j, &byte) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
+                        // 3. Text Pass for Data Items
+                        let mut chunk_idx = 0;
+                        let mut item_idx = 0;
+                        while chunk_idx < chunk.len() {
+                            let item_start_offset = offset + chunk_idx;
+                            let start_slot = item_start_offset % group_bytes;
+                            let max_in_group = group_bytes - start_slot;
+                            let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
+                            let item_slice = &chunk[chunk_idx..chunk_idx + item_slice_len];
+                            let item_end_offset = item_start_offset + item_slice_len;
 
-                            let text_color = if is_cursor {
-                                accent_fg_color
-                            } else if byte == 0 {
+                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
+                            let is_zero = is_group_zero(item_slice);
+
+                            let text_color = if is_cursor && is_focused {
+                                fg_color
+                            } else if is_zero {
                                 muted_color.opacity(0.5)
                             } else {
                                 fg_color
                             };
 
-                            let hex_str = SharedString::from(HEX_STR_TABLE[byte as usize]);
+                            let item_str = SharedString::from(format_group(item_slice, start_slot, radix, group_size, is_big_endian));
                             let run = gpui::TextRun {
-                                len: hex_str.len(),
+                                len: item_str.len(),
                                 font: font.clone(),
                                 color: text_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
-                            let shaped_hex = window.text_system().shape_line(hex_str, font_size, &[run], None);
-                            let hex_pos = point(hex_start_x + px(j as f32 * (HEX_BYTE_WIDTH + HEX_GAP) + 2.0), bounds.top() + px(2.0));
-                            let _ = shaped_hex.paint(hex_pos, line_height, window, cx);
+                            let shaped_item = window.text_system().shape_line(item_str, font_size, &[run], None);
+                            let item_pos = point(hex_start_x + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
+                            let _ = shaped_item.paint(item_pos, line_height, window, cx);
+
+                            chunk_idx += item_slice_len;
+                            item_idx += 1;
+                        }
+
+                        // Right-edge subtle gradient fade when row data overflows hex_col_width
+                        let total_row_data_width = item_idx as f32 * item_step;
+                        if total_row_data_width > hex_col_width {
+                            let fade_w = 22.0;
+                            let fade_start = hex_end_x - px(fade_w);
+                            let bg = bg_color_theme;
+                            for step in 0..6 {
+                                let x = fade_start + px(step as f32 * 3.6);
+                                let alpha = (step + 1) as f32 / 7.0;
+                                window.paint_quad(gpui::fill(
+                                    Bounds::new(point(x, bounds.top()), size(px(3.8), px(ROW_HEIGHT))),
+                                    bg.opacity(alpha * 0.95),
+                                ));
+                            }
                         }
                     });
 
@@ -984,15 +1227,9 @@ impl HexView {
                             let is_cursor = byte_pos == cursor_offset;
                             let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
 
-                            let mut bg_color = if is_cursor {
-                                cursor_bg
-                            } else if is_selected {
-                                selection_bg
-                            } else {
-                                hsla(0.0, 0.0, 0.0, 0.0)
-                            };
+                            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
 
-                            if !is_cursor && !is_selected && !active_row_highlights.is_empty() {
+                            if !active_row_highlights.is_empty() {
                                 let mut smallest_len = usize::MAX;
                                 for (range, color) in active_row_highlights.iter() {
                                     if range.contains(&byte_pos) {
@@ -1005,24 +1242,36 @@ impl HexView {
                                 }
                             }
 
+                            let ascii_item_bounds = Bounds::new(
+                                point(ascii_start_x + px(j as f32 * 10.0), bounds.top() + px(1.0)),
+                                size(px(10.0), px(ROW_HEIGHT - 2.0)),
+                            );
+
                             if bg_color.a > 0.0 {
-                                let ascii_bg_bounds = Bounds::new(point(ascii_start_x + px(j as f32 * 10.0), bounds.top()), size(px(10.0), px(ROW_HEIGHT)));
-                                window.paint_quad(gpui::fill(ascii_bg_bounds, bg_color));
+                                window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
                             }
 
-                            let text_color = if is_cursor { accent_fg_color } else { fg_color };
+                            if is_cursor {
+                                let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                                paint_border_box(window, ascii_item_bounds, px(1.5), cursor_border_color);
+                            }
+                        }
 
-                            if let Some((ch, _span)) = char_map[j] {
-                                let s = SharedString::from(ch.to_string());
+                        for (j, opt) in char_map.into_iter().enumerate() {
+                            if let Some((c, _)) = opt {
+                                let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
+                                let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
+
+                                let char_str = SharedString::from(c.to_string());
                                 let run = gpui::TextRun {
-                                    len: s.len(),
+                                    len: char_str.len(),
                                     font: font.clone(),
                                     color: text_color,
                                     background_color: None,
                                     underline: None,
                                     strikethrough: None,
                                 };
-                                let shaped_ascii = window.text_system().shape_line(s, font_size, &[run], None);
+                                let shaped_ascii = window.text_system().shape_line(char_str, font_size, &[run], None);
                                 let ascii_pos = point(ascii_start_x + px(j as f32 * 10.0 + 1.0), bounds.top() + px(2.0));
                                 let _ = shaped_ascii.paint(ascii_pos, line_height, window, cx);
                             }
@@ -1170,31 +1419,28 @@ impl Render for HexView {
 
         let container = container.focus_indicator(is_focused, theme);
 
+        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, font_size);
+        let item_step = item_width + item_gap;
+        let group_bytes = self.group_size.byte_count();
+        let items_in_row = max_bytes_per_row.div_ceil(group_bytes).max(1);
+        let total_data_width = items_in_row as f32 * item_step;
+        let is_hex_clipped = total_data_width > self.hex_col_width;
+
         let header = if self.show_header {
-            let mut hex_cols = Vec::with_capacity(max_bytes_per_row);
-            for label_str in HEADER_HEX_LABELS.iter().take(max_bytes_per_row) {
-                let label = SharedString::from(*label_str);
+            let mut hex_cols = Vec::with_capacity(items_in_row);
+            for i in 0..items_in_row {
+                let byte_offset = i * group_bytes;
+                let label = SharedString::from(format!("+{:X}", byte_offset));
                 hex_cols.push(
                     div()
-                        .w(px(HEX_BYTE_WIDTH + HEX_GAP))
+                        .w(px(item_width))
+                        .mr(px(item_gap))
+                        .flex_none()
                         .text_center()
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(label),
                 );
-            }
-            if max_bytes_per_row > HEADER_HEX_LABELS.len() {
-                for i in HEADER_HEX_LABELS.len()..max_bytes_per_row {
-                    let label = SharedString::from(format!("+{:X}", i));
-                    hex_cols.push(
-                        div()
-                            .w(px(HEX_BYTE_WIDTH + HEX_GAP))
-                            .text_center()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(label),
-                    );
-                }
             }
 
             div()
@@ -1258,7 +1504,32 @@ impl Render for HexView {
                 .child(
                     h_flex()
                         .w(px(self.hex_col_width + SECTION_GAP))
-                        .child(div().w(px(self.hex_col_width)).overflow_hidden().child(h_flex().children(hex_cols)))
+                        .child(
+                            div()
+                                .w(px(self.hex_col_width))
+                                .overflow_hidden()
+                                .relative()
+                                .child(h_flex().children(hex_cols))
+                                .when(is_hex_clipped, |el| {
+                                    el.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(px(24.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_end()
+                                            .pr_1()
+                                            .bg(theme.sidebar.opacity(0.85))
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(theme.muted_foreground)
+                                            .child("…"),
+                                    )
+                                }),
+                        )
                         .child(
                             div()
                                 .w(px(SECTION_GAP))
@@ -1384,6 +1655,17 @@ impl Render for HexView {
             .on_action(cx.listener(|this, _: &AppSelectAll, window, cx| {
                 this.select_all(&SelectAll, window, cx);
             }))
+            .on_action(cx.listener(Self::set_radix_hex))
+            .on_action(cx.listener(Self::set_radix_dec))
+            .on_action(cx.listener(Self::set_radix_oct))
+            .on_action(cx.listener(Self::set_radix_bin))
+            .on_action(cx.listener(Self::set_group_size_1))
+            .on_action(cx.listener(Self::set_group_size_2))
+            .on_action(cx.listener(Self::set_group_size_4))
+            .on_action(cx.listener(Self::set_group_size_8))
+            .on_action(cx.listener(Self::set_byte_order_le))
+            .on_action(cx.listener(Self::set_byte_order_be))
+            .on_action(cx.listener(Self::toggle_byte_order))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::copy_as_hexdump))
             .on_action(cx.listener(Self::copy_as_cpp_array))
@@ -1563,6 +1845,9 @@ impl Render for HexView {
                                 let doc = editor.document.read().expect("document read lock");
                                 let line_starts = editor.line_starts();
                                 let cursor_offset = editor.cursor_offset;
+                                let radix = editor.radix;
+                                let group_size = editor.group_size;
+                                let is_big_endian = editor.is_big_endian;
                                 let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
                                     if s <= e { (s, e) } else { (e, s) }
                                 } else {
@@ -1579,6 +1864,9 @@ impl Render for HexView {
                                             Some(collapsed_structs.clone()),
                                             max_bytes_per_row,
                                             encoding,
+                                            radix,
+                                            group_size,
+                                            is_big_endian,
                                             cursor_offset,
                                             min_sel,
                                             max_sel,
@@ -1622,6 +1910,23 @@ impl Render for HexView {
                 let focus_handle = self.focus_handle.clone();
                 move |menu, window, cx| {
                     menu.action_context(focus_handle.clone())
+                        .submenu("Radix", window, cx, move |menu, _window, _cx| {
+                            menu.menu("Hexadecimal (16)", Box::new(SetRadixHex))
+                                .menu("Decimal (10)", Box::new(SetRadixDec))
+                                .menu("Octal (8)", Box::new(SetRadixOct))
+                                .menu("Binary (2)", Box::new(SetRadixBin))
+                        })
+                        .submenu("Grouping", window, cx, move |menu, _window, _cx| {
+                            menu.menu("1 Byte (8-bit)", Box::new(SetGroupSize1))
+                                .menu("2 Bytes (16-bit)", Box::new(SetGroupSize2))
+                                .menu("4 Bytes (32-bit)", Box::new(SetGroupSize4))
+                                .menu("8 Bytes (64-bit)", Box::new(SetGroupSize8))
+                        })
+                        .submenu("Byte Order", window, cx, move |menu, _window, _cx| {
+                            menu.menu("Little Endian", Box::new(SetByteOrderLittleEndian))
+                                .menu("Big Endian", Box::new(SetByteOrderBigEndian))
+                        })
+                        .separator()
                         .menu("Copy", Box::new(Copy))
                         .submenu("Copy As", window, cx, move |menu, _window, _cx| {
                             menu.menu("as Hex Dump", Box::new(CopyAsHexDump))

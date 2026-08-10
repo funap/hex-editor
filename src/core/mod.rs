@@ -9,5 +9,6 @@ pub mod encoding;
 pub mod format;
 pub mod history;
 pub mod layout;
+pub mod radix;
 pub mod search;
 pub mod structure;

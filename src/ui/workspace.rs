@@ -332,6 +332,94 @@ impl Workspace {
         }
     }
 
+    fn on_action_set_radix_hex(&mut self, _: &SetRadixHex, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_radix(crate::core::radix::DisplayRadix::Hexadecimal);
+            });
+        }
+    }
+
+    fn on_action_set_radix_dec(&mut self, _: &SetRadixDec, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_radix(crate::core::radix::DisplayRadix::Decimal);
+            });
+        }
+    }
+
+    fn on_action_set_radix_oct(&mut self, _: &SetRadixOct, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_radix(crate::core::radix::DisplayRadix::Octal);
+            });
+        }
+    }
+
+    fn on_action_set_radix_bin(&mut self, _: &SetRadixBin, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_radix(crate::core::radix::DisplayRadix::Binary);
+            });
+        }
+    }
+
+    fn on_action_set_group_size_1(&mut self, _: &SetGroupSize1, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_group_size(crate::core::radix::ByteGroupSize::One);
+            });
+        }
+    }
+
+    fn on_action_set_group_size_2(&mut self, _: &SetGroupSize2, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_group_size(crate::core::radix::ByteGroupSize::Two);
+            });
+        }
+    }
+
+    fn on_action_set_group_size_4(&mut self, _: &SetGroupSize4, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_group_size(crate::core::radix::ByteGroupSize::Four);
+            });
+        }
+    }
+
+    fn on_action_set_group_size_8(&mut self, _: &SetGroupSize8, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_group_size(crate::core::radix::ByteGroupSize::Eight);
+            });
+        }
+    }
+
+    fn on_action_set_byte_order_le(&mut self, _: &SetByteOrderLittleEndian, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_is_big_endian(false);
+            });
+        }
+    }
+
+    fn on_action_set_byte_order_be(&mut self, _: &SetByteOrderBigEndian, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.set_is_big_endian(true);
+            });
+        }
+    }
+
+    fn on_action_toggle_byte_order(&mut self, _: &ToggleByteOrder, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            editor.update(cx, |editor, _cx| {
+                editor.toggle_byte_order();
+            });
+        }
+    }
+
     fn on_action_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let file_path = action.path.clone();
         let path = std::path::PathBuf::from(&file_path);
@@ -906,6 +994,17 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_set_encoding_utf8))
             .on_action(cx.listener(Self::on_action_set_encoding_utf16le))
             .on_action(cx.listener(Self::on_action_set_encoding_utf16be))
+            .on_action(cx.listener(Self::on_action_set_radix_hex))
+            .on_action(cx.listener(Self::on_action_set_radix_dec))
+            .on_action(cx.listener(Self::on_action_set_radix_oct))
+            .on_action(cx.listener(Self::on_action_set_radix_bin))
+            .on_action(cx.listener(Self::on_action_set_group_size_1))
+            .on_action(cx.listener(Self::on_action_set_group_size_2))
+            .on_action(cx.listener(Self::on_action_set_group_size_4))
+            .on_action(cx.listener(Self::on_action_set_group_size_8))
+            .on_action(cx.listener(Self::on_action_set_byte_order_le))
+            .on_action(cx.listener(Self::on_action_set_byte_order_be))
+            .on_action(cx.listener(Self::on_action_toggle_byte_order))
             .on_action(cx.listener(Self::on_action_open_diff))
             .on_action(cx.listener(Self::on_action_toggle_left_panel))
             .on_action(cx.listener(Self::on_action_open_settings))

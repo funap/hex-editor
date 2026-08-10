@@ -98,6 +98,39 @@ pub struct SetEncodingUtf16Le;
 pub struct SetEncodingUtf16Be;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct SetRadixHex;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetRadixDec;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetRadixOct;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetRadixBin;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetGroupSize1;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetGroupSize2;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetGroupSize4;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetGroupSize8;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetByteOrderLittleEndian;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SetByteOrderBigEndian;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleByteOrder;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct ShowFilesTab;
 
 #[derive(Clone, PartialEq, Action)]

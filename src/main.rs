@@ -120,6 +120,31 @@ fn main() {
                             gpui::MenuItem::action("UTF-16 BE", crate::actions::SetEncodingUtf16Be),
                         ],
                     }),
+                    gpui::MenuItem::submenu(gpui::Menu {
+                        name: "Radix".into(),
+                        items: vec![
+                            gpui::MenuItem::action("Hexadecimal (16)", crate::actions::SetRadixHex),
+                            gpui::MenuItem::action("Decimal (10)", crate::actions::SetRadixDec),
+                            gpui::MenuItem::action("Octal (8)", crate::actions::SetRadixOct),
+                            gpui::MenuItem::action("Binary (2)", crate::actions::SetRadixBin),
+                        ],
+                    }),
+                    gpui::MenuItem::submenu(gpui::Menu {
+                        name: "Grouping".into(),
+                        items: vec![
+                            gpui::MenuItem::action("1 Byte (8-bit)", crate::actions::SetGroupSize1),
+                            gpui::MenuItem::action("2 Bytes (16-bit)", crate::actions::SetGroupSize2),
+                            gpui::MenuItem::action("4 Bytes (32-bit)", crate::actions::SetGroupSize4),
+                            gpui::MenuItem::action("8 Bytes (64-bit)", crate::actions::SetGroupSize8),
+                        ],
+                    }),
+                    gpui::MenuItem::submenu(gpui::Menu {
+                        name: "Byte Order".into(),
+                        items: vec![
+                            gpui::MenuItem::action("Little Endian", crate::actions::SetByteOrderLittleEndian),
+                            gpui::MenuItem::action("Big Endian", crate::actions::SetByteOrderBigEndian),
+                        ],
+                    }),
                 ],
             },
             gpui::Menu {

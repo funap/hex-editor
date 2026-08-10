@@ -69,6 +69,18 @@ impl EditorGroup {
 
     pub fn add_tab(&mut self, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let new_idx = self.tabs.len();
+        let tab_id = tab.id;
+        cx.on_focus_in(&tab.focus_handle(cx), window, move |this, _window, cx| {
+            if let Some(idx) = this.tabs.iter().position(|t| t.id == tab_id)
+                && this.active_index != idx
+            {
+                this.active_index = idx;
+                cx.emit(EditorGroupEvent::TabChanged);
+            }
+            cx.emit(EditorGroupEvent::Focused);
+        })
+        .detach();
+
         self.tabs.push(tab);
         if activate || self.tabs.len() == 1 {
             self.activate_tab(new_idx, window, cx);
@@ -79,6 +91,18 @@ impl EditorGroup {
 
     pub fn insert_tab(&mut self, index: usize, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let clamped = index.min(self.tabs.len());
+        let tab_id = tab.id;
+        cx.on_focus_in(&tab.focus_handle(cx), window, move |this, _window, cx| {
+            if let Some(idx) = this.tabs.iter().position(|t| t.id == tab_id)
+                && this.active_index != idx
+            {
+                this.active_index = idx;
+                cx.emit(EditorGroupEvent::TabChanged);
+            }
+            cx.emit(EditorGroupEvent::Focused);
+        })
+        .detach();
+
         self.tabs.insert(clamped, tab);
         if activate || self.tabs.len() == 1 {
             self.activate_tab(clamped, window, cx);
@@ -234,22 +258,12 @@ impl Render for EditorGroup {
 
         div()
             .id(ElementId::NamedInteger("editor-group".into(), group_id as u64))
-            .track_focus(&self.focus_handle)
             .size_full()
             .flex()
             .flex_col()
             .bg(theme.background)
             .border_1()
             .border_color(if self.is_active_group { theme.border } else { theme.border.opacity(0.5) })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    if let Some(tab) = this.tabs.get(this.active_index) {
-                        tab.focus_handle(cx).focus(window);
-                    }
-                    cx.emit(EditorGroupEvent::Focused);
-                }),
-            )
             // --- Custom Tab Bar Header ---
             .child(
                 div()
@@ -415,75 +429,73 @@ impl Render for EditorGroup {
                     .size_full()
                     // Active content rendering
                     .children(self.tabs.get(active_index).map(|t| t.content.render()))
-                    // Visual Drop Zones (activated during drag-and-drop)
-                    // Left drop zone -> Split Left
-                    .child(
-                        div()
-                            .id("drop-zone-left")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(80.0))
-                            .h_full()
-                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_r_2().border_color(rgb(0x3182ce)))
-                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
-                                cx.emit(EditorGroupEvent::SplitWithDrop {
-                                    drag: *drag,
-                                    placement: DropPlacement::Left,
-                                });
-                            })),
-                    )
-                    // Right drop zone -> Split Right
-                    .child(
-                        div()
-                            .id("drop-zone-right")
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .w(px(80.0))
-                            .h_full()
-                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_l_2().border_color(rgb(0x3182ce)))
-                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
-                                cx.emit(EditorGroupEvent::SplitWithDrop {
-                                    drag: *drag,
-                                    placement: DropPlacement::Right,
-                                });
-                            })),
-                    )
-                    // Top drop zone -> Split Top
-                    .child(
-                        div()
-                            .id("drop-zone-top")
-                            .absolute()
-                            .top_0()
-                            .left(px(80.0))
-                            .right(px(80.0))
-                            .h(px(50.0))
-                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_b_2().border_color(rgb(0x3182ce)))
-                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
-                                cx.emit(EditorGroupEvent::SplitWithDrop {
-                                    drag: *drag,
-                                    placement: DropPlacement::Top,
-                                });
-                            })),
-                    )
-                    // Bottom drop zone -> Split Bottom
-                    .child(
-                        div()
-                            .id("drop-zone-bottom")
-                            .absolute()
-                            .bottom_0()
-                            .left(px(80.0))
-                            .right(px(80.0))
-                            .h(px(50.0))
-                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_t_2().border_color(rgb(0x3182ce)))
-                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
-                                cx.emit(EditorGroupEvent::SplitWithDrop {
-                                    drag: *drag,
-                                    placement: DropPlacement::Bottom,
-                                });
-                            })),
-                    ),
+                    // Visual Drop Zones (ONLY rendered during active drag-and-drop)
+                    .when(cx.has_active_drag(), |this| {
+                        this.child(
+                            div()
+                                .id("drop-zone-left")
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .w(px(80.0))
+                                .h_full()
+                                .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_r_2().border_color(rgb(0x3182ce)))
+                                .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                    cx.emit(EditorGroupEvent::SplitWithDrop {
+                                        drag: *drag,
+                                        placement: DropPlacement::Left,
+                                    });
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("drop-zone-right")
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .w(px(80.0))
+                                .h_full()
+                                .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_l_2().border_color(rgb(0x3182ce)))
+                                .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                    cx.emit(EditorGroupEvent::SplitWithDrop {
+                                        drag: *drag,
+                                        placement: DropPlacement::Right,
+                                    });
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("drop-zone-top")
+                                .absolute()
+                                .top_0()
+                                .left(px(80.0))
+                                .right(px(80.0))
+                                .h(px(50.0))
+                                .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_b_2().border_color(rgb(0x3182ce)))
+                                .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                    cx.emit(EditorGroupEvent::SplitWithDrop {
+                                        drag: *drag,
+                                        placement: DropPlacement::Top,
+                                    });
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("drop-zone-bottom")
+                                .absolute()
+                                .bottom_0()
+                                .left(px(80.0))
+                                .right(px(80.0))
+                                .h(px(50.0))
+                                .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_t_2().border_color(rgb(0x3182ce)))
+                                .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                    cx.emit(EditorGroupEvent::SplitWithDrop {
+                                        drag: *drag,
+                                        placement: DropPlacement::Bottom,
+                                    });
+                                })),
+                        )
+                    }),
             )
     }
 }

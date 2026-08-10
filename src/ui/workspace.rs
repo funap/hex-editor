@@ -61,7 +61,7 @@ impl Workspace {
         .detach();
 
         let file_tree = cx.new(|cx| FileTreeView::new("FILES", cx));
-        let left_panel = cx.new(|cx| LeftPanel::new(file_tree.clone(), cx));
+        let left_panel = cx.new(|cx| LeftPanel::new(file_tree.clone(), window, cx));
         let activity_bar = cx.new(ActivityBar::new);
 
         cx.subscribe_in(&activity_bar, window, |this, _, event: &ActivityBarEvent, window, cx| match event {
@@ -88,14 +88,20 @@ impl Workspace {
         })
         .detach();
 
-        let left_read = left_panel.read(cx);
-        let handles = [
-            file_tree.read(cx).focus_handle(cx),
-            left_read.struct_tree.read(cx).focus_handle(cx),
-            left_read.data_inspector.read(cx).focus_handle(cx),
-            left_read.visual_map.read(cx).focus_handle(cx),
-            left_read.checksum_panel.read(cx).focus_handle(cx),
-        ];
+        let (handles, highlight_panel) = {
+            let left_read = left_panel.read(cx);
+            (
+                [
+                    file_tree.read(cx).focus_handle(cx),
+                    left_read.struct_tree.read(cx).focus_handle(cx),
+                    left_read.data_inspector.read(cx).focus_handle(cx),
+                    left_read.visual_map.read(cx).focus_handle(cx),
+                    left_read.checksum_panel.read(cx).focus_handle(cx),
+                    left_read.highlight_panel.read(cx).focus_handle(cx),
+                ],
+                left_read.highlight_panel.clone(),
+            )
+        };
 
         for handle in handles {
             cx.on_focus_in(&handle, window, |this, _, cx| {
@@ -104,6 +110,21 @@ impl Workspace {
             })
             .detach();
         }
+
+        cx.subscribe_in(
+            &highlight_panel,
+            window,
+            |this, _, event: &crate::ui::components::highlight_panel::HighlightPanelEvent, window, cx| match event {
+                crate::ui::components::highlight_panel::HighlightPanelEvent::Export => {
+                    this.on_action_export_highlights(&crate::actions::ExportHighlights, window, cx);
+                }
+                crate::ui::components::highlight_panel::HighlightPanelEvent::Import => {
+                    this.on_action_import_highlights(&crate::actions::ImportHighlights, window, cx);
+                }
+                crate::ui::components::highlight_panel::HighlightPanelEvent::NavigateTo { .. } => {}
+            },
+        )
+        .detach();
 
         cx.subscribe(&left_panel, |_, _, event, cx| match event {
             FileTreeViewEvent::OpenFile(path) => {
@@ -486,6 +507,80 @@ impl Workspace {
         self.select_activity(Activity::Checksum, window, cx);
     }
 
+    fn on_action_show_highlights_tab(&mut self, _: &ShowHighlightsTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_activity(Activity::Highlights, window, cx);
+    }
+
+    fn on_action_export_highlights(&mut self, _: &ExportHighlights, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else { return };
+        let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select destination JSON file or directory for highlights".into()),
+        });
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            if let Some(mut path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                if path.is_dir() {
+                    let default_name = doc_path
+                        .and_then(|p| p.file_name().map(|n| format!("{}.highlights.json", n.to_string_lossy())))
+                        .unwrap_or_else(|| "highlights.json".to_string());
+                    path = path.join(default_name);
+                } else if path.extension().is_none() {
+                    path.set_extension("json");
+                }
+
+                window
+                    .update(|_, cx| {
+                        view.update(cx, |this, cx| {
+                            if let Some(editor) = this.active_editor(cx)
+                                && let Err(e) = editor.read(cx).export_highlights_to_file(&path)
+                            {
+                                eprintln!("Failed to export highlights: {}", e);
+                            }
+                        });
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn on_action_import_highlights(&mut self, _: &ImportHighlights, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select highlights JSON file to import".into()),
+        });
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            if let Some(path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                window
+                    .update(|_, cx| {
+                        view.update(cx, |this, cx| {
+                            if let Some(editor) = this.active_editor(cx) {
+                                editor.update(cx, |ed, cx| match ed.import_highlights_from_file(&path) {
+                                    Ok(_) => {
+                                        cx.notify();
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to import highlights: {}", e);
+                                    }
+                                });
+                            }
+                        });
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
     fn select_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let tab = match activity {
             Activity::Files => LeftPanelTab::Files,
@@ -493,6 +588,7 @@ impl Workspace {
             Activity::Inspector => LeftPanelTab::Inspector,
             Activity::Map => LeftPanelTab::Map,
             Activity::Checksum => LeftPanelTab::Checksum,
+            Activity::Highlights => LeftPanelTab::Highlights,
         };
 
         let current_tab = self.left_panel.read(cx).active_tab;
@@ -799,6 +895,7 @@ impl Workspace {
                     LeftPanelTab::Inspector => activity_bar.set_activity(Some(Activity::Inspector), cx),
                     LeftPanelTab::Map => activity_bar.set_activity(Some(Activity::Map), cx),
                     LeftPanelTab::Checksum => activity_bar.set_activity(Some(Activity::Checksum), cx),
+                    LeftPanelTab::Highlights => activity_bar.set_activity(Some(Activity::Highlights), cx),
                 }
             } else {
                 activity_bar.set_activity(None, cx);
@@ -840,6 +937,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_show_files_tab))
             .on_action(cx.listener(Self::on_action_show_structure_tab))
             .on_action(cx.listener(Self::on_action_show_checksum_tab))
+            .on_action(cx.listener(Self::on_action_show_highlights_tab))
+            .on_action(cx.listener(Self::on_action_export_highlights))
+            .on_action(cx.listener(Self::on_action_import_highlights))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
             .on_action(cx.listener(Self::on_action_clear_structure_definition))
             .on_action(cx.listener(Self::on_action_toggle_inline_structure_view))

@@ -1,9 +1,9 @@
 use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
-    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, HighlightBlue, HighlightCyan, HighlightGreen,
-    HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext,
-    SearchPrev, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8,
-    SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ToggleByteOrder, ToggleSearch,
+    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, ExportHighlights, HighlightBlue, HighlightCyan,
+    HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine, RemoveCustomBreakBackward,
+    RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2,
+    SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ToggleByteOrder, ToggleSearch,
 };
 use crate::core::document::Document;
 use crate::core::editor::Editor;
@@ -716,11 +716,38 @@ impl HexView {
         self.apply_highlight(None, cx);
     }
 
-    fn clear_all_highlights(&mut self, _: &ClearAllHighlights, _window: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, |editor, cx| {
-            editor.clear_all_custom_highlights();
-            cx.notify();
-        });
+    fn clear_all_highlights(&mut self, _: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.editor.read(cx).highlights.len();
+        if count == 0 {
+            return;
+        }
+
+        let prompt = window.prompt(
+            gpui::PromptLevel::Warning,
+            "Clear all highlights?",
+            Some(&format!(
+                "Are you sure you want to clear all {} highlight{} and comments? This action cannot be undone.",
+                count,
+                if count == 1 { "" } else { "s" }
+            )),
+            &["Clear All", "Cancel"],
+            cx,
+        );
+
+        let editor = self.editor.clone();
+        cx.spawn_in(window, async move |_this, window| {
+            if let Ok(0) = prompt.await {
+                window
+                    .update(|_, cx| {
+                        editor.update(cx, |editor, cx| {
+                            editor.clear_all_custom_highlights();
+                            cx.notify();
+                        });
+                    })
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     fn set_radix_hex(&mut self, _: &SetRadixHex, _window: &mut Window, cx: &mut Context<Self>) {
@@ -920,6 +947,7 @@ impl HexView {
     #[allow(clippy::too_many_arguments)]
     fn render_hex_row(
         row_idx: usize,
+        top_visible_row: usize,
         doc: &Document,
         line_starts: &crate::core::editor::LineMap,
         parse_result: Option<Arc<ParseResult>>,
@@ -933,6 +961,7 @@ impl HexView {
         min_sel: usize,
         max_sel: usize,
         highlights: &Arc<Vec<(Range<usize>, Hsla)>>,
+        highlight_items: &Arc<Vec<crate::core::highlight::HighlightItem>>,
         max_highlight_len: usize,
         show_offset: bool,
         show_ascii: bool,
@@ -963,6 +992,8 @@ impl HexView {
         let visible_row_view = view.clone();
         let collapsed_structs_arc = collapsed_structs.clone();
         let highlights_arc = highlights.clone();
+        let highlight_items_arc = highlight_items.clone();
+        let line_starts_clone = line_starts.clone();
 
         div()
             .id(row_idx)
@@ -1028,8 +1059,19 @@ impl HexView {
                     let base_x = bounds.left() + px(8.0);
                     let hex_start_x = base_x + px(offset_w + gap);
                     let hex_end_x = hex_start_x + px(hex_col_width);
-                    let desc_start_x = hex_end_x + px(gap);
-                    let comment_start_x = desc_start_x + px(desc_col_width + gap);
+                    let (comment_start_x, ascii_width) = if is_struct_mode {
+                        let desc_start_x = hex_end_x + px(gap);
+                        let comment_start_x = desc_start_x + px(desc_col_width + gap);
+                        (comment_start_x, 0.0)
+                    } else {
+                        let ascii_w = if show_ascii { _max_bytes_per_row as f32 * 10.0 } else { 0.0 };
+                        let comment_start_x = if show_ascii {
+                            hex_end_x + px(gap + ascii_w + gap)
+                        } else {
+                            hex_end_x + px(gap)
+                        };
+                        (comment_start_x, ascii_w)
+                    };
 
                     // Vertical Column Divider Borders (matching header splitters exactly)
                     let border_line_color = border_color.opacity(0.4);
@@ -1040,18 +1082,32 @@ impl HexView {
                             border_line_color,
                         ));
                     }
+                    let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                        border_line_color,
+                    ));
                     if is_struct_mode {
-                        let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
+                        let desc_start_x = hex_end_x + px(gap);
                         let div3_x = desc_start_x + px(desc_col_width + (gap / 2.0));
                         let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
-                        window.paint_quad(gpui::fill(
-                            Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
-                        ));
                         window.paint_quad(gpui::fill(
                             Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
                             border_line_color,
                         ));
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                            border_line_color,
+                        ));
+                    } else {
+                        if show_ascii {
+                            let div3_x = hex_end_x + px(gap + ascii_width + (gap / 2.0));
+                            window.paint_quad(gpui::fill(
+                                Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                                border_line_color,
+                            ));
+                        }
+                        let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
                         window.paint_quad(gpui::fill(
                             Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
                             border_line_color,
@@ -1278,10 +1334,9 @@ impl HexView {
                         }
                     }
 
-                    // 4. Description & Comment Columns (when structure definition is present)
+                    // 4. Description Column (when structure definition is present)
                     if let Some(ref parse_res) = parse_result {
                         let desc_start_x = hex_end_x + px(SECTION_GAP);
-                        let comment_start_x = desc_start_x + px(desc_col_width + 8.0);
 
                         let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
                         let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
@@ -1336,30 +1391,44 @@ impl HexView {
                                 let _ = shaped_expr.paint(point(desc_start_x + px(indent_px), bounds.top() + px(2.0)), line_height, window, cx);
                             });
                         }
+                    }
 
-                        if !is_collapsed {
-                            let comment_str: String = leaf_fields
-                                .iter()
-                                .filter_map(|f: &&crate::core::structure::ParsedField| f.format_comment())
-                                .collect::<Vec<_>>()
-                                .join(" | ");
-                            if !comment_str.is_empty() {
-                                let comment_shared = SharedString::from(comment_str);
-                                let run = gpui::TextRun {
-                                    len: comment_shared.len(),
-                                    font: font.clone(),
-                                    color: muted_color,
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                };
-                                let shaped_comment = window.text_system().shape_line(comment_shared, font_size, &[run], None);
-                                let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
-                                window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
-                                    let _ = shaped_comment.paint(point(comment_start_x, bounds.top() + px(2.0)), line_height, window, cx);
-                                });
+                    // 5. Highlight Comments Column
+                    // Only display comment once per highlight in the visible range:
+                    // - On the highlight's starting row if visible (>= top_visible_row)
+                    // - Or on top_visible_row if the highlight started before top_visible_row but extends into it
+                    let row_comments: Vec<&str> = highlight_items_arc
+                        .iter()
+                        .filter(|h| {
+                            if h.comment.trim().is_empty() {
+                                return false;
                             }
-                        }
+                            let h_start_row = Editor::find_line_index(h.offset, &line_starts_clone);
+                            let h_end_offset = h.offset.saturating_add(h.size);
+                            let h_last_byte = h_end_offset.saturating_sub(1).max(h.offset);
+                            let h_end_row = Editor::find_line_index(h_last_byte, &line_starts_clone);
+                            let display_row = h_start_row.max(top_visible_row);
+                            row_idx == display_row && row_idx <= h_end_row
+                        })
+                        .map(|h| h.comment.trim())
+                        .collect();
+
+                    if !row_comments.is_empty() {
+                        let comment_str = row_comments.join(" | ");
+                        let comment_shared = SharedString::from(comment_str);
+                        let run = gpui::TextRun {
+                            len: comment_shared.len(),
+                            font: font.clone(),
+                            color: muted_color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let shaped_comment = window.text_system().shape_line(comment_shared, font_size, &[run], None);
+                        let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
+                        window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
+                            let _ = shaped_comment.paint(point(comment_start_x, bounds.top() + px(2.0)), line_height, window, cx);
+                        });
                     }
                 },
             ))
@@ -1400,10 +1469,11 @@ impl Render for HexView {
             }
             w += self.hex_col_width + SECTION_GAP;
             if is_struct_mode {
-                w += self.desc_col_width + SECTION_GAP + self.comment_col_width + SECTION_GAP;
+                w += self.desc_col_width + SECTION_GAP;
             } else if self.show_ascii {
                 w += (max_bytes_per_row as f32 * 10.0) + SECTION_GAP;
             }
+            w += self.comment_col_width + SECTION_GAP;
             w + 16.0
         };
 
@@ -1617,14 +1687,86 @@ impl Render for HexView {
                         Encoding::Utf16Le => "UTF-16 LE",
                         Encoding::Utf16Be => "UTF-16 BE",
                     };
-                    div()
-                        .ml(px(SECTION_GAP))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(label)
+                    h_flex()
+                        .child(
+                            h_flex()
+                                .w(px((max_bytes_per_row as f32 * 10.0) + SECTION_GAP))
+                                .child(
+                                    div()
+                                        .w(px(max_bytes_per_row as f32 * 10.0))
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(SECTION_GAP))
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border)),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .w(px(self.comment_col_width + SECTION_GAP))
+                                .child(
+                                    div()
+                                        .w(px(self.comment_col_width))
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child("Comment"),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(SECTION_GAP))
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                        .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                                this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
+                                                cx.notify();
+                                            }),
+                                        ),
+                                ),
+                        )
                         .into_any_element()
                 } else {
-                    div().into_any_element()
+                    h_flex()
+                        .w(px(self.comment_col_width + SECTION_GAP))
+                        .child(
+                            div()
+                                .w(px(self.comment_col_width))
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("Comment"),
+                        )
+                        .child(
+                            div()
+                                .w(px(SECTION_GAP))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                                .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                        this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                        .into_any_element()
                 })
                 .into_any_element()
         } else {
@@ -1842,6 +1984,7 @@ impl Render for HexView {
                                 let editor = view_read.editor.read(cx);
                                 let parse_result = editor.parse_result.clone();
                                 let collapsed_structs = Arc::new(editor.collapsed_struct_ids.clone());
+                                let highlight_items = Arc::new(editor.highlights.clone());
                                 let doc = editor.document.read().expect("document read lock");
                                 let line_starts = editor.line_starts();
                                 let cursor_offset = editor.cursor_offset;
@@ -1858,6 +2001,7 @@ impl Render for HexView {
                                     .map(|row_idx| {
                                         Self::render_hex_row(
                                             row_idx,
+                                            top_row,
                                             &doc,
                                             &line_starts,
                                             parse_result.clone(),
@@ -1871,6 +2015,7 @@ impl Render for HexView {
                                             min_sel,
                                             max_sel,
                                             &highlights,
+                                            &highlight_items,
                                             max_highlight_len,
                                             show_offset,
                                             show_ascii,
@@ -1953,6 +2098,10 @@ impl Render for HexView {
                                 .separator()
                                 .menu("Clear Highlight", Box::new(ClearHighlight))
                                 .menu("Clear All Highlights", Box::new(ClearAllHighlights))
+                                .separator()
+                                .menu("Show Highlights Panel", Box::new(ShowHighlightsTab))
+                                .menu("Export Highlights...", Box::new(ExportHighlights))
+                                .menu("Import Highlights...", Box::new(ImportHighlights))
                         })
                         .separator()
                         .menu("Select All", Box::new(SelectAll))

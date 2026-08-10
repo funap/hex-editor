@@ -7,6 +7,7 @@ pub mod document;
 pub mod editor;
 pub mod encoding;
 pub mod format;
+pub mod highlight;
 pub mod history;
 pub mod layout;
 pub mod radix;

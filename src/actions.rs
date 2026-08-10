@@ -257,3 +257,12 @@ pub struct ClearHighlight;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ClearAllHighlights;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowHighlightsTab;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportHighlights;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ImportHighlights;

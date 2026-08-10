@@ -3,6 +3,7 @@ pub mod checksum_panel;
 pub mod data_inspector;
 pub mod file_tree_view;
 pub mod hex_view;
+pub mod highlight_panel;
 pub mod search_bar;
 pub mod status_bar;
 pub mod struct_tree_view;

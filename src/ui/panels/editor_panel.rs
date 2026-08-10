@@ -177,6 +177,7 @@ impl EditorPanel {
         let custom_breaks = ed.custom_breaks.clone();
         let custom_joins = ed.custom_joins.clone();
         let empty_lines = ed.empty_lines.clone();
+        let highlights = ed.highlights.clone();
 
         let new_editor = cx.new(|_| {
             let mut editor = Editor::new(doc);
@@ -189,6 +190,7 @@ impl EditorPanel {
             editor.custom_breaks = custom_breaks;
             editor.custom_joins = custom_joins;
             editor.empty_lines = empty_lines;
+            editor.highlights = highlights;
             editor
         });
 
@@ -266,7 +268,7 @@ impl EditorPanel {
 
         // 1. Add user custom highlights from editor
         let editor = self.editor.read(cx);
-        highlights.extend(editor.custom_highlights.iter().cloned());
+        highlights.extend(editor.custom_highlights_for_rendering());
 
         // 2. Add search highlights if search is active
         let search_query = if self.is_search_visible {

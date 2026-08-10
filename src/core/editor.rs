@@ -3,6 +3,7 @@
 use crate::core::command::Command;
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
+use crate::core::highlight::{HighlightColor, HighlightFile, HighlightItem, generate_highlight_id};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::ParseResult;
 use gpui::Hsla;
@@ -10,6 +11,7 @@ use std::cell::RefCell;
 use std::cmp;
 use std::collections::BTreeSet;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -51,7 +53,7 @@ pub struct Editor {
     pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
-    pub custom_highlights: Vec<(Range<usize>, Hsla)>,
+    pub highlights: Vec<HighlightItem>,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
@@ -79,7 +81,7 @@ impl Editor {
             parse_cancel_token: None,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
-            custom_highlights: Vec::new(),
+            highlights: Vec::new(),
             cached_line_map: RefCell::new(None),
         }
     }
@@ -207,6 +209,34 @@ impl Editor {
         Some(cur..cur + 1)
     }
 
+    pub fn add_highlight(&mut self, item: HighlightItem) {
+        if item.size == 0 {
+            return;
+        }
+        let total = self.total_size();
+        let clamped_offset = item.offset.min(total);
+        let clamped_size = item.size.min(total.saturating_sub(clamped_offset));
+        if clamped_size == 0 {
+            return;
+        }
+
+        let mut item = item;
+        item.offset = clamped_offset;
+        item.size = clamped_size;
+
+        // If an existing highlight has the exact same range, update its color and/or comment
+        if let Some(existing) = self.highlights.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
+            existing.color = item.color;
+            if !item.comment.is_empty() {
+                existing.comment = item.comment;
+            }
+            return;
+        }
+
+        self.highlights.push(item);
+        self.highlights.sort_by_key(|h| (h.offset, h.size));
+    }
+
     pub fn add_custom_highlight(&mut self, range: Range<usize>, color: Hsla) {
         if range.is_empty() {
             return;
@@ -218,35 +248,85 @@ impl Editor {
             return;
         }
         let new_range = clamped_start..clamped_end;
+        let hl_color = HighlightColor::from_hsla(color);
 
         let mut updated = Vec::new();
-        for (r, c) in self.custom_highlights.drain(..) {
-            if r.end <= new_range.start || r.start >= new_range.end {
-                updated.push((r, c));
+        for h in self.highlights.drain(..) {
+            let h_range = h.range();
+            if h_range.end <= new_range.start || h_range.start >= new_range.end {
+                updated.push(h);
             } else {
-                if r.start < new_range.start {
-                    updated.push((r.start..new_range.start, c));
+                if h_range.start < new_range.start {
+                    let mut left = h.clone();
+                    left.id = generate_highlight_id();
+                    left.size = new_range.start - h_range.start;
+                    updated.push(left);
                 }
-                if r.end > new_range.end {
-                    updated.push((new_range.end..r.end, c));
+                if h_range.end > new_range.end {
+                    let mut right = h.clone();
+                    right.id = generate_highlight_id();
+                    right.offset = new_range.end;
+                    right.size = h_range.end - new_range.end;
+                    updated.push(right);
                 }
             }
         }
-        updated.push((new_range, color));
-        updated.sort_by_key(|(r, _)| r.start);
+        updated.push(HighlightItem::new(new_range.start, new_range.len(), hl_color, ""));
+        updated.sort_by_key(|h| (h.offset, h.size));
+        self.highlights = updated;
+    }
 
-        let mut merged: Vec<(Range<usize>, Hsla)> = Vec::new();
-        for (r, c) in updated {
-            if let Some(last) = merged.last_mut()
-                && last.0.end == r.start
-                && last.1 == c
-            {
-                last.0.end = r.end;
-                continue;
-            }
-            merged.push((r, c));
+    pub fn update_highlight_comment(&mut self, id: &str, comment: impl Into<String>) -> bool {
+        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+            item.comment = comment.into();
+            true
+        } else {
+            false
         }
-        self.custom_highlights = merged;
+    }
+
+    pub fn update_highlight_color(&mut self, id: &str, color: HighlightColor) -> bool {
+        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+            item.color = color;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn update_highlight_range(&mut self, id: &str, offset: usize, size: usize) -> bool {
+        if size == 0 {
+            return false;
+        }
+        let total = self.total_size();
+        let clamped_offset = offset.min(total);
+        let clamped_size = size.min(total.saturating_sub(clamped_offset));
+        if clamped_size == 0 {
+            return false;
+        }
+
+        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+            item.offset = clamped_offset;
+            item.size = clamped_size;
+            self.highlights.sort_by_key(|h| (h.offset, h.size));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_highlight_by_id(&mut self, id: &str) -> bool {
+        let initial_len = self.highlights.len();
+        self.highlights.retain(|h| h.id != id);
+        self.highlights.len() < initial_len
+    }
+
+    pub fn remove_highlight_by_index(&mut self, index: usize) -> Option<HighlightItem> {
+        if index < self.highlights.len() {
+            Some(self.highlights.remove(index))
+        } else {
+            None
+        }
     }
 
     pub fn clear_custom_highlight(&mut self, range: Range<usize>) {
@@ -254,23 +334,50 @@ impl Editor {
             return;
         }
         let mut updated = Vec::new();
-        for (r, c) in self.custom_highlights.drain(..) {
-            if r.end <= range.start || r.start >= range.end {
-                updated.push((r, c));
+        for h in self.highlights.drain(..) {
+            let h_range = h.range();
+            if h_range.end <= range.start || h_range.start >= range.end {
+                updated.push(h);
             } else {
-                if r.start < range.start {
-                    updated.push((r.start..range.start, c));
+                if h_range.start < range.start {
+                    let mut left = h.clone();
+                    left.id = generate_highlight_id();
+                    left.size = range.start - h_range.start;
+                    updated.push(left);
                 }
-                if r.end > range.end {
-                    updated.push((range.end..r.end, c));
+                if h_range.end > range.end {
+                    let mut right = h.clone();
+                    right.id = generate_highlight_id();
+                    right.offset = range.end;
+                    right.size = h_range.end - range.end;
+                    updated.push(right);
                 }
             }
         }
-        self.custom_highlights = updated;
+        self.highlights = updated;
+        self.highlights.sort_by_key(|h| (h.offset, h.size));
     }
 
     pub fn clear_all_custom_highlights(&mut self) {
-        self.custom_highlights.clear();
+        self.highlights.clear();
+    }
+
+    pub fn custom_highlights_for_rendering(&self) -> Vec<(Range<usize>, Hsla)> {
+        self.highlights.iter().map(|h| (h.range(), h.hsla_color())).collect()
+    }
+
+    pub fn export_highlights_to_file(&self, path: &Path) -> anyhow::Result<()> {
+        let doc_path = self.document.read().ok().map(|d| d.path().to_path_buf());
+        HighlightFile::save_to_path(path, &self.highlights, doc_path.as_deref())
+    }
+
+    pub fn import_highlights_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
+        let loaded = HighlightFile::load_from_path(path)?;
+        let count = loaded.len();
+        for item in loaded {
+            self.add_highlight(item);
+        }
+        Ok(count)
     }
 
     pub fn set_cursor_offset(&mut self, offset: usize) {
@@ -1675,25 +1782,87 @@ mod tests {
 
         // Add red highlight on 0..10
         editor.add_custom_highlight(0..10, red);
-        assert_eq!(editor.custom_highlights.len(), 1);
-        assert_eq!(editor.custom_highlights[0].0, 0..10);
-        assert_eq!(editor.custom_highlights[0].1, red);
+        assert_eq!(editor.highlights.len(), 1);
+        assert_eq!(editor.highlights[0].range(), 0..10);
+        assert_eq!(editor.highlights[0].color, HighlightColor::Red);
 
-        // Add overlapping blue highlight on 5..15
+        // Update comment
+        let id = editor.highlights[0].id.clone();
+        assert!(editor.update_highlight_comment(&id, "Header block"));
+        assert_eq!(editor.highlights[0].comment, "Header block");
+
+        // Add blue highlight on 5..15
         editor.add_custom_highlight(5..15, blue);
-        assert_eq!(editor.custom_highlights.len(), 2);
-        assert_eq!(editor.custom_highlights[0], (0..5, red));
-        assert_eq!(editor.custom_highlights[1], (5..15, blue));
+        assert_eq!(editor.highlights.len(), 2);
+        assert_eq!(editor.highlights[0].range(), 0..5);
+        assert_eq!(editor.highlights[1].range(), 5..15);
+        assert_eq!(editor.highlights[1].color, HighlightColor::Blue);
 
         // Clear sub-range 3..7
         editor.clear_custom_highlight(3..7);
-        assert_eq!(editor.custom_highlights.len(), 2);
-        assert_eq!(editor.custom_highlights[0], (0..3, red));
-        assert_eq!(editor.custom_highlights[1], (7..15, blue));
+        assert_eq!(editor.highlights.len(), 2);
+        assert_eq!(editor.highlights[0].range(), 0..3);
+        assert_eq!(editor.highlights[1].range(), 7..15);
 
         // Clear all
         editor.clear_all_custom_highlights();
-        assert!(editor.custom_highlights.is_empty());
+        assert!(editor.highlights.is_empty());
+    }
+
+    #[test]
+    fn test_editor_highlights_crud_and_file_io() {
+        let mut editor = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"); // 36 bytes
+
+        // Add highlights
+        let item1 = HighlightItem::new(0, 4, HighlightColor::Red, "Magic bytes");
+        let id1 = item1.id.clone();
+        editor.add_highlight(item1);
+
+        let item2 = HighlightItem::new(10, 8, HighlightColor::Green, "Payload");
+        let id2 = item2.id.clone();
+        editor.add_highlight(item2);
+
+        assert_eq!(editor.highlights.len(), 2);
+
+        // Update comment
+        assert!(editor.update_highlight_comment(&id1, "ELF Magic"));
+        assert_eq!(editor.highlights[0].comment, "ELF Magic");
+
+        // Update color
+        assert!(editor.update_highlight_color(&id1, HighlightColor::Cyan));
+        assert_eq!(editor.highlights[0].color, HighlightColor::Cyan);
+
+        // Update range
+        assert!(editor.update_highlight_range(&id2, 12, 10));
+        assert_eq!(editor.highlights[1].offset, 12);
+        assert_eq!(editor.highlights[1].size, 10);
+
+        // Test export and import
+        let temp_file = std::env::temp_dir().join("editor_highlights_test.json");
+        editor.export_highlights_to_file(&temp_file).unwrap();
+        assert!(temp_file.exists());
+
+        // Create new editor and import
+        let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+        let count = editor2.import_highlights_from_file(&temp_file).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(editor2.highlights.len(), 2);
+        assert_eq!(editor2.highlights[0].comment, "ELF Magic");
+        assert_eq!(editor2.highlights[0].color, HighlightColor::Cyan);
+        assert_eq!(editor2.highlights[1].offset, 12);
+        assert_eq!(editor2.highlights[1].size, 10);
+
+        // Remove by id
+        assert!(editor.remove_highlight_by_id(&id1));
+        assert_eq!(editor.highlights.len(), 1);
+        assert_eq!(editor.highlights[0].id, id2);
+
+        // Remove by index
+        let removed = editor.remove_highlight_by_index(0);
+        assert!(removed.is_some());
+        assert!(editor.highlights.is_empty());
+
+        let _ = std::fs::remove_file(temp_file);
     }
 
     #[test]

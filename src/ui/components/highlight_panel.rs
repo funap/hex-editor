@@ -80,14 +80,16 @@ impl HighlightPanel {
         };
 
         let new_item = HighlightItem::new(range.start, range.len(), HighlightColor::Yellow, "");
-        let new_id = new_item.id.clone();
+        let mut actual_id = String::new();
 
         editor_entity.update(cx, |editor, cx| {
-            editor.add_highlight(new_item);
+            actual_id = editor.add_highlight(new_item);
             cx.notify();
         });
 
-        self.selected_id = Some(new_id);
+        if !actual_id.is_empty() {
+            self.selected_id = Some(actual_id);
+        }
         cx.notify();
     }
 

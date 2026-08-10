@@ -209,15 +209,15 @@ impl Editor {
         Some(cur..cur + 1)
     }
 
-    pub fn add_highlight(&mut self, item: HighlightItem) {
+    pub fn add_highlight(&mut self, item: HighlightItem) -> String {
         if item.size == 0 {
-            return;
+            return String::new();
         }
         let total = self.total_size();
         let clamped_offset = item.offset.min(total);
         let clamped_size = item.size.min(total.saturating_sub(clamped_offset));
         if clamped_size == 0 {
-            return;
+            return String::new();
         }
 
         let mut item = item;
@@ -230,11 +230,18 @@ impl Editor {
             if !item.comment.is_empty() {
                 existing.comment = item.comment;
             }
-            return;
+            return existing.id.clone();
         }
 
+        // Ensure ID is non-empty and unique within this editor
+        if item.id.is_empty() || self.highlights.iter().any(|h| h.id == item.id) {
+            item.id = generate_highlight_id();
+        }
+
+        let id = item.id.clone();
         self.highlights.push(item);
         self.highlights.sort_by_key(|h| (h.offset, h.size));
+        id
     }
 
     pub fn add_custom_highlight(&mut self, range: Range<usize>, color: Hsla) {
@@ -1861,6 +1868,41 @@ mod tests {
         let removed = editor.remove_highlight_by_index(0);
         assert!(removed.is_some());
         assert!(editor.highlights.is_empty());
+
+        let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_import_and_add_highlight_no_id_collision() {
+        let mut editor = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+        let item1 = HighlightItem::new(0, 4, HighlightColor::Red, "Magic bytes");
+        editor.add_highlight(item1);
+
+        let temp_file = std::env::temp_dir().join("collision_test.json");
+        editor.export_highlights_to_file(&temp_file).unwrap();
+
+        let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+        editor2.import_highlights_from_file(&temp_file).unwrap();
+        assert_eq!(editor2.highlights.len(), 1);
+
+        // Now add a new highlight
+        let new_item = HighlightItem::new(10, 4, HighlightColor::Yellow, "New highlight");
+        let added_id = editor2.add_highlight(new_item);
+
+        // Must have 2 distinct IDs
+        assert_eq!(editor2.highlights.len(), 2);
+        assert_ne!(editor2.highlights[0].id, editor2.highlights[1].id);
+        assert_eq!(editor2.highlights[1].id, added_id);
+
+        // Editing one must not affect the other
+        assert!(editor2.update_highlight_comment(&added_id, "Updated new comment"));
+        assert_eq!(editor2.highlights[0].comment, "Magic bytes");
+        assert_eq!(editor2.highlights[1].comment, "Updated new comment");
+
+        // Deleting the new one must leave the first intact
+        assert!(editor2.remove_highlight_by_id(&added_id));
+        assert_eq!(editor2.highlights.len(), 1);
+        assert_eq!(editor2.highlights[0].comment, "Magic bytes");
 
         let _ = std::fs::remove_file(temp_file);
     }

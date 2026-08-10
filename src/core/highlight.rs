@@ -284,7 +284,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HighlightItem {
-    #[serde(default = "generate_highlight_id")]
+    #[serde(default = "generate_highlight_id", skip_serializing)]
     pub id: String,
     #[serde(deserialize_with = "deserialize_offset_or_hex")]
     pub offset: usize,
@@ -349,16 +349,20 @@ fn default_version() -> u32 {
 impl HighlightFile {
     pub fn from_json(json: &str) -> anyhow::Result<Vec<HighlightItem>> {
         // First attempt: HighlightFile wrapped format
-        if let Ok(file) = serde_json::from_str::<HighlightFile>(json) {
-            return Ok(file.highlights);
+        let mut items = if let Ok(file) = serde_json::from_str::<HighlightFile>(json) {
+            file.highlights
+        } else if let Ok(items) = serde_json::from_str::<Vec<HighlightItem>>(json) {
+            items
+        } else {
+            let err = serde_json::from_str::<HighlightFile>(json).unwrap_err();
+            anyhow::bail!("Failed to parse highlights JSON: {}", err)
+        };
+
+        // Guarantee distinct, fresh unique runtime IDs for all loaded items
+        for item in &mut items {
+            item.id = generate_highlight_id();
         }
-        // Second attempt: raw list of HighlightItem
-        if let Ok(items) = serde_json::from_str::<Vec<HighlightItem>>(json) {
-            return Ok(items);
-        }
-        // Return original parser error
-        let err = serde_json::from_str::<HighlightFile>(json).unwrap_err();
-        anyhow::bail!("Failed to parse highlights JSON: {}", err)
+        Ok(items)
     }
 
     pub fn to_json(highlights: &[HighlightItem], file_path: Option<&Path>) -> anyhow::Result<String> {

@@ -181,11 +181,23 @@ pub enum ResizingColumn {
     Comment,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAxisLock {
+    Horizontal,
+    Vertical,
+}
+
 pub struct HexView {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
     uniform_scroll_handle: UniformListScrollHandle,
     scroll_offset: usize,
+    pub hex_scroll_x: f32,
+    pub desc_scroll_x: f32,
+    pub comment_scroll_x: f32,
+    scroll_lock_axis: Option<ScrollAxisLock>,
+    last_scroll_time: Option<std::time::Instant>,
+    scroll_lock_top_row: usize,
     is_selecting: bool,
     bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     list_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
@@ -239,6 +251,7 @@ impl HexView {
                 let max_bytes = ed.line_starts().max_bytes_per_row();
                 this.hex_col_width = calculate_data_col_width(new_radix, new_group_size, max_bytes, this.font_size_prop);
             }
+            this.clamp_scroll_offsets(cx);
             this.ensure_cursor_visible(cx);
             cx.notify();
         });
@@ -248,6 +261,12 @@ impl HexView {
             focus_handle: cx.focus_handle(),
             uniform_scroll_handle: UniformListScrollHandle::new(),
             scroll_offset: 0,
+            hex_scroll_x: 0.0,
+            desc_scroll_x: 0.0,
+            comment_scroll_x: 0.0,
+            scroll_lock_axis: None,
+            last_scroll_time: None,
+            scroll_lock_top_row: 0,
             is_selecting: false,
             bounds: std::cell::Cell::new(None),
             list_bounds: std::cell::Cell::new(None),
@@ -270,6 +289,263 @@ impl HexView {
             comment_col_width: COMMENT_WIDTH,
             resizing_column: None,
             _editor_subscription,
+        }
+    }
+
+    pub fn max_hex_scroll(&self, cx: &App) -> f32 {
+        let editor = self.editor.read(cx);
+        let max_bytes = editor.line_starts().max_bytes_per_row();
+        let total_data_width = calculate_data_col_width(self.radix, self.group_size, max_bytes, self.font_size_prop);
+        (total_data_width - self.hex_col_width).max(0.0)
+    }
+
+    pub fn max_desc_scroll(&self, cx: &App) -> f32 {
+        let editor = self.editor.read(cx);
+        if let Some(ref parse_res) = editor.parse_result {
+            let char_w = f32::from(self.font_size_prop) * 0.61;
+            let mut max_w: f32 = 0.0;
+            for container in &parse_res.index.container_structs {
+                let text = &container.id;
+                let char_count: f32 = text.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+                let w = char_count * char_w + 40.0;
+                if w > max_w {
+                    max_w = w;
+                }
+            }
+            for field in &parse_res.index.leaf_fields {
+                let expr = field.format_expression();
+                let char_count: f32 = expr.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+                let w = char_count * char_w + 50.0;
+                if w > max_w {
+                    max_w = w;
+                }
+            }
+            let total_max = (max_w + 32.0).max(self.desc_col_width);
+            (total_max - self.desc_col_width).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn max_comment_scroll(&self, cx: &App) -> f32 {
+        let editor = self.editor.read(cx);
+        let line_starts = editor.line_starts();
+        let char_w = f32::from(self.font_size_prop) * 0.61;
+        let dot_size = 8.0;
+        let dot_margin_right = 5.0;
+        let item_spacing = 14.0;
+
+        use std::collections::HashMap;
+        let mut row_widths: HashMap<usize, f32> = HashMap::new();
+
+        for h in &editor.highlights {
+            let trimmed = h.comment.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let h_start_row = Editor::find_line_index(h.offset, &line_starts);
+            let char_count: f32 = trimmed.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+            let item_w = dot_size + dot_margin_right + (char_count * char_w) + item_spacing;
+            *row_widths.entry(h_start_row).or_insert(8.0) += item_w;
+        }
+
+        let max_content_w = row_widths.values().copied().fold(0.0f32, f32::max);
+        let max_w = (max_content_w + 32.0).max(self.comment_col_width);
+        (max_w - self.comment_col_width).max(0.0)
+    }
+
+    pub fn clamp_scroll_offsets(&mut self, cx: &App) {
+        let max_hex = self.max_hex_scroll(cx);
+        self.hex_scroll_x = self.hex_scroll_x.clamp(0.0, max_hex);
+
+        let max_desc = self.max_desc_scroll(cx);
+        self.desc_scroll_x = self.desc_scroll_x.clamp(0.0, max_desc);
+
+        let max_comment = self.max_comment_scroll(cx);
+        self.comment_scroll_x = self.comment_scroll_x.clamp(0.0, max_comment);
+    }
+
+    pub fn auto_fit_column(&mut self, col: ResizingColumn, cx: &mut Context<Self>) {
+        match col {
+            ResizingColumn::Address => {
+                self.address_col_width = ADDRESS_WIDTH;
+            }
+            ResizingColumn::Hex => {
+                let editor = self.editor.read(cx);
+                let max_bytes = editor.line_starts().max_bytes_per_row();
+                self.hex_col_width = calculate_data_col_width(self.radix, self.group_size, max_bytes, self.font_size_prop);
+                self.hex_scroll_x = 0.0;
+            }
+            ResizingColumn::Description => {
+                let editor = self.editor.read(cx);
+                if let Some(ref parse_res) = editor.parse_result {
+                    let char_w = f32::from(self.font_size_prop) * 0.61;
+                    let mut max_w: f32 = 0.0;
+                    for container in &parse_res.index.container_structs {
+                        let text = &container.id;
+                        let char_count: f32 = text.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+                        let w = char_count * char_w + 40.0;
+                        if w > max_w {
+                            max_w = w;
+                        }
+                    }
+                    for field in &parse_res.index.leaf_fields {
+                        let expr = field.format_expression();
+                        let char_count: f32 = expr.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+                        let w = char_count * char_w + 50.0;
+                        if w > max_w {
+                            max_w = w;
+                        }
+                    }
+                    self.desc_col_width = max_w.max(DESC_WIDTH);
+                    self.desc_scroll_x = 0.0;
+                } else {
+                    self.desc_col_width = DESC_WIDTH;
+                    self.desc_scroll_x = 0.0;
+                }
+            }
+            ResizingColumn::Comment => {
+                let editor = self.editor.read(cx);
+                let line_starts = editor.line_starts();
+                let char_w = f32::from(self.font_size_prop) * 0.61;
+                let dot_size = 8.0;
+                let dot_margin_right = 5.0;
+                let item_spacing = 14.0;
+
+                use std::collections::HashMap;
+                let mut row_widths: HashMap<usize, f32> = HashMap::new();
+
+                for h in &editor.highlights {
+                    let trimmed = h.comment.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let h_start_row = Editor::find_line_index(h.offset, &line_starts);
+                    let char_count: f32 = trimmed.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum();
+                    let item_w = dot_size + dot_margin_right + (char_count * char_w) + item_spacing;
+                    *row_widths.entry(h_start_row).or_insert(8.0) += item_w;
+                }
+
+                let max_content_w = row_widths.values().copied().fold(0.0f32, f32::max);
+                self.comment_col_width = if max_content_w > 0.0 {
+                    (max_content_w + 24.0).max(COMMENT_WIDTH)
+                } else {
+                    COMMENT_WIDTH
+                };
+                self.comment_scroll_x = 0.0;
+            }
+        }
+        self.clamp_scroll_offsets(cx);
+        cx.notify();
+    }
+
+    fn on_scroll_wheel(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let pixel_delta = event.delta.pixel_delta(px(ROW_HEIGHT));
+        let mut delta_x = f32::from(pixel_delta.x);
+        let delta_y = f32::from(pixel_delta.y);
+
+        if delta_x == 0.0 && event.modifiers.shift && delta_y != 0.0 {
+            delta_x = delta_y;
+        }
+
+        // 120ms 以上イベント間隔が空いたらジェスチャー終了と判定してリセット
+        if let Some(last_time) = self.last_scroll_time
+            && now.duration_since(last_time).as_millis() > 120
+        {
+            self.scroll_lock_axis = None;
+        }
+        self.last_scroll_time = Some(now);
+
+        let abs_x = delta_x.abs();
+        let abs_y = delta_y.abs();
+
+        // 軸ロックの決定（初動の移動量で方向をロック）
+        if self.scroll_lock_axis.is_none() && (abs_x > 0.5 || abs_y > 0.5) {
+            if abs_x > abs_y * 1.1 {
+                self.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
+                self.scroll_lock_top_row = self.current_scroll_top_row();
+            } else if abs_y > abs_x * 1.1 {
+                self.scroll_lock_axis = Some(ScrollAxisLock::Vertical);
+            }
+        }
+
+        // 縦スクロールロック中の場合は横スクロールを行わずスルー
+        if self.scroll_lock_axis == Some(ScrollAxisLock::Vertical) {
+            return;
+        }
+
+        let is_horizontal = self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) || abs_x > abs_y;
+
+        if is_horizontal && abs_x > 0.01 {
+            // 横スクロールロック中は縦スクロール位置を固定して縦揺れを防止
+            if self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) {
+                let lock_row = self.scroll_lock_top_row;
+                self.uniform_scroll_handle.scroll_to_item(lock_row, ScrollStrategy::Top);
+            }
+
+            let bounds = if let Some(b) = self.bounds.get() {
+                b
+            } else {
+                return;
+            };
+
+            let is_struct_mode = {
+                let editor = self.editor.read(cx);
+                editor.show_inline_structure_view && editor.parse_result.is_some()
+            };
+            let max_bytes_per_row = self.editor.read(cx).line_starts().max_bytes_per_row();
+
+            let offset_w = if is_struct_mode {
+                self.address_col_width
+            } else if self.show_offset {
+                OFFSET_WIDTH
+            } else {
+                0.0
+            };
+            let gap = SECTION_GAP;
+            let base_x = f32::from(bounds.left()) + 8.0;
+
+            let hex_start_x = base_x + offset_w + gap;
+            let hex_end_x = hex_start_x + self.hex_col_width;
+
+            let (desc_start_x, desc_end_x, comment_start_x, comment_end_x) = if is_struct_mode {
+                let d_start = hex_end_x + gap;
+                let d_end = d_start + self.desc_col_width;
+                let c_start = d_end + gap;
+                let c_end = c_start + self.comment_col_width;
+                (d_start, d_end, c_start, c_end)
+            } else {
+                let ascii_w = if self.show_ascii { max_bytes_per_row as f32 * 10.0 } else { 0.0 };
+                let c_start = if self.show_ascii { hex_end_x + gap + ascii_w + gap } else { hex_end_x + gap };
+                let c_end = c_start + self.comment_col_width;
+                (0.0, 0.0, c_start, c_end)
+            };
+
+            let mouse_x = f32::from(event.position.x);
+
+            if mouse_x >= hex_start_x && mouse_x <= hex_end_x + (gap / 2.0) {
+                let max_hex = self.max_hex_scroll(cx);
+                let new_scroll = (self.hex_scroll_x - delta_x).clamp(0.0, max_hex);
+                if (new_scroll - self.hex_scroll_x).abs() > 0.01 {
+                    self.hex_scroll_x = new_scroll;
+                    cx.notify();
+                }
+            } else if is_struct_mode && mouse_x >= desc_start_x && mouse_x <= desc_end_x + (gap / 2.0) {
+                let max_desc = self.max_desc_scroll(cx);
+                let new_scroll = (self.desc_scroll_x - delta_x).clamp(0.0, max_desc);
+                if (new_scroll - self.desc_scroll_x).abs() > 0.01 {
+                    self.desc_scroll_x = new_scroll;
+                    cx.notify();
+                }
+            } else if mouse_x >= comment_start_x && mouse_x <= comment_end_x + (gap / 2.0) {
+                let max_comment = self.max_comment_scroll(cx);
+                let new_scroll = (self.comment_scroll_x - delta_x).clamp(0.0, max_comment);
+                if (new_scroll - self.comment_scroll_x).abs() > 0.01 {
+                    self.comment_scroll_x = new_scroll;
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -415,6 +691,23 @@ impl HexView {
             }
         } else {
             self.scroll_to_row(cursor_row, cx);
+        }
+
+        // Horizontal visibility in Hex column
+        let line_offset = line_starts.get(cursor_row).unwrap_or(0);
+        let byte_in_line = cursor_offset.saturating_sub(line_offset);
+        let group_bytes = self.group_size.byte_count();
+        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, self.font_size_prop);
+        let item_step = item_width + item_gap;
+        let item_idx = byte_in_line / group_bytes;
+        let item_left = item_idx as f32 * item_step;
+        let item_right = item_left + item_width;
+
+        let max_hex = self.max_hex_scroll(cx);
+        if item_left < self.hex_scroll_x {
+            self.hex_scroll_x = item_left.clamp(0.0, max_hex);
+        } else if item_right > self.hex_scroll_x + self.hex_col_width {
+            self.hex_scroll_x = (item_right - self.hex_col_width + item_gap).clamp(0.0, max_hex);
         }
     }
 
@@ -901,7 +1194,7 @@ impl HexView {
             let ascii_x = (rel_x - (hex_end_x + SECTION_GAP)).max(0.0);
             (ascii_x / 10.0) as usize
         } else {
-            let col_x = (rel_x - hex_start_x).max(0.0);
+            let col_x = (rel_x - hex_start_x + self.hex_scroll_x).max(0.0);
             let item_idx = (col_x / item_step) as usize;
             let within_item_x = col_x - item_idx as f32 * item_step;
 
@@ -966,6 +1259,9 @@ impl HexView {
         show_offset: bool,
         show_ascii: bool,
         is_focused: bool,
+        hex_scroll_x: f32,
+        desc_scroll_x: f32,
+        comment_scroll_x: f32,
         address_col_width: f32,
         hex_col_width: f32,
         desc_col_width: f32,
@@ -1181,16 +1477,11 @@ impl HexView {
                             };
 
                             let fill_width = if next_is_selected || next_has_same_highlight { item_step } else { item_width };
+                            let item_draw_x = hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step);
 
-                            let item_fill_bounds = Bounds::new(
-                                point(hex_start_x + px(item_idx as f32 * item_step), bounds.top() + px(1.0)),
-                                size(px(fill_width), px(ROW_HEIGHT - 2.0)),
-                            );
+                            let item_fill_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(fill_width), px(ROW_HEIGHT - 2.0)));
 
-                            let item_box_bounds = Bounds::new(
-                                point(hex_start_x + px(item_idx as f32 * item_step), bounds.top() + px(1.0)),
-                                size(px(item_width), px(ROW_HEIGHT - 2.0)),
-                            );
+                            let item_box_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(item_width), px(ROW_HEIGHT - 2.0)));
 
                             if bg_color.a > 0.0 {
                                 window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
@@ -1237,16 +1528,29 @@ impl HexView {
                                 strikethrough: None,
                             };
                             let shaped_item = window.text_system().shape_line(item_str, font_size, &[run], None);
-                            let item_pos = point(hex_start_x + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
+                            let item_pos = point(hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
                             let _ = shaped_item.paint(item_pos, line_height, window, cx);
 
                             chunk_idx += item_slice_len;
                             item_idx += 1;
                         }
 
+                        // Left-edge subtle gradient fade when hex_scroll_x > 1.0
+                        if hex_scroll_x > 1.0 {
+                            let bg = bg_color_theme;
+                            for step in 0..5 {
+                                let x = hex_start_x + px(step as f32 * 3.2);
+                                let alpha = 1.0 - (step as f32 / 5.0);
+                                window.paint_quad(gpui::fill(
+                                    Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                                    bg.opacity(alpha * 0.95),
+                                ));
+                            }
+                        }
+
                         // Right-edge subtle gradient fade when row data overflows hex_col_width
                         let total_row_data_width = item_idx as f32 * item_step;
-                        if total_row_data_width > hex_col_width {
+                        if hex_scroll_x + hex_col_width < total_row_data_width - 1.0 {
                             let fade_w = 22.0;
                             let fade_start = hex_end_x - px(fade_w);
                             let bg = bg_color_theme;
@@ -1337,6 +1641,7 @@ impl HexView {
                     // 4. Description Column (when structure definition is present)
                     if let Some(ref parse_res) = parse_result {
                         let desc_start_x = hex_end_x + px(SECTION_GAP);
+                        let desc_end_x = desc_start_x + px(desc_col_width);
 
                         let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
                         let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
@@ -1387,8 +1692,43 @@ impl HexView {
                             };
                             let shaped_expr = window.text_system().shape_line(expr_shared, font_size, &[run], None);
                             let desc_mask_bounds = Bounds::new(point(desc_start_x, bounds.top()), size(px(desc_col_width), px(ROW_HEIGHT)));
+                            let desc_text_width = f32::from(shaped_expr.width) + indent_px + 8.0;
+
                             window.with_content_mask(Some(gpui::ContentMask { bounds: desc_mask_bounds }), |window| {
-                                let _ = shaped_expr.paint(point(desc_start_x + px(indent_px), bounds.top() + px(2.0)), line_height, window, cx);
+                                let _ = shaped_expr.paint(
+                                    point(desc_start_x - px(desc_scroll_x) + px(indent_px), bounds.top() + px(2.0)),
+                                    line_height,
+                                    window,
+                                    cx,
+                                );
+
+                                // Left fade
+                                if desc_scroll_x > 1.0 {
+                                    let bg = bg_color_theme;
+                                    for step in 0..5 {
+                                        let x = desc_start_x + px(step as f32 * 3.2);
+                                        let alpha = 1.0 - (step as f32 / 5.0);
+                                        window.paint_quad(gpui::fill(
+                                            Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                                            bg.opacity(alpha * 0.95),
+                                        ));
+                                    }
+                                }
+
+                                // Right fade
+                                if desc_scroll_x + desc_col_width < desc_text_width - 1.0 {
+                                    let fade_w = 20.0;
+                                    let fade_start = desc_end_x - px(fade_w);
+                                    let bg = bg_color_theme;
+                                    for step in 0..5 {
+                                        let x = fade_start + px(step as f32 * 4.0);
+                                        let alpha = (step + 1) as f32 / 6.0;
+                                        window.paint_quad(gpui::fill(
+                                            Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
+                                            bg.opacity(alpha * 0.95),
+                                        ));
+                                    }
+                                }
                             });
                         }
                     }
@@ -1397,7 +1737,7 @@ impl HexView {
                     // Only display comment once per highlight in the visible range:
                     // - On the highlight's starting row if visible (>= top_visible_row)
                     // - Or on top_visible_row if the highlight started before top_visible_row but extends into it
-                    let row_comments: Vec<&str> = highlight_items_arc
+                    let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items_arc
                         .iter()
                         .filter(|h| {
                             if h.comment.trim().is_empty() {
@@ -1410,24 +1750,87 @@ impl HexView {
                             let display_row = h_start_row.max(top_visible_row);
                             row_idx == display_row && row_idx <= h_end_row
                         })
-                        .map(|h| h.comment.trim())
+                        .map(|h| (h.color.to_badge_hsla(), SharedString::from(h.comment.trim().to_string())))
                         .collect();
 
-                    if !row_comments.is_empty() {
-                        let comment_str = row_comments.join(" | ");
-                        let comment_shared = SharedString::from(comment_str);
-                        let run = gpui::TextRun {
-                            len: comment_shared.len(),
-                            font: font.clone(),
-                            color: muted_color,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped_comment = window.text_system().shape_line(comment_shared, font_size, &[run], None);
+                    if !row_highlight_comments.is_empty() {
                         let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
+                        let comment_end_x = comment_start_x + px(comment_col_width);
+
+                        let dot_size = 8.0;
+                        let dot_radius = 4.0;
+                        let dot_margin_right = 5.0;
+                        let item_spacing = 14.0;
+
+                        let mut shaped_items = Vec::new();
+                        let mut total_content_width = 4.0;
+
+                        for (badge_color, comment_shared) in &row_highlight_comments {
+                            let run = gpui::TextRun {
+                                len: comment_shared.len(),
+                                font: font.clone(),
+                                color: muted_color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            let shaped_comment = window.text_system().shape_line(comment_shared.clone(), font_size, &[run], None);
+                            let text_w = f32::from(shaped_comment.width);
+                            shaped_items.push((*badge_color, shaped_comment, text_w));
+                            total_content_width += dot_size + dot_margin_right + text_w + item_spacing;
+                        }
+                        let comment_text_width = total_content_width;
+
                         window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
-                            let _ = shaped_comment.paint(point(comment_start_x, bounds.top() + px(2.0)), line_height, window, cx);
+                            let mut cur_x = comment_start_x - px(comment_scroll_x) + px(4.0);
+                            let dot_y = bounds.top() + px((ROW_HEIGHT - dot_size) / 2.0);
+
+                            for (badge_color, shaped_comment, text_w) in shaped_items {
+                                // Highlight colored circle dot
+                                let dot_bounds = Bounds::new(point(cur_x, dot_y), size(px(dot_size), px(dot_size)));
+                                let mut dot_quad = gpui::fill(dot_bounds, badge_color);
+                                dot_quad.corner_radii = gpui::Corners {
+                                    top_left: px(dot_radius),
+                                    top_right: px(dot_radius),
+                                    bottom_left: px(dot_radius),
+                                    bottom_right: px(dot_radius),
+                                };
+                                window.paint_quad(dot_quad);
+
+                                // Comment text
+                                let text_x = cur_x + px(dot_size + dot_margin_right);
+                                let _ = shaped_comment.paint(point(text_x, bounds.top() + px(2.0)), line_height, window, cx);
+
+                                cur_x = text_x + px(text_w + item_spacing);
+                            }
+
+                            // Left fade
+                            if comment_scroll_x > 1.0 {
+                                let bg = bg_color_theme;
+                                for step in 0..5 {
+                                    let x = comment_start_x + px(step as f32 * 3.2);
+                                    let alpha = 1.0 - (step as f32 / 5.0);
+                                    window.paint_quad(gpui::fill(
+                                        Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                                        bg.opacity(alpha * 0.95),
+                                    ));
+                                }
+                            }
+
+                            // Right fade
+                            if comment_scroll_x + comment_col_width < comment_text_width - 1.0 {
+                                let fade_w = 20.0;
+                                let fade_start = comment_end_x - px(fade_w);
+                                let bg = bg_color_theme;
+                                for step in 0..5 {
+                                    let x = fade_start + px(step as f32 * 4.0);
+                                    let alpha = (step + 1) as f32 / 6.0;
+                                    window.paint_quad(gpui::fill(
+                                        Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
+                                        bg.opacity(alpha * 0.95),
+                                    ));
+                                }
+                            }
                         });
                     }
                 },
@@ -1494,7 +1897,9 @@ impl Render for HexView {
         let group_bytes = self.group_size.byte_count();
         let items_in_row = max_bytes_per_row.div_ceil(group_bytes).max(1);
         let total_data_width = items_in_row as f32 * item_step;
-        let is_hex_clipped = total_data_width > self.hex_col_width;
+        let max_hex_scroll = (total_data_width - self.hex_col_width).max(0.0);
+        let is_hex_clipped_left = self.hex_scroll_x > 1.0;
+        let is_hex_clipped_right = self.hex_scroll_x < max_hex_scroll - 1.0;
 
         let header = if self.show_header {
             let mut hex_cols = Vec::with_capacity(items_in_row);
@@ -1512,6 +1917,42 @@ impl Render for HexView {
                         .child(label),
                 );
             }
+
+            let comment_header_el = |width: f32, theme: &gpui_component::Theme| {
+                h_flex()
+                    .w(px(width + SECTION_GAP))
+                    .child(div().w(px(width)).text_xs().text_color(theme.muted_foreground).child("Comment").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                            if event.click_count >= 2 {
+                                this.auto_fit_column(ResizingColumn::Comment, cx);
+                            }
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .w(px(SECTION_GAP))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(gpui::CursorStyle::ResizeLeftRight)
+                            .hover(|s| s.bg(theme.accent.opacity(0.2)))
+                            .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                    if event.click_count >= 2 {
+                                        this.resizing_column = None;
+                                        this.auto_fit_column(ResizingColumn::Comment, cx);
+                                    } else {
+                                        this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
+                                        cx.notify();
+                                    }
+                                }),
+                            ),
+                    )
+            };
 
             div()
                 .flex()
@@ -1531,7 +1972,15 @@ impl Render for HexView {
                                 .w(px(self.address_col_width))
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("Address"),
+                                .child("Address")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                        if event.click_count >= 2 {
+                                            this.auto_fit_column(ResizingColumn::Address, cx);
+                                        }
+                                    }),
+                                ),
                         )
                         .child(
                             div()
@@ -1546,8 +1995,13 @@ impl Render for HexView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                        this.resizing_column = Some((ResizingColumn::Address, event.position.x.into(), this.address_col_width));
-                                        cx.notify();
+                                        if event.click_count >= 2 {
+                                            this.resizing_column = None;
+                                            this.auto_fit_column(ResizingColumn::Address, cx);
+                                        } else {
+                                            this.resizing_column = Some((ResizingColumn::Address, event.position.x.into(), this.address_col_width));
+                                            cx.notify();
+                                        }
                                     }),
                                 ),
                         )
@@ -1563,8 +2017,6 @@ impl Render for HexView {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
                                 .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border)),
                         )
                         .into_any_element()
@@ -1579,15 +2031,42 @@ impl Render for HexView {
                                 .w(px(self.hex_col_width))
                                 .overflow_hidden()
                                 .relative()
-                                .child(h_flex().children(hex_cols))
-                                .when(is_hex_clipped, |el| {
+                                .child(h_flex().ml(px(-self.hex_scroll_x)).children(hex_cols))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                        if event.click_count >= 2 {
+                                            this.auto_fit_column(ResizingColumn::Hex, cx);
+                                        }
+                                    }),
+                                )
+                                .when(is_hex_clipped_left, |el| {
+                                    el.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .bottom_0()
+                                            .w(px(18.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_start()
+                                            .pl_1()
+                                            .bg(theme.sidebar.opacity(0.85))
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(theme.muted_foreground)
+                                            .child("…"),
+                                    )
+                                })
+                                .when(is_hex_clipped_right, |el| {
                                     el.child(
                                         div()
                                             .absolute()
                                             .top_0()
                                             .right_0()
                                             .bottom_0()
-                                            .w(px(24.0))
+                                            .w(px(18.0))
                                             .flex()
                                             .items_center()
                                             .justify_end()
@@ -1613,8 +2092,13 @@ impl Render for HexView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                        this.resizing_column = Some((ResizingColumn::Hex, event.position.x.into(), this.hex_col_width));
-                                        cx.notify();
+                                        if event.click_count >= 2 {
+                                            this.resizing_column = None;
+                                            this.auto_fit_column(ResizingColumn::Hex, cx);
+                                        } else {
+                                            this.resizing_column = Some((ResizingColumn::Hex, event.position.x.into(), this.hex_col_width));
+                                            cx.notify();
+                                        }
                                     }),
                                 ),
                         ),
@@ -1629,7 +2113,15 @@ impl Render for HexView {
                                         .w(px(self.desc_col_width))
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
-                                        .child("Description"),
+                                        .child("Description")
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                                if event.click_count >= 2 {
+                                                    this.auto_fit_column(ResizingColumn::Description, cx);
+                                                }
+                                            }),
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -1644,41 +2136,18 @@ impl Render for HexView {
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                                this.resizing_column = Some((ResizingColumn::Description, event.position.x.into(), this.desc_col_width));
-                                                cx.notify();
+                                                if event.click_count >= 2 {
+                                                    this.resizing_column = None;
+                                                    this.auto_fit_column(ResizingColumn::Description, cx);
+                                                } else {
+                                                    this.resizing_column = Some((ResizingColumn::Description, event.position.x.into(), this.desc_col_width));
+                                                    cx.notify();
+                                                }
                                             }),
                                         ),
                                 ),
                         )
-                        .child(
-                            h_flex()
-                                .w(px(self.comment_col_width + SECTION_GAP))
-                                .child(
-                                    div()
-                                        .w(px(self.comment_col_width))
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child("Comment"),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(SECTION_GAP))
-                                        .h_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                        .hover(|s| s.bg(theme.accent.opacity(0.2)))
-                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                                this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
-                                                cx.notify();
-                                            }),
-                                        ),
-                                ),
-                        )
+                        .child(comment_header_el(self.comment_col_width, theme))
                         .into_any_element()
                 } else if self.show_ascii {
                     let label = match self.encoding {
@@ -1708,65 +2177,10 @@ impl Render for HexView {
                                         .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border)),
                                 ),
                         )
-                        .child(
-                            h_flex()
-                                .w(px(self.comment_col_width + SECTION_GAP))
-                                .child(
-                                    div()
-                                        .w(px(self.comment_col_width))
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child("Comment"),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(SECTION_GAP))
-                                        .h_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                        .hover(|s| s.bg(theme.accent.opacity(0.2)))
-                                        .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                                this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
-                                                cx.notify();
-                                            }),
-                                        ),
-                                ),
-                        )
+                        .child(comment_header_el(self.comment_col_width, theme))
                         .into_any_element()
                 } else {
-                    h_flex()
-                        .w(px(self.comment_col_width + SECTION_GAP))
-                        .child(
-                            div()
-                                .w(px(self.comment_col_width))
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child("Comment"),
-                        )
-                        .child(
-                            div()
-                                .w(px(SECTION_GAP))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                .hover(|s| s.bg(theme.accent.opacity(0.2)))
-                                .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                        this.resizing_column = Some((ResizingColumn::Comment, event.position.x.into(), this.comment_col_width));
-                                        cx.notify();
-                                    }),
-                                ),
-                        )
-                        .into_any_element()
+                    comment_header_el(self.comment_col_width, theme).into_any_element()
                 })
                 .into_any_element()
         } else {
@@ -1785,6 +2199,7 @@ impl Render for HexView {
 
         container
             .track_focus(&self.focus_handle(cx))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))
             .on_action(cx.listener(Self::move_up))
@@ -1902,6 +2317,7 @@ impl Render for HexView {
                             this.comment_col_width = (start_w + delta).max(80.0);
                         }
                     }
+                    this.clamp_scroll_offsets(cx);
                     cx.notify();
                     return;
                 }
@@ -1977,6 +2393,9 @@ impl Render for HexView {
                                     this.visible_range.set(Some((top_row, bottom_row)));
                                 });
                                 let view_read = view.read(cx);
+                                let hex_scroll_x = view_read.hex_scroll_x;
+                                let desc_scroll_x = view_read.desc_scroll_x;
+                                let comment_scroll_x = view_read.comment_scroll_x;
                                 let address_col_width = view_read.address_col_width;
                                 let hex_col_width = view_read.hex_col_width;
                                 let desc_col_width = view_read.desc_col_width;
@@ -2020,6 +2439,9 @@ impl Render for HexView {
                                             show_offset,
                                             show_ascii,
                                             is_focused,
+                                            hex_scroll_x,
+                                            desc_scroll_x,
+                                            comment_scroll_x,
                                             address_col_width,
                                             hex_col_width,
                                             desc_col_width,
@@ -2040,13 +2462,6 @@ impl Render for HexView {
                         div().absolute().top_0().right_0().bottom_0().w_3().child(
                             Scrollbar::vertical(&self.uniform_scroll_handle)
                                 .axis(ScrollbarAxis::Vertical)
-                                .scroll_size(size(px(total_width), px(total_height))),
-                        ),
-                    )
-                    .child(
-                        div().absolute().bottom_0().left_0().right_0().h_3().child(
-                            Scrollbar::horizontal(&self.uniform_scroll_handle)
-                                .axis(ScrollbarAxis::Horizontal)
                                 .scroll_size(size(px(total_width), px(total_height))),
                         ),
                     ),

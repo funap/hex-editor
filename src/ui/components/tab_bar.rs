@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::actions::{ActivateTab, CloseActivePanel};
 
+#[allow(dead_code)]
 pub struct TabItemInfo {
     pub id: usize,
     pub title: String,
@@ -14,6 +15,7 @@ pub struct TabItemInfo {
     pub path: Option<PathBuf>,
 }
 
+#[allow(dead_code)]
 pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut App) -> impl IntoElement {
     let theme = cx.theme();
     let tab_bar_bg = theme.tab_bar;

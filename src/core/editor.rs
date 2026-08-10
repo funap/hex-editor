@@ -1323,6 +1323,44 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_document_independent_cursors_and_offsets() {
+        let data = (0..256).map(|i| i as u8).collect::<Vec<_>>();
+        let buffer = crate::core::buffer::Buffer::new(data);
+        let document = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("binary.bin"), buffer)));
+        let mut editor1 = Editor::new(document.clone());
+        let mut editor2 = Editor::new(document.clone());
+
+        // Set different offsets and selections (simulating vertical/horizontal split panes)
+        editor1.set_cursor_offset(0x00);
+        editor1.selection_start = Some(0x00);
+        editor1.selection_end = Some(0x10);
+
+        editor2.set_cursor_offset(0x80);
+        editor2.selection_start = Some(0x80);
+        editor2.selection_end = Some(0xA0);
+
+        assert_eq!(editor1.cursor_offset, 0x00);
+        assert_eq!(editor1.selection_start, Some(0x00));
+        assert_eq!(editor1.selection_end, Some(0x10));
+
+        assert_eq!(editor2.cursor_offset, 0x80);
+        assert_eq!(editor2.selection_start, Some(0x80));
+        assert_eq!(editor2.selection_end, Some(0xA0));
+
+        // Both editors access identical underlying bytes
+        assert_eq!(editor1.total_size(), 256);
+        assert_eq!(editor2.total_size(), 256);
+
+        // Edit byte in editor1 at offset 0
+        let cmd = Box::new(InsertCharCommand::new(0, 0xFF));
+        editor1.execute_command(cmd);
+
+        // Both editors see updated buffer size
+        assert_eq!(editor1.total_size(), 257);
+        assert_eq!(editor2.total_size(), 257);
+    }
+
+    #[test]
     fn test_undo_redo() {
         let mut editor = create_editor_with_content(b"");
 

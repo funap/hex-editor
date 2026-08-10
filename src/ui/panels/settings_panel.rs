@@ -1,7 +1,7 @@
 use crate::core::appearance::Appearance;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
-use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Subscription, Window, div};
+use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div};
 use gpui_component::{
     ActiveTheme,
     dock::{Panel, PanelEvent},
@@ -136,6 +136,9 @@ impl Panel for SettingsPanel {
     }
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         "Settings"
+    }
+    fn tab_name(&self, _: &App) -> Option<SharedString> {
+        Some("Settings".into())
     }
     fn closable(&self, _: &App) -> bool {
         true

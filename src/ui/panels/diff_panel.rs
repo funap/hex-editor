@@ -23,8 +23,8 @@ pub fn init(cx: &mut App) {
 }
 
 pub struct DiffPanel {
-    left_document: Arc<RwLock<Document>>,
-    right_document: Arc<RwLock<Document>>,
+    pub left_document: Arc<RwLock<Document>>,
+    pub right_document: Arc<RwLock<Document>>,
     left_view: Entity<HexView>,
     right_view: Entity<HexView>,
     diff_result: Option<DiffResult>,
@@ -234,6 +234,22 @@ impl Panel for DiffPanel {
         format!("Diff: {} ↔ {}", left_name, right_name)
     }
 
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        let left_name = self
+            .left_path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or("Unknown".to_string());
+        let right_name = self
+            .right_path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or("Unknown".to_string());
+        Some(format!("Diff: {} ↔ {}", left_name, right_name).into())
+    }
+
     fn closable(&self, _cx: &App) -> bool {
         true
     }
@@ -244,6 +260,10 @@ impl Panel for DiffPanel {
 
     fn visible(&self, _cx: &App) -> bool {
         true
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {

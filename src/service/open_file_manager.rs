@@ -1,7 +1,7 @@
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::ui::panels::editor_panel::EditorPanel;
-use gpui::{Context, Entity, EventEmitter};
+use gpui::{Context, Entity, EntityId, EventEmitter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 pub struct OpenEntryId(pub usize);
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct OpenEntry {
     pub id: OpenEntryId,
     pub path: PathBuf,
@@ -30,6 +31,7 @@ pub struct OpenFileManager {
     next_id: usize,
 }
 
+#[allow(dead_code)]
 impl OpenFileManager {
     pub fn new() -> Self {
         Self {
@@ -48,13 +50,6 @@ impl OpenFileManager {
         cx: &mut Context<Self>,
     ) -> OpenEntryId {
         let path = path.canonicalize().unwrap_or(path);
-
-        // If already open, just activate it
-        if let Some(entry) = self.find_by_path(&path) {
-            let id = entry.id;
-            self.activate(id, cx);
-            return id;
-        }
 
         let id = OpenEntryId(self.next_id);
         self.next_id += 1;
@@ -84,7 +79,6 @@ impl OpenFileManager {
             cx.emit(OpenFileEvent::Closed(id));
 
             if self.active_id == Some(id) {
-                // Activate the next available tab, or None if empty
                 if !self.entries.is_empty() {
                     let new_active_pos = pos.min(self.entries.len() - 1);
                     let new_active_id = self.entries[new_active_pos].id;
@@ -98,6 +92,31 @@ impl OpenFileManager {
         }
     }
 
+    pub fn close_panel(&mut self, panel_id: EntityId, cx: &mut Context<Self>) -> Option<PathBuf> {
+        if let Some(pos) = self.entries.iter().position(|e| e.panel.entity_id() == panel_id) {
+            let entry = self.entries.remove(pos);
+            let id = entry.id;
+            let path = entry.path;
+
+            cx.emit(OpenFileEvent::Closed(id));
+
+            if self.active_id == Some(id) {
+                if !self.entries.is_empty() {
+                    let new_active_pos = pos.min(self.entries.len() - 1);
+                    let new_active_id = self.entries[new_active_pos].id;
+                    self.active_id = Some(new_active_id);
+                    cx.emit(OpenFileEvent::Activated(new_active_id));
+                } else {
+                    self.active_id = None;
+                }
+            }
+            cx.notify();
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     pub fn activate(&mut self, id: OpenEntryId, cx: &mut Context<Self>) {
         if self.entries.iter().any(|e| e.id == id) && self.active_id != Some(id) {
             self.active_id = Some(id);
@@ -106,11 +125,41 @@ impl OpenFileManager {
         }
     }
 
+    pub fn activate_panel(&mut self, panel_id: EntityId, cx: &mut Context<Self>) {
+        if let Some(entry) = self.entries.iter().find(|e| e.panel.entity_id() == panel_id) {
+            let id = entry.id;
+            self.activate(id, cx);
+        }
+    }
+
+    pub fn activate_editor(&mut self, editor_id: EntityId, cx: &mut Context<Self>) {
+        if let Some(entry) = self.entries.iter().find(|e| e.editor.entity_id() == editor_id) {
+            let id = entry.id;
+            self.activate(id, cx);
+        }
+    }
+
     pub fn find_by_path(&self, path: &Path) -> Option<&OpenEntry> {
         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.entries
             .iter()
             .find(|e| e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == canonical_path)
+    }
+
+    pub fn find_by_panel(&self, panel_id: EntityId) -> Option<&OpenEntry> {
+        self.entries.iter().find(|e| e.panel.entity_id() == panel_id)
+    }
+
+    pub fn find_by_editor(&self, editor_id: EntityId) -> Option<&OpenEntry> {
+        self.entries.iter().find(|e| e.editor.entity_id() == editor_id)
+    }
+
+    pub fn count_for_path(&self, path: &Path) -> usize {
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.entries
+            .iter()
+            .filter(|e| e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == canonical_path)
+            .count()
     }
 
     pub fn active_entry(&self) -> Option<&OpenEntry> {

@@ -239,6 +239,10 @@ impl Panel for VisualMapPanel {
         )
     }
 
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some("Visual Map".into())
+    }
+
     fn closable(&self, _cx: &App) -> bool {
         true
     }
@@ -249,6 +253,10 @@ impl Panel for VisualMapPanel {
 
     fn visible(&self, _cx: &App) -> bool {
         true
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {

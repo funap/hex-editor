@@ -1,45 +1,39 @@
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::ActiveTheme;
 
 use crate::actions::*;
 
 use crate::ui::components::activity_bar::{Activity, ActivityBar, ActivityBarEvent};
 use crate::ui::components::file_tree_view::{FileTreeView, FileTreeViewEvent};
 use crate::ui::components::title_bar::AppTitleBar;
+use crate::ui::pane::{PaneTree, PaneTreeEvent, SplitDirection, TabContent};
 use crate::ui::panels::editor_panel::EditorPanel;
 use crate::ui::panels::left_panel::{LeftPanel, LeftPanelTab};
 
 use crate::app_state::AppState;
 use crate::core::editor::Editor;
-use crate::service::open_file_manager::{OpenFileEvent, OpenFileManager};
 use crate::ui::components::status_bar::StatusBar;
 use gpui_component::Root;
-use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::menu::AppMenuBar;
 use gpui_component::resizable::{h_resizable, resizable_panel};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 pub struct Workspace {
-    pub dock_area: Entity<DockArea>,
+    pub pane_tree: Entity<PaneTree>,
     pub title_bar: Entity<AppTitleBar>,
     pub status_bar: Entity<StatusBar>,
-    pub open_file_manager: Entity<OpenFileManager>,
-    pub active_panel: Option<Arc<dyn PanelView>>,
     pub left_panel: Entity<LeftPanel>,
     pub activity_bar: Entity<ActivityBar>,
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub is_left_panel_visible: bool,
 }
 
-const MAIN_DOCK_AREA_ID: &str = "main_dock_area";
-const MAIN_DOCK_AREA_VERSION: usize = 1;
-
 pub fn init(cx: &mut App) {
     cx.bind_keys(vec![
         KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, None),
         KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
+        KeyBinding::new("cmd-w", crate::actions::CloseActivePanel, None),
     ]);
 
     cx.activate(true);
@@ -47,10 +41,14 @@ pub fn init(cx: &mut App) {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let dock_area = cx.new(|cx| DockArea::new(MAIN_DOCK_AREA_ID, Some(MAIN_DOCK_AREA_VERSION), window, cx));
-        let weak_dock_area = dock_area.downgrade();
+        let pane_tree = cx.new(|_| PaneTree::new());
 
-        cx.observe(&dock_area, |_, _, cx| cx.notify()).detach();
+        cx.subscribe_in(&pane_tree, window, |this, _, event: &PaneTreeEvent, _window, cx| match event {
+            PaneTreeEvent::ActiveEditorChanged => {
+                this.sync_active_editor(cx);
+            }
+        })
+        .detach();
 
         let app_menu_bar = AppMenuBar::new(window, cx);
         let title_bar = cx.new(|_cx| AppTitleBar { app_menu_bar });
@@ -116,23 +114,10 @@ impl Workspace {
         })
         .detach();
 
-        let open_file_manager = cx.new(|_| OpenFileManager::new());
-        cx.subscribe(&open_file_manager, |this, _, event, cx| match event {
-            OpenFileEvent::Opened(_) => {}
-            OpenFileEvent::Closed(_) => {}
-            OpenFileEvent::Activated(_) => {
-                this.sync_active_editor(cx);
-            }
-        })
-        .detach();
-
-        Self::reset_default_layout(weak_dock_area, window, cx);
         Self {
-            dock_area,
+            pane_tree,
             title_bar,
             status_bar,
-            open_file_manager,
-            active_panel: None,
             left_panel,
             activity_bar,
             ksy_definition: None,
@@ -141,7 +126,7 @@ impl Workspace {
     }
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
-        self.open_file_manager.read(cx).active_editor()
+        self.pane_tree.read(cx).active_editor(cx)
     }
 
     fn sync_active_editor(&self, cx: &mut Context<Self>) {
@@ -153,15 +138,6 @@ impl Workspace {
             panel.set_editor(active_editor, cx);
         });
         self.on_focus_changed(cx);
-    }
-
-    fn reset_default_layout(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dock_area_entity) = dock_area.upgrade() {
-            dock_area_entity.update(cx, |dock_area_view, cx| {
-                // Center dock starts empty
-                dock_area_view.set_center(DockItem::split(Axis::Vertical, vec![], &dock_area, window, cx), window, cx);
-            });
-        }
     }
 
     fn new_local(cx: &mut App) -> Task<anyhow::Result<WindowHandle<Root>>> {
@@ -212,33 +188,21 @@ impl Workspace {
     }
 
     fn open_editor_panel(&mut self, document: Arc<RwLock<crate::core::document::Document>>, window: &mut Window, cx: &mut Context<Self>) {
-        let path = document.read().expect("document read lock").path().to_path_buf();
-        let editor = cx.new(|_| Editor::new(document.clone()));
+        let editor = cx.new(|_| Editor::new(document));
 
         if let Some(ksy) = &self.ksy_definition {
             set_kaitai_definition_async(&editor, ksy.clone(), cx);
         }
 
-        let editor_panel = cx.new(|cx| EditorPanel::new(editor.clone(), window, cx));
+        let editor_panel = cx.new(|cx| EditorPanel::new(editor, window, cx));
+        let content = TabContent::Editor(editor_panel);
 
-        let open_file_manager = self.open_file_manager.clone();
-        let id = open_file_manager.update(cx, |manager, cx| manager.open(path, document, editor.clone(), editor_panel.clone(), cx));
+        self.pane_tree.update(cx, |tree, cx| {
+            tree.open_tab(content, window, cx);
+        });
 
-        cx.on_focus_in(&editor_panel.read(cx).focus_handle(cx), window, {
-            let editor_panel = editor_panel.clone();
-            let open_file_manager = open_file_manager.clone();
-            move |this, _window, cx| {
-                open_file_manager.update(cx, |manager, cx| {
-                    manager.activate(id, cx);
-                });
-                this.active_panel = Some(Arc::new(editor_panel.clone()));
-                this.sync_active_editor(cx);
-                cx.notify();
-            }
-        })
-        .detach();
-        let panel = Arc::new(editor_panel);
-        self.add_panel_to_center_dock(panel, window, cx);
+        self.sync_active_editor(cx);
+        cx.notify();
     }
 
     fn on_action_open_file_dialog(&mut self, _: &OpenFileDialog, window: &mut Window, cx: &mut Context<Self>) {
@@ -251,12 +215,9 @@ impl Workspace {
 
         let view = cx.entity();
         cx.spawn_in(window, async move |_, window| {
-            println!("OpenFileDialog prompt returned");
             if let Some(path) = path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
-                println!("Selected path: {:?}", path);
                 window
                     .update(|window, cx| {
-                        println!("Directly calling OpenFile handler for {:?}", path);
                         view.update(cx, |this, cx| {
                             let action = crate::actions::OpenFile {
                                 path: path.to_string_lossy().to_string(),
@@ -265,8 +226,6 @@ impl Workspace {
                         });
                     })
                     .ok();
-            } else {
-                println!("No path selected or error occurred");
             }
         })
         .detach();
@@ -424,9 +383,22 @@ impl Workspace {
         let file_path = action.path.clone();
         let path = std::path::PathBuf::from(&file_path);
 
-        if let Some(entry) = self.open_file_manager.read(cx).find_by_path(&path) {
-            entry.panel.read(cx).focus_handle(cx).focus(window);
-            return;
+        // Check if path is already open in any group
+        for group in self.pane_tree.read(cx).all_groups() {
+            let tabs = group.read(cx).tabs.iter().enumerate().map(|(i, t)| (i, t.path(cx))).collect::<Vec<_>>();
+            for (idx, tab_path) in tabs {
+                if tab_path.as_ref() == Some(&path) {
+                    group.update(cx, |g, cx| {
+                        g.activate_tab(idx, window, cx);
+                    });
+                    self.pane_tree.update(cx, |tree, cx| {
+                        tree.set_active_group(group.read(cx).id, cx);
+                    });
+                    self.sync_active_editor(cx);
+                    cx.notify();
+                    return;
+                }
+            }
         }
 
         let view = cx.entity();
@@ -480,16 +452,12 @@ impl Workspace {
                                     view
                                 });
 
-                                let diff_view_clone = diff_view.clone();
-                                cx.on_focus_in(&diff_view.read(cx).focus_handle(cx), window, move |this, _, cx| {
-                                    this.active_panel = Some(Arc::new(diff_view_clone.clone()));
-                                    this.sync_active_editor(cx);
-                                    cx.notify();
-                                })
-                                .detach();
-
-                                let panel = Arc::new(diff_view);
-                                workspace_view.add_panel_to_center_dock(panel, window, cx);
+                                let content = TabContent::Diff(diff_view);
+                                workspace_view.pane_tree.update(cx, |tree, cx| {
+                                    tree.open_tab(content, window, cx);
+                                });
+                                workspace_view.sync_active_editor(cx);
+                                cx.notify();
                             });
                         })
                         .detach();
@@ -529,8 +497,6 @@ impl Workspace {
 
         let current_tab = self.left_panel.read(cx).active_tab;
 
-        // If the same tab is already active and the panel is visible, hide it.
-        // Otherwise, switch to the tab and ensure it's visible.
         if self.is_left_panel_visible && current_tab == tab {
             self.is_left_panel_visible = false;
         } else {
@@ -542,7 +508,6 @@ impl Workspace {
             focus_handle.focus(window);
         }
 
-        // Ensure the activity bar reflects the new state immediately
         self.sync_activity_bar(cx);
         cx.notify();
     }
@@ -568,7 +533,15 @@ impl Workspace {
                                         let ksy_arc = Arc::new(ksy);
                                         this.ksy_definition = Some(ksy_arc.clone());
 
-                                        let editors: Vec<_> = this.open_file_manager.read(cx).entries().iter().map(|e| e.editor.clone()).collect();
+                                        let mut editors = Vec::new();
+                                        for group in this.pane_tree.read(cx).all_groups() {
+                                            for tab in &group.read(cx).tabs {
+                                                if let Some(ed) = tab.content.editor(cx) {
+                                                    editors.push(ed);
+                                                }
+                                            }
+                                        }
+
                                         for editor_entity in editors {
                                             set_kaitai_definition_async(&editor_entity, ksy_arc.clone(), cx);
                                         }
@@ -599,7 +572,14 @@ impl Workspace {
 
     fn on_action_clear_structure_definition(&mut self, _: &ClearStructureDefinition, _: &mut Window, cx: &mut Context<Self>) {
         self.ksy_definition = None;
-        let editors: Vec<_> = self.open_file_manager.read(cx).entries().iter().map(|e| e.editor.clone()).collect();
+        let mut editors = Vec::new();
+        for group in self.pane_tree.read(cx).all_groups() {
+            for tab in &group.read(cx).tabs {
+                if let Some(ed) = tab.content.editor(cx) {
+                    editors.push(ed);
+                }
+            }
+        }
         for editor_entity in editors {
             editor_entity.update(cx, |editor, cx| {
                 editor.clear_structure_definition();
@@ -656,132 +636,76 @@ impl Workspace {
     }
 
     fn on_action_close_active_panel(&mut self, _: &CloseActivePanel, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self.active_panel.take() {
-            let is_editor = panel.panel_name(cx) == "EditorPanel";
-            let mut closed_path = None;
-            if is_editor && let Ok(editor_panel) = panel.view().downcast::<EditorPanel>() {
-                let path = editor_panel.read(cx).path(cx);
-                closed_path = Some(path);
-            }
-
-            self.dock_area.update(cx, |dock_area, cx| {
-                dock_area.remove_panel_from_all_docks(panel.clone(), window, cx);
-            });
-
-            if let Some(path) = closed_path {
-                let open_file_manager = self.open_file_manager.clone();
-                let entry_id = open_file_manager.read(cx).find_by_path(&path).map(|e| e.id);
-                if let Some(id) = entry_id {
-                    open_file_manager.update(cx, |manager, cx| {
-                        manager.close(id, cx);
-                    });
-                }
-                let editor_service = AppState::global(cx).editor_service.clone();
-                editor_service.close_file(&path);
-            }
-
-            if is_editor {
-                if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
-                    let next_panel = Arc::new(entry.panel.clone());
-                    next_panel.read(cx).focus_handle(cx).focus(window);
-                    self.active_panel = Some(next_panel.clone());
-                    self.add_panel_to_center_dock(next_panel, window, cx);
-                } else {
-                    self.active_panel = None;
-                    let weak_dock_area = self.dock_area.downgrade();
-                    Self::reset_default_layout(weak_dock_area, window, cx);
-                }
-            }
-
-            self.sync_active_editor(cx);
-            cx.notify();
-        }
+        self.pane_tree.update(cx, |tree, cx| {
+            tree.close_active_tab(window, cx);
+        });
+        self.sync_active_editor(cx);
+        cx.notify();
     }
 
     fn on_action_activate_next_tab(&mut self, _: &ActivateNextTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_file_manager.update(cx, |manager, cx| {
-            manager.activate_next(cx);
-        });
-        if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
-            let panel = Arc::new(entry.panel.clone());
-            entry.panel.read(cx).focus_handle(cx).focus(window);
-            self.active_panel = Some(panel.clone());
-            self.add_panel_to_center_dock(panel, window, cx);
-            self.sync_active_editor(cx);
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            group.update(cx, |g, cx| {
+                g.activate_next_tab(window, cx);
+            });
         }
     }
 
     fn on_action_activate_previous_tab(&mut self, _: &ActivatePreviousTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_file_manager.update(cx, |manager, cx| {
-            manager.activate_previous(cx);
-        });
-        if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
-            let panel = Arc::new(entry.panel.clone());
-            entry.panel.read(cx).focus_handle(cx).focus(window);
-            self.active_panel = Some(panel.clone());
-            self.add_panel_to_center_dock(panel, window, cx);
-            self.sync_active_editor(cx);
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            group.update(cx, |g, cx| {
+                g.activate_previous_tab(window, cx);
+            });
         }
     }
 
     fn on_action_activate_tab(&mut self, action: &ActivateTab, window: &mut Window, cx: &mut Context<Self>) {
         if action.index > 0 {
             let zero_based = action.index - 1;
-            self.open_file_manager.update(cx, |manager, cx| {
-                manager.activate_index(zero_based, cx);
-            });
-            if let Some(entry) = self.open_file_manager.read(cx).active_entry() {
-                let panel = Arc::new(entry.panel.clone());
-                entry.panel.read(cx).focus_handle(cx).focus(window);
-                self.active_panel = Some(panel.clone());
-                self.add_panel_to_center_dock(panel, window, cx);
-                self.sync_active_editor(cx);
+            if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+                group.update(cx, |g, cx| {
+                    g.activate_tab(zero_based, window, cx);
+                });
             }
         }
     }
 
     fn on_action_close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<Self>) {
-        let active_panel = self.active_panel.clone();
-        let closed_paths = self.open_file_manager.update(cx, |manager, cx| manager.close_others(cx));
-        let editor_service = AppState::global(cx).editor_service.clone();
-        for path in closed_paths {
-            editor_service.close_file(&path);
-        }
-
-        if let Some(panel) = active_panel {
-            self.dock_area.update(cx, |dock_area, cx| {
-                dock_area.set_center(DockItem::panel(panel), window, cx);
-            });
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            let active_id = group.read(cx).active_tab().map(|t| t.id);
+            if let Some(active_id) = active_id {
+                let tab_ids: Vec<_> = group.read(cx).tabs.iter().map(|t| t.id).collect();
+                for id in tab_ids {
+                    if id != active_id {
+                        group.update(cx, |g, cx| {
+                            g.close_tab(id, window, cx);
+                        });
+                    }
+                }
+            }
         }
         self.sync_active_editor(cx);
         cx.notify();
     }
 
-    fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, window: &mut Window, cx: &mut Context<Self>) {
-        let closed_paths = self.open_file_manager.update(cx, |manager, cx| manager.close_all(cx));
-        let editor_service = AppState::global(cx).editor_service.clone();
-        for path in closed_paths {
-            editor_service.close_file(&path);
-        }
-        self.active_panel = None;
-        let weak_dock_area = self.dock_area.downgrade();
-        Self::reset_default_layout(weak_dock_area, window, cx);
+    fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, _window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_tree = cx.new(|_| PaneTree::new());
         self.sync_active_editor(cx);
         cx.notify();
     }
 
     fn on_action_split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self.active_panel.clone() {
-            self.dock_area.update(cx, |dock_area, cx| {
-                dock_area.add_panel(panel, DockPlacement::Right, None, window, cx);
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            group.update(cx, |g, cx| {
+                g.split_active_tab(SplitDirection::Horizontal, window, cx);
             });
         }
     }
 
     fn on_action_split_down(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self.active_panel.clone() {
-            self.dock_area.update(cx, |dock_area, cx| {
-                dock_area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            group.update(cx, |g, cx| {
+                g.split_active_tab(SplitDirection::Vertical, window, cx);
             });
         }
     }
@@ -793,59 +717,34 @@ impl Workspace {
     fn open_settings_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::panels::settings_panel::SettingsPanel;
 
-        let dock_area = self.dock_area.read(cx);
-        let existing_panel = Self::check_has_settings_panel(dock_area.items());
-
-        if let Some(panel) = existing_panel {
-            let focus_handle = panel.read(cx).focus_handle(cx);
-            focus_handle.focus(window);
-            return;
+        // Check if settings is already open in any group
+        for group in self.pane_tree.read(cx).all_groups() {
+            for (idx, tab) in group.read(cx).tabs.iter().enumerate() {
+                if let TabContent::Settings(_) = &tab.content {
+                    group.update(cx, |g, cx| {
+                        g.activate_tab(idx, window, cx);
+                    });
+                    self.pane_tree.update(cx, |tree, cx| {
+                        tree.set_active_group(group.read(cx).id, cx);
+                    });
+                    self.sync_active_editor(cx);
+                    cx.notify();
+                    return;
+                }
+            }
         }
 
         let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
-        let settings_panel_clone = settings_panel.clone();
-        cx.on_focus_in(&settings_panel.read(cx).focus_handle(cx), window, {
-            let settings_panel_clone = settings_panel_clone.clone();
-            move |this, _, cx| {
-                this.active_panel = Some(Arc::new(settings_panel_clone.clone()));
-                this.sync_active_editor(cx);
-                cx.notify();
-            }
-        })
-        .detach();
-        let panel = Arc::new(settings_panel);
-        self.add_panel_to_center_dock(panel, window, cx);
-    }
-
-    fn check_has_settings_panel(dock_item: &DockItem) -> Option<Entity<crate::ui::panels::settings_panel::SettingsPanel>> {
-        match dock_item {
-            DockItem::Tabs { items, .. } => {
-                for item in items {
-                    if let Ok(panel) = item.view().downcast::<crate::ui::panels::settings_panel::SettingsPanel>() {
-                        return Some(panel);
-                    }
-                }
-            }
-            DockItem::Split { items, .. } => {
-                for item in items {
-                    if let Some(panel) = Self::check_has_settings_panel(item) {
-                        return Some(panel);
-                    }
-                }
-            }
-            _ => {}
-        }
-        None
+        let content = TabContent::Settings(settings_panel);
+        self.pane_tree.update(cx, |tree, cx| {
+            tree.open_tab(content, window, cx);
+        });
+        self.sync_active_editor(cx);
+        cx.notify();
     }
 
     fn on_action_open_visual_map(&mut self, _: &OpenVisualMap, window: &mut Window, cx: &mut Context<Self>) {
         self.select_activity(Activity::Map, window, cx);
-    }
-
-    fn add_panel_to_center_dock(&self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
-        self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.set_center(DockItem::panel(panel), window, cx);
-        });
     }
 
     /// Opens a new workspace window with the specified files and folder.
@@ -854,7 +753,6 @@ impl Workspace {
         let task = Self::new_local(cx);
         cx.spawn(async move |cx| {
             if let Ok(window) = task.await {
-                // Open all initial files if provided
                 if !initial_files.is_empty() {
                     for file_path in initial_files {
                         let _ = window.update(cx, |_, _window, cx| {
@@ -865,7 +763,6 @@ impl Workspace {
                     }
                 }
 
-                // Set initial folder if provided
                 if let Some(folder_path) = initial_folder {
                     let _ = window.update(cx, |_root, _window, cx| {
                         cx.dispatch_action(&SetFileTreeFolder {
@@ -877,10 +774,6 @@ impl Workspace {
         })
     }
 
-    fn check_has_panels(&self, cx: &App) -> bool {
-        self.active_panel.is_some() || !self.open_file_manager.read(cx).entries().is_empty()
-    }
-
     fn on_focus_changed(&self, cx: &mut Context<Self>) {
         self.left_panel.update(cx, |panel, cx| {
             panel.file_tree.update(cx, |_, cx| cx.notify());
@@ -890,39 +783,8 @@ impl Workspace {
             panel.checksum_panel.update(cx, |_, cx| cx.notify());
         });
 
-        // Clone the item to release the immutable borrow on cx
-        let item = self.dock_area.read(cx).items().clone();
-        Self::notify_panels_recursive(&item, cx);
-    }
-
-    fn notify_panels_recursive(item: &gpui_component::dock::DockItem, cx: &mut Context<Self>) {
-        match item {
-            gpui_component::dock::DockItem::Tabs { items, .. } => {
-                for panel in items {
-                    if let Ok(p) = panel.view().downcast::<EditorPanel>() {
-                        p.update(cx, |_, cx| cx.notify());
-                    } else if let Ok(p) = panel.view().downcast::<crate::ui::panels::diff_panel::DiffPanel>() {
-                        p.update(cx, |_, cx| cx.notify());
-                    } else if let Ok(p) = panel.view().downcast::<crate::ui::panels::settings_panel::SettingsPanel>() {
-                        p.update(cx, |_, cx| cx.notify());
-                    }
-                }
-            }
-            gpui_component::dock::DockItem::Split { items, .. } => {
-                for sub_item in items {
-                    Self::notify_panels_recursive(sub_item, cx);
-                }
-            }
-            gpui_component::dock::DockItem::Panel { view, .. } => {
-                if let Ok(p) = view.view().downcast::<EditorPanel>() {
-                    p.update(cx, |_, cx| cx.notify());
-                } else if let Ok(p) = view.view().downcast::<crate::ui::panels::diff_panel::DiffPanel>() {
-                    p.update(cx, |_, cx| cx.notify());
-                } else if let Ok(p) = view.view().downcast::<crate::ui::panels::settings_panel::SettingsPanel>() {
-                    p.update(cx, |_, cx| cx.notify());
-                }
-            }
-            _ => {}
+        for group in self.pane_tree.read(cx).all_groups() {
+            group.update(cx, |_, cx| cx.notify());
         }
     }
 
@@ -943,44 +805,10 @@ impl Workspace {
             }
         });
     }
-
-    fn tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
-        let manager = self.open_file_manager.read(cx);
-        let active_id = manager.active_entry().map(|e| e.id);
-        manager
-            .entries()
-            .iter()
-            .map(|entry| {
-                let doc = entry.document.read().expect("document read lock");
-                let title = entry
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Untitled".to_string());
-                let is_dirty = doc.is_dirty();
-                let is_active = Some(entry.id) == active_id;
-                crate::ui::components::tab_bar::TabItemInfo {
-                    id: entry.id.0,
-                    title,
-                    is_dirty,
-                    is_active,
-                    path: Some(entry.path.clone()),
-                }
-            })
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    fn get_tab_items(&self, cx: &App) -> Vec<crate::ui::components::tab_bar::TabItemInfo> {
-        self.tab_items(cx)
-    }
 }
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab_items = self.tab_items(cx);
-        let has_tabs = !tab_items.is_empty();
-
         div()
             .id("workspace")
             .on_action(cx.listener(Self::on_action_open_file))
@@ -1058,33 +886,7 @@ impl Render for Workspace {
                                 .size(px(250.))
                                 .child(self.left_panel.clone()),
                         )
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .relative()
-                                    .size_full()
-                                    .flex()
-                                    .flex_col()
-                                    .when(has_tabs, |el| {
-                                        el.child(crate::ui::components::tab_bar::render_zed_tab_bar(&tab_items, window, cx))
-                                    })
-                                    .child(self.dock_area.clone())
-                                    .when(!self.check_has_panels(cx), |this| {
-                                        this.child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .left_0()
-                                                .size_full()
-                                                .flex()
-                                                .justify_center()
-                                                .items_center()
-                                                .bg(cx.theme().background)
-                                                .child(div().text_xl().text_color(cx.theme().muted_foreground).child("Nothing is open")),
-                                        )
-                                    }),
-                            ),
-                        ),
+                        .child(resizable_panel().child(div().relative().size_full().child(self.pane_tree.clone()))),
                 ),
             )
             .child(self.status_bar.clone())
@@ -1116,13 +918,11 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::core::structure::types::ParseProgress>();
 
     let editor_entity = editor_entity.clone();
-
-    // Dedicated background OS thread for parsing: guarantees UI thread never freezes
     let ksy_clone = (*ksy).clone();
+
     std::thread::Builder::new()
         .name("kaitai-parser".into())
         .spawn(move || {
-            // Read document buffer in background thread (no UI thread copy)
             let bytes = {
                 if let Ok(doc) = doc_arc.read() {
                     doc.buffer.data().to_vec()
@@ -1141,7 +941,6 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
         })
         .expect("Failed to spawn kaitai parser thread");
 
-    // UI task to consume progress updates
     cx.spawn(async move |cx| {
         while let Some(mut progress) = rx.recv().await {
             while let Ok(newer) = rx.try_recv() {
@@ -1155,7 +954,6 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
                     return false;
                 }
                 if !editor.is_parsing_structure && !is_done {
-                    // Canceled via stop button; exit UI task immediately
                     return false;
                 }
                 editor.parse_progress_offset = progress.parsed_offset;

@@ -1,0 +1,509 @@
+use gpui::prelude::*;
+use gpui::*;
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
+
+use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
+use crate::core::editor::Editor;
+use crate::ui::panels::editor_panel::EditorPanel;
+
+#[allow(dead_code)]
+pub enum EditorGroupEvent {
+    Focused,
+    TabChanged,
+    Split { direction: SplitDirection, new_content: TabContent },
+    CloseTab(usize),
+    CloseGroup,
+    DropTab { drag: TabDrag, target_index: usize },
+    SplitWithDrop { drag: TabDrag, placement: DropPlacement },
+}
+
+pub struct EditorGroup {
+    pub id: usize,
+    pub tabs: Vec<TabItem>,
+    pub active_index: usize,
+    pub focus_handle: FocusHandle,
+    pub is_active_group: bool,
+}
+
+#[allow(dead_code)]
+impl EditorGroup {
+    pub fn new(id: usize, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        Self {
+            id,
+            tabs: Vec::new(),
+            active_index: 0,
+            focus_handle,
+            is_active_group: false,
+        }
+    }
+
+    pub fn tabs(&self) -> &[TabItem] {
+        &self.tabs
+    }
+
+    pub fn active_index(&self) -> usize {
+        self.active_index
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    pub fn active_tab(&self) -> Option<&TabItem> {
+        self.tabs.get(self.active_index)
+    }
+
+    pub fn active_tab_mut(&mut self) -> Option<&mut TabItem> {
+        self.tabs.get_mut(self.active_index)
+    }
+
+    pub fn active_content(&self) -> Option<&TabContent> {
+        self.active_tab().map(|t| &t.content)
+    }
+
+    pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
+        self.active_content().and_then(|c| c.editor(cx))
+    }
+
+    pub fn add_tab(&mut self, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let new_idx = self.tabs.len();
+        self.tabs.push(tab);
+        if activate || self.tabs.len() == 1 {
+            self.activate_tab(new_idx, window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub fn insert_tab(&mut self, index: usize, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let clamped = index.min(self.tabs.len());
+        self.tabs.insert(clamped, tab);
+        if activate || self.tabs.len() == 1 {
+            self.activate_tab(clamped, window, cx);
+        } else if clamped <= self.active_index {
+            self.active_index += 1;
+            cx.notify();
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub fn remove_tab_by_id(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<TabItem> {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
+            let removed = self.tabs.remove(pos);
+            if self.tabs.is_empty() {
+                self.active_index = 0;
+            } else if pos <= self.active_index {
+                self.active_index = self.active_index.saturating_sub(1);
+                if let Some(tab) = self.tabs.get(self.active_index) {
+                    tab.focus_handle(cx).focus(window);
+                }
+            }
+            cx.emit(EditorGroupEvent::TabChanged);
+            cx.notify();
+            Some(removed)
+        } else {
+            None
+        }
+    }
+
+    pub fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index < self.tabs.len() {
+            self.active_index = index;
+            if let Some(tab) = self.tabs.get(index) {
+                tab.focus_handle(cx).focus(window);
+            }
+            cx.emit(EditorGroupEvent::TabChanged);
+            cx.notify();
+        }
+    }
+
+    pub fn activate_next_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() > 1 {
+            let next_idx = (self.active_index + 1) % self.tabs.len();
+            self.activate_tab(next_idx, window, cx);
+        }
+    }
+
+    pub fn activate_previous_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() > 1 {
+            let prev_idx = if self.active_index == 0 { self.tabs.len() - 1 } else { self.active_index - 1 };
+            self.activate_tab(prev_idx, window, cx);
+        }
+    }
+
+    pub fn close_tab(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(EditorGroupEvent::CloseTab(tab_id));
+        self.remove_tab_by_id(tab_id, window, cx);
+        if self.tabs.is_empty() {
+            cx.emit(EditorGroupEvent::CloseGroup);
+        }
+    }
+
+    pub fn split_active_tab(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active_content) = self.active_content() else {
+            return;
+        };
+
+        match active_content {
+            TabContent::Editor(editor_panel) => {
+                let (doc, encoding, radix, group_size, is_big_endian, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
+                    let ep = editor_panel.read(cx);
+                    let ed = ep.editor();
+                    let ed_read = ed.read(cx);
+                    (
+                        ed_read.document.clone(),
+                        ed_read.encoding,
+                        ed_read.radix,
+                        ed_read.group_size,
+                        ed_read.is_big_endian,
+                        ed_read.ksy_definition.clone(),
+                        ed_read.parse_result.clone(),
+                        ed_read.custom_breaks.clone(),
+                        ed_read.custom_joins.clone(),
+                        ed_read.empty_lines.clone(),
+                    )
+                };
+
+                let new_editor = cx.new(|_| {
+                    let mut editor = Editor::new(doc);
+                    editor.encoding = encoding;
+                    editor.radix = radix;
+                    editor.group_size = group_size;
+                    editor.is_big_endian = is_big_endian;
+                    editor.ksy_definition = ksy_definition;
+                    editor.parse_result = parse_result;
+                    editor.custom_breaks = custom_breaks;
+                    editor.custom_joins = custom_joins;
+                    editor.empty_lines = empty_lines;
+                    editor
+                });
+
+                let new_editor_panel = cx.new(|cx| EditorPanel::new(new_editor, window, cx));
+                cx.emit(EditorGroupEvent::Split {
+                    direction,
+                    new_content: TabContent::Editor(new_editor_panel),
+                });
+            }
+            TabContent::Diff(diff_panel) => {
+                let (left_doc, right_doc) = {
+                    let dp = diff_panel.read(cx);
+                    (dp.left_document.clone(), dp.right_document.clone())
+                };
+                let new_diff = cx.new(|cx| crate::ui::panels::diff_panel::DiffPanel::new(left_doc, right_doc, window, cx));
+                cx.emit(EditorGroupEvent::Split {
+                    direction,
+                    new_content: TabContent::Diff(new_diff),
+                });
+            }
+            TabContent::Settings(_) => {
+                let new_settings = cx.new(|cx| crate::ui::panels::settings_panel::SettingsPanel::new(window, cx));
+                cx.emit(EditorGroupEvent::Split {
+                    direction,
+                    new_content: TabContent::Settings(new_settings),
+                });
+            }
+            TabContent::VisualMap(vm_panel) => {
+                let ed = vm_panel.read(cx).editor.clone();
+                let new_vm = cx.new(|cx| crate::ui::panels::visual_map_panel::VisualMapPanel::new(ed, cx));
+                cx.emit(EditorGroupEvent::Split {
+                    direction,
+                    new_content: TabContent::VisualMap(new_vm),
+                });
+            }
+        }
+    }
+}
+
+impl EventEmitter<EditorGroupEvent> for EditorGroup {}
+
+impl Focusable for EditorGroup {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for EditorGroup {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let tab_bar_bg = theme.tab_bar;
+        let group_id = self.id;
+        let active_index = self.active_index;
+
+        div()
+            .id(ElementId::NamedInteger("editor-group".into(), group_id as u64))
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme.background)
+            .border_1()
+            .border_color(if self.is_active_group { theme.border } else { theme.border.opacity(0.5) })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if let Some(tab) = this.tabs.get(this.active_index) {
+                        tab.focus_handle(cx).focus(window);
+                    }
+                    cx.emit(EditorGroupEvent::Focused);
+                }),
+            )
+            // --- Custom Tab Bar Header ---
+            .child(
+                div()
+                    .id("editor-group-tabbar")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .h(px(34.0))
+                    .bg(tab_bar_bg)
+                    .border_b_1()
+                    .border_color(theme.border)
+                    // Tabs list on left
+                    .child(
+                        div()
+                            .id("tab-list")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .flex_1()
+                            .h_full()
+                            .overflow_x_scroll()
+                            .on_drop(cx.listener(move |this, drag: &TabDrag, _, cx| {
+                                cx.emit(EditorGroupEvent::DropTab {
+                                    drag: *drag,
+                                    target_index: this.tabs.len(),
+                                });
+                            }))
+                            .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
+                                let tab_id = tab.id;
+                                let is_active = idx == active_index;
+                                let is_dirty = tab.is_dirty(cx);
+                                let title = tab.title(cx);
+                                let title_for_drag = title.clone();
+
+                                div()
+                                    .id(ElementId::NamedInteger("tab-item".into(), tab_id as u64))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_3()
+                                    .py_1()
+                                    .h_full()
+                                    .min_w(px(110.0))
+                                    .max_w(px(220.0))
+                                    .cursor_pointer()
+                                    .border_r_1()
+                                    .border_color(theme.border)
+                                    .when(is_active, |s| {
+                                        s.bg(theme.background).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
+                                    })
+                                    .when(!is_active, |s| {
+                                        s.bg(tab_bar_bg)
+                                            .text_color(theme.muted_foreground)
+                                            .hover(|style| style.bg(theme.accent.opacity(0.12)))
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.activate_tab(idx, window, cx);
+                                        }),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Middle,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.close_tab(tab_id, window, cx);
+                                        }),
+                                    )
+                                    .on_drag(
+                                        TabDrag {
+                                            from_group_id: group_id,
+                                            tab_id,
+                                        },
+                                        move |_, _, _window, cx| {
+                                            let title = title_for_drag.clone();
+                                            cx.new(|_| DragPreview { title })
+                                        },
+                                    )
+                                    .on_drop(cx.listener(move |_, drag: &TabDrag, _, cx| {
+                                        cx.emit(EditorGroupEvent::DropTab {
+                                            drag: *drag,
+                                            target_index: idx,
+                                        });
+                                    }))
+                                    .child(
+                                        Icon::new(IconName::File)
+                                            .size(px(14.0))
+                                            .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
+                                    )
+                                    .child(div().flex_1().truncate().text_sm().child(title))
+                                    .child(
+                                        div()
+                                            .id(ElementId::NamedInteger("tab-close-btn".into(), tab_id as u64))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(18.0))
+                                            .h(px(18.0))
+                                            .rounded_sm()
+                                            .hover(|style| style.bg(theme.accent.opacity(0.2)).text_color(theme.accent_foreground))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |this, _, window, cx| {
+                                                    this.close_tab(tab_id, window, cx);
+                                                }),
+                                            )
+                                            .child(if is_dirty && !is_active {
+                                                div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent).into_any_element()
+                                            } else {
+                                                Icon::new(IconName::Close).size(px(12.0)).text_color(theme.muted_foreground).into_any_element()
+                                            }),
+                                    )
+                            })),
+                    )
+                    // Action buttons on right (Split Right, Split Down, Close)
+                    .child(
+                        div()
+                            .id("tabbar-actions")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .child(
+                                Button::new("group-split-right")
+                                    .icon(IconName::PanelRight)
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Split Right (cmd-\\)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.split_active_tab(SplitDirection::Horizontal, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("group-split-down")
+                                    .icon(IconName::PanelBottom)
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Split Down (cmd-shift-d)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.split_active_tab(SplitDirection::Vertical, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("group-close")
+                                    .icon(IconName::Close)
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Close Pane")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(EditorGroupEvent::CloseGroup);
+                                    })),
+                            ),
+                    ),
+            )
+            // --- Content View Area with Interactive Drop Zones ---
+            .child(
+                div()
+                    .id("editor-group-content")
+                    .relative()
+                    .flex_1()
+                    .size_full()
+                    // Active content rendering
+                    .children(self.tabs.get(active_index).map(|t| t.content.render()))
+                    // Visual Drop Zones (activated during drag-and-drop)
+                    // Left drop zone -> Split Left
+                    .child(
+                        div()
+                            .id("drop-zone-left")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w(px(80.0))
+                            .h_full()
+                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_r_2().border_color(rgb(0x3182ce)))
+                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                cx.emit(EditorGroupEvent::SplitWithDrop {
+                                    drag: *drag,
+                                    placement: DropPlacement::Left,
+                                });
+                            })),
+                    )
+                    // Right drop zone -> Split Right
+                    .child(
+                        div()
+                            .id("drop-zone-right")
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .w(px(80.0))
+                            .h_full()
+                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_l_2().border_color(rgb(0x3182ce)))
+                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                cx.emit(EditorGroupEvent::SplitWithDrop {
+                                    drag: *drag,
+                                    placement: DropPlacement::Right,
+                                });
+                            })),
+                    )
+                    // Top drop zone -> Split Top
+                    .child(
+                        div()
+                            .id("drop-zone-top")
+                            .absolute()
+                            .top_0()
+                            .left(px(80.0))
+                            .right(px(80.0))
+                            .h(px(50.0))
+                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_b_2().border_color(rgb(0x3182ce)))
+                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                cx.emit(EditorGroupEvent::SplitWithDrop {
+                                    drag: *drag,
+                                    placement: DropPlacement::Top,
+                                });
+                            })),
+                    )
+                    // Bottom drop zone -> Split Bottom
+                    .child(
+                        div()
+                            .id("drop-zone-bottom")
+                            .absolute()
+                            .bottom_0()
+                            .left(px(80.0))
+                            .right(px(80.0))
+                            .h(px(50.0))
+                            .drag_over::<TabDrag>(|style, _drag, _window, _cx| style.bg(rgba(0x3182ce40)).border_t_2().border_color(rgb(0x3182ce)))
+                            .on_drop(cx.listener(|_, drag: &TabDrag, _, cx| {
+                                cx.emit(EditorGroupEvent::SplitWithDrop {
+                                    drag: *drag,
+                                    placement: DropPlacement::Bottom,
+                                });
+                            })),
+                    ),
+            )
+    }
+}
+
+struct DragPreview {
+    title: String,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .bg(rgb(0x2d3748))
+            .text_color(rgb(0xffffff))
+            .border_1()
+            .border_color(rgb(0x4a5568))
+            .rounded_sm()
+            .shadow_md()
+            .text_sm()
+            .child(self.title.clone())
+    }
+}

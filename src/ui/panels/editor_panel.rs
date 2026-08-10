@@ -1,14 +1,19 @@
 use gpui::prelude::*;
-use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, Subscription, Task, Window, div, px};
-use gpui_component::dock::{Panel, PanelEvent};
+use gpui::{
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, SharedString, Subscription, Task, WeakEntity, Window, div, px,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dock::{Panel, PanelEvent, TabPanel};
+use gpui_component::menu::PopupMenu;
+use gpui_component::{ActiveTheme, Sizable};
 
 use crate::actions::{FocusHexView, GoToBeginning, GoToEnd, SearchNext, SearchPrev, SelectAll, ToggleSearch};
 use crate::app_state::AppState;
 use crate::core::appearance::Appearance;
+use crate::core::editor::Editor;
 use crate::core::search::SearchMode;
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
-use gpui_component::ActiveTheme;
 
 const CONTEXT: &str = "EditorPanel";
 
@@ -27,8 +32,6 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-use crate::core::editor::Editor;
-
 pub struct EditorPanel {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
@@ -37,6 +40,7 @@ pub struct EditorPanel {
     search_bar: Entity<SearchBar>,
     search_task: Option<Task<()>>,
     viewport_search_task: Option<Task<()>>,
+    tab_panel: Option<WeakEntity<TabPanel>>,
     _appearance_subscription: Subscription,
     _editor_subscription: Subscription,
 }
@@ -141,12 +145,12 @@ impl EditorPanel {
             search_bar,
             search_task: None,
             viewport_search_task: None,
+            tab_panel: None,
             _appearance_subscription,
             _editor_subscription,
         }
     }
 
-    #[allow(dead_code)]
     pub fn editor(&self) -> Entity<Editor> {
         self.editor.clone()
     }
@@ -155,10 +159,45 @@ impl EditorPanel {
         self.editor.read(cx).document.read().expect("document read lock").path().to_path_buf()
     }
 
+    #[allow(dead_code)]
+    pub fn tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
+        self.tab_panel.clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn create_split_clone(&self, window: &mut Window, cx: &mut App) -> Entity<EditorPanel> {
+        let ed = self.editor.read(cx);
+        let doc = ed.document.clone();
+        let encoding = ed.encoding;
+        let radix = ed.radix;
+        let group_size = ed.group_size;
+        let is_big_endian = ed.is_big_endian;
+        let ksy_definition = ed.ksy_definition.clone();
+        let parse_result = ed.parse_result.clone();
+        let custom_breaks = ed.custom_breaks.clone();
+        let custom_joins = ed.custom_joins.clone();
+        let empty_lines = ed.empty_lines.clone();
+
+        let new_editor = cx.new(|_| {
+            let mut editor = Editor::new(doc);
+            editor.encoding = encoding;
+            editor.radix = radix;
+            editor.group_size = group_size;
+            editor.is_big_endian = is_big_endian;
+            editor.ksy_definition = ksy_definition;
+            editor.parse_result = parse_result;
+            editor.custom_breaks = custom_breaks;
+            editor.custom_joins = custom_joins;
+            editor.empty_lines = empty_lines;
+            editor
+        });
+
+        cx.new(|cx| EditorPanel::new(new_editor, window, cx))
+    }
+
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.is_search_visible = !self.is_search_visible;
         if self.is_search_visible {
-            // Focus the search input
             self.search_bar.update(cx, |bar, cx| {
                 bar.focus(window, cx);
             });
@@ -183,13 +222,8 @@ impl EditorPanel {
             cx.notify();
         });
 
-        // Immediately update highlights to clear old ones (since editor results were just cleared)
         self.update_highlights(cx);
-
-        // 1. Start viewport search for immediate feedback
         self.perform_viewport_search(cx);
-
-        // 2. Start full search for complete results
         self.perform_full_search(query, mode, cx);
     }
 
@@ -370,6 +404,23 @@ impl Panel for EditorPanel {
         name
     }
 
+    fn tab_name(&self, cx: &App) -> Option<SharedString> {
+        let editor = self.editor.read(cx);
+        let doc = editor.document.read().expect("document read lock");
+
+        let mut name = doc
+            .path()
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "(untitled)".to_string());
+
+        if doc.is_dirty() {
+            name.push_str(" *");
+        }
+
+        Some(name.into())
+    }
+
     fn closable(&self, _cx: &App) -> bool {
         true
     }
@@ -380,6 +431,44 @@ impl Panel for EditorPanel {
 
     fn visible(&self, _cx: &App) -> bool {
         true
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn on_added_to(&mut self, tab_panel: WeakEntity<TabPanel>, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.tab_panel = Some(tab_panel);
+    }
+
+    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("split-right")
+                .icon(gpui_component::IconName::PanelRight)
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip("Split Right (cmd-\\)")
+                .on_click(cx.listener(|_, _, window, cx| {
+                    window.dispatch_action(Box::new(crate::actions::SplitRight), cx);
+                })),
+            Button::new("split-down")
+                .icon(gpui_component::IconName::PanelBottom)
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip("Split Down (cmd-shift-d)")
+                .on_click(cx.listener(|_, _, window, cx| {
+                    window.dispatch_action(Box::new(crate::actions::SplitDown), cx);
+                })),
+        ])
+    }
+
+    fn dropdown_menu(&mut self, this: PopupMenu, _window: &mut Window, _cx: &mut Context<Self>) -> PopupMenu {
+        this.menu("Split Right", Box::new(crate::actions::SplitRight))
+            .menu("Split Down", Box::new(crate::actions::SplitDown))
+            .separator()
+            .menu("Close Tab", Box::new(crate::actions::CloseActivePanel))
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {

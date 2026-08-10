@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![recursion_limit = "256"]
 
 use gpui::Application;
 use gpui_component_assets::Assets;
@@ -216,7 +217,8 @@ fn main() {
             gpui::KeyBinding::new("cmd-,", crate::actions::OpenSettings, None),
             gpui::KeyBinding::new("cmd-shift-s", crate::actions::LoadStructureDefinition, None),
             gpui::KeyBinding::new("cmd-shift-v", crate::actions::ToggleInlineStructureView, None),
-            gpui::KeyBinding::new("cmd-shift-m", crate::actions::OpenVisualMap, None),
+            gpui::KeyBinding::new("cmd-\\", crate::actions::SplitRight, None),
+            gpui::KeyBinding::new("cmd-shift-d", crate::actions::SplitDown, None),
             gpui::KeyBinding::new("cmd-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
         ]);
 

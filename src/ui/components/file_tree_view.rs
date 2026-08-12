@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use crate::ui::style::StyleExt as _;
 use autocorrect::ignorer::Ignorer;
 use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    Styled, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
+    SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, IconName, h_flex,
@@ -16,9 +16,15 @@ use gpui_component::{
     v_flex,
 };
 
+actions!(file_tree, [MoveUp, MoveDown]);
+
 const CONTEXT: &str = "TreeStory";
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([gpui::KeyBinding::new("enter", SelectItem, Some(CONTEXT))]);
+    cx.bind_keys([
+        gpui::KeyBinding::new("up", MoveUp, Some(CONTEXT)),
+        gpui::KeyBinding::new("down", MoveDown, Some(CONTEXT)),
+        gpui::KeyBinding::new("enter", SelectItem, Some(CONTEXT)),
+    ]);
 }
 
 pub enum FileTreeViewEvent {
@@ -72,15 +78,27 @@ fn update_item_children_recursive(items: &mut [TreeItem], target_id: &str, child
 }
 
 impl FileTreeView {
-    pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+    pub fn new(title: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
+        let focus_handle = cx.focus_handle();
+
+        cx.on_focus_in(&focus_handle, window, |this, _, cx| {
+            cx.notify();
+            this.clear_tree_selection(cx);
+        })
+        .detach();
+        cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
+            this.clear_tree_selection(cx);
+            cx.notify();
+        })
+        .detach();
 
         Self {
             tree_state: tree_state.clone(),
             selected_item: None,
             selected_items: Vec::new(),
             _title: title.into(),
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             root_path: None,
             loaded_paths: HashSet::new(),
             items: Vec::new(),
@@ -141,10 +159,15 @@ impl FileTreeView {
     }
 
     fn on_action_select_item(&mut self, _: &SelectItem, _: &mut Window, cx: &mut gpui::Context<Self>) {
-        if let Some(entry) = self.tree_state.read(cx).selected_entry() {
-            let item = entry.item();
+        let item = self
+            .selected_item
+            .clone()
+            .or_else(|| self.tree_state.read(cx).selected_entry().map(|entry| entry.item().clone()));
+
+        if let Some(item) = item {
             self.selected_item = Some(item.clone());
             self.selected_items = vec![item.clone()];
+            self.clear_tree_selection(cx);
 
             if !item.is_folder() {
                 cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(item.id.to_string())));
@@ -154,8 +177,12 @@ impl FileTreeView {
     }
 
     fn on_action_rename(&mut self, _: &Rename, _: &mut Window, cx: &mut gpui::Context<Self>) {
-        if let Some(entry) = self.tree_state.read(cx).selected_entry() {
-            let item = entry.item();
+        let item = self
+            .selected_item
+            .clone()
+            .or_else(|| self.tree_state.read(cx).selected_entry().map(|entry| entry.item().clone()));
+
+        if let Some(item) = item {
             println!("Renaming item: {} ({})", item.label, item.id);
         }
     }
@@ -187,6 +214,9 @@ impl FileTreeView {
         self.root_path = None;
         self.loaded_paths.clear();
         self.items.clear();
+        self.selected_item = None;
+        self.selected_items.clear();
+        self.clear_tree_selection(cx);
         self.tree_state.update(cx, |state, cx| {
             state.set_items(vec![], cx);
         });
@@ -197,6 +227,9 @@ impl FileTreeView {
         self.root_path = Some(path.clone());
         self.loaded_paths.clear();
         self.loaded_paths.insert(path.to_string_lossy().to_string());
+        self.selected_item = None;
+        self.selected_items.clear();
+        self.clear_tree_selection(cx);
         self.load_root(path, cx);
         cx.notify();
     }
@@ -208,6 +241,66 @@ impl FileTreeView {
 
     fn on_action_load_children(&mut self, action: &LoadChildren, _: &mut Window, cx: &mut Context<Self>) {
         self.load_children(&action.path, cx);
+    }
+
+    fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(-1, cx);
+    }
+
+    fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(1, cx);
+    }
+
+    fn move_cursor(&mut self, direction: i8, cx: &mut Context<Self>) {
+        let visible_items = self.visible_items();
+        if visible_items.is_empty() {
+            return;
+        }
+
+        let current_index = self
+            .selected_item
+            .as_ref()
+            .and_then(|selected| visible_items.iter().position(|item| item.id == selected.id));
+        let last_index = visible_items.len() - 1;
+        let next_index = match (current_index, direction) {
+            (Some(index), -1) => index.saturating_sub(1),
+            (Some(index), 1) => (index + 1).min(last_index),
+            (Some(index), _) => index,
+            (None, _) => 0,
+        };
+        let item = visible_items[next_index].clone();
+
+        self.selected_item = Some(item.clone());
+        self.selected_items = vec![item];
+        self.tree_state.update(cx, |state, _| {
+            let strategy = if direction < 0 { ScrollStrategy::Top } else { ScrollStrategy::Bottom };
+            state.scroll_to_item(next_index, strategy);
+        });
+        self.clear_tree_selection(cx);
+        cx.notify();
+    }
+
+    fn visible_items(&self) -> Vec<TreeItem> {
+        let mut visible_items = Vec::new();
+        Self::collect_visible_items(&self.items, &mut visible_items);
+        visible_items
+    }
+
+    fn collect_visible_items(items: &[TreeItem], visible_items: &mut Vec<TreeItem>) {
+        for item in items {
+            visible_items.push(item.clone());
+            if item.is_expanded() {
+                Self::collect_visible_items(&item.children, visible_items);
+            }
+        }
+    }
+
+    fn clear_tree_selection(&mut self, cx: &mut Context<Self>) {
+        if self.tree_state.read(cx).selected_index().is_some() {
+            self.tree_state.update(cx, |state, cx| {
+                state.set_selected_index(None, cx);
+            });
+        }
     }
 
     fn toggle_selection(&mut self, item: TreeItem, cx: &mut Context<Self>) {
@@ -241,6 +334,8 @@ impl Render for FileTreeView {
                     this.focus_handle.focus(window);
                 }),
             )
+            .on_action(cx.listener(Self::move_up))
+            .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::on_action_rename))
             .on_action(cx.listener(Self::on_action_select_item))
             .on_action(cx.listener(Self::on_action_set_file_tree_folder))
@@ -307,12 +402,11 @@ impl Render for FileTreeView {
                             window.dispatch_action(Box::new(crate::actions::LoadChildren { path: item_id }), cx);
                         }
 
-                        let selection_bg = if is_focused { cx.theme().selection } else { cx.theme().muted_foreground };
+                        let selection_bg = if is_focused { cx.theme().selection } else { cx.theme().muted };
 
                         ListItem::new(ix)
-                            .selected(is_focused && is_multi_selected)
+                            .selected(false)
                             .when(is_multi_selected, |this| this.bg(selection_bg))
-                            .when(!is_focused, |this| this.border_color(cx.theme().selection.opacity(0.0)))
                             .w_full()
                             .rounded(cx.theme().radius)
                             .px_3()
@@ -376,6 +470,7 @@ impl Render for FileTreeView {
                                         // window.dispatch_action(Box::new(OpenFile { path: item.id.to_string() }), cx);
                                         cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(item.id.to_string())));
                                     }
+                                    this.clear_tree_selection(cx);
                                     cx.notify();
                                 }
                             }))

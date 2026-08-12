@@ -99,7 +99,7 @@ impl Workspace {
         })
         .detach();
 
-        let file_tree = cx.new(|cx| FileTreeView::new("FILES", cx));
+        let file_tree = cx.new(|cx| FileTreeView::new("FILES", window, cx));
         let left_panel = cx.new(|cx| LeftPanel::new(file_tree.clone(), window, cx));
         let activity_bar = cx.new(ActivityBar::new);
 

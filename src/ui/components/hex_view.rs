@@ -1229,6 +1229,28 @@ impl HexView {
         }
     }
 
+    fn update_scrollbar_drag(&mut self, current_y: f32, cx: &mut Context<Self>) {
+        if !self.is_dragging_scrollbar {
+            return;
+        }
+
+        let delta_y = current_y - self.scrollbar_drag_start_y;
+        let total_rows = self.editor.read(cx).line_starts().len().max(1);
+        let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+        let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+        let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
+        let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
+        let max_thumb_top = (list_h - thumb_h).max(0.0);
+
+        if max_thumb_top > 0.0 && max_top_row > 0 {
+            let delta_ratio = delta_y as f64 / max_thumb_top as f64;
+            let delta_rows = delta_ratio * max_top_row as f64;
+            let new_row = ((self.scrollbar_drag_start_row as f64 + delta_rows).round() as isize).clamp(0, max_top_row as isize) as usize;
+            self.scroll_to_row(new_row, cx);
+        }
+    }
+
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.is_dragging_scrollbar {
             self.is_dragging_scrollbar = false;
@@ -3365,26 +3387,6 @@ impl Render for HexView {
                 let layout = this.current_layout(cx);
                 this.sync_outer_scroll_from_handle(layout, cx);
 
-                if this.is_dragging_scrollbar {
-                    let current_y = f32::from(event.position.y);
-                    let delta_y = current_y - this.scrollbar_drag_start_y;
-                    let total_rows = this.editor.read(cx).line_starts().len().max(1);
-                    let list_h = this.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
-                    let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-                    let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
-                    let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
-                    let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
-                    let max_thumb_top = (list_h - thumb_h).max(0.0);
-
-                    if max_thumb_top > 0.0 && max_top_row > 0 {
-                        let delta_ratio = delta_y as f64 / max_thumb_top as f64;
-                        let delta_rows = delta_ratio * max_top_row as f64;
-                        let new_row = ((this.scrollbar_drag_start_row as f64 + delta_rows).round() as isize).clamp(0, max_top_row as isize) as usize;
-                        this.scroll_to_row(new_row, cx);
-                    }
-                    return;
-                }
-
                 if let Some(list_b) = this.list_bounds.get() {
                     let pos = event.position;
                     let is_in_bar = pos.x >= list_b.right() - px(12.0) && pos.x <= list_b.right() && pos.y >= list_b.top() && pos.y <= list_b.bottom();
@@ -3485,6 +3487,7 @@ impl Render for HexView {
                 let highlights = self.highlights.clone();
                 let is_dragging_scrollbar = self.is_dragging_scrollbar;
                 let scrollbar_hovered = self.scrollbar_hovered;
+                let scrollbar_view = view.clone();
 
                 canvas(
                     move |bounds, _window, cx| {
@@ -3497,6 +3500,34 @@ impl Render for HexView {
                         });
                     },
                     move |bounds, _prepaint, window, cx| {
+                        window.on_mouse_event({
+                            let scrollbar_view = scrollbar_view.clone();
+                            move |event: &MouseMoveEvent, phase, _window, cx| {
+                                if !phase.bubble() || !event.dragging() {
+                                    return;
+                                }
+
+                                scrollbar_view.update(cx, |this, cx| {
+                                    this.update_scrollbar_drag(f32::from(event.position.y), cx);
+                                });
+                            }
+                        });
+                        window.on_mouse_event({
+                            let scrollbar_view = scrollbar_view.clone();
+                            move |event: &MouseUpEvent, phase, _window, cx| {
+                                if !phase.bubble() || event.button != MouseButton::Left {
+                                    return;
+                                }
+
+                                scrollbar_view.update(cx, |this, cx| {
+                                    if this.is_dragging_scrollbar {
+                                        this.is_dragging_scrollbar = false;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+
                         let (parse_result, collapsed_structs, highlight_items, doc_arc, line_starts, cursor_offset, min_sel, max_sel) = {
                             let editor = editor_entity.read(cx);
                             let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {

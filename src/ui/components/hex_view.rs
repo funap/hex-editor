@@ -9,7 +9,7 @@ use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::format::{CopyFormat, format_bytes};
-use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, format_group, is_group_zero};
+use crate::core::radix::{ByteGroupSize, DisplayRadix, format_group, is_group_zero};
 use crate::core::structure::ParseResult;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
@@ -64,20 +64,80 @@ pub const ADDRESS_WIDTH: f32 = 80.0;
 pub const DESC_WIDTH: f32 = 240.0;
 pub const COMMENT_WIDTH: f32 = 300.0;
 
-#[inline]
-pub fn item_metrics(radix: DisplayRadix, group_size: ByteGroupSize, font_size: Pixels) -> (f32, f32) {
-    let digits = digit_count(radix, group_size);
-    let char_w = f32::from(font_size) * 0.61;
-    let item_w = (char_w * digits as f32 + 6.0).ceil().max(20.0);
-    let item_gap = 4.0;
-    (item_w, item_gap)
+#[derive(Clone, Copy, Debug)]
+struct HexGroupInfo {
+    chunk_start: usize,
+    chunk_end: usize,
+    start_slot: usize,
+    text_start: usize,
+    text_end: usize,
 }
 
-#[inline]
-pub fn calculate_data_col_width(radix: DisplayRadix, group_size: ByteGroupSize, max_bytes_per_row: usize, font_size: Pixels) -> f32 {
-    let (item_w, item_gap) = item_metrics(radix, group_size, font_size);
-    let items_in_row = max_bytes_per_row.div_ceil(group_size.byte_count()).max(1);
-    items_in_row as f32 * (item_w + item_gap)
+#[derive(Clone, Debug)]
+struct HexTextSource {
+    text: SharedString,
+    groups: Vec<HexGroupInfo>,
+}
+
+/// Build the exact text stream used by the batched Hex renderer and retain the
+/// byte/text ranges needed to translate shaped coordinates back to bytes.
+fn build_hex_text_source(chunk: &[u8], line_offset: usize, radix: DisplayRadix, group_size: ByteGroupSize, is_big_endian: bool) -> HexTextSource {
+    let group_bytes = group_size.byte_count();
+    let mut text = String::with_capacity(chunk.len().saturating_mul(3));
+    let mut groups = Vec::with_capacity(chunk.len().div_ceil(group_bytes));
+    let mut chunk_idx = 0;
+
+    while chunk_idx < chunk.len() {
+        let item_start_offset = line_offset + chunk_idx;
+        let start_slot = item_start_offset % group_bytes;
+        let item_slice_len = (chunk.len() - chunk_idx).min(group_bytes - start_slot);
+
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        let text_start = text.len();
+        text.push_str(&format_group(
+            &chunk[chunk_idx..chunk_idx + item_slice_len],
+            start_slot,
+            radix,
+            group_size,
+            is_big_endian,
+        ));
+        let text_end = text.len();
+
+        groups.push(HexGroupInfo {
+            chunk_start: chunk_idx,
+            chunk_end: chunk_idx + item_slice_len,
+            start_slot,
+            text_start,
+            text_end,
+        });
+        chunk_idx += item_slice_len;
+    }
+
+    HexTextSource {
+        text: SharedString::from(text),
+        groups,
+    }
+}
+
+fn shape_hex_text(window: &Window, source: &HexTextSource, font: Font, font_size: Pixels, color: Hsla) -> gpui::ShapedLine {
+    if source.text.is_empty() {
+        return window.text_system().shape_line(source.text.clone(), font_size, &[], None);
+    }
+    let run = gpui::TextRun {
+        len: source.text.len(),
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window.text_system().shape_line(source.text.clone(), font_size, &[run], None)
+}
+
+fn shaped_group_x(shaped: &gpui::ShapedLine, group: HexGroupInfo, origin_x: Pixels) -> (Pixels, Pixels) {
+    (origin_x + shaped.x_for_index(group.text_start), origin_x + shaped.x_for_index(group.text_end))
 }
 
 #[inline]
@@ -216,6 +276,7 @@ pub struct HexView {
     font_size_prop: Pixels,
     pub address_col_width: f32,
     pub hex_col_width: f32,
+    hex_content_width: f32,
     pub desc_col_width: f32,
     pub comment_col_width: f32,
     resizing_column: Option<(ResizingColumn, f32, f32)>,
@@ -232,7 +293,9 @@ impl HexView {
             (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
         };
         let font_size_prop = px(14.0);
-        let hex_col_width = calculate_data_col_width(radix, group_size, 16, font_size_prop);
+        // The actual content width is populated from a shaped probe during
+        // the first render. This value only controls the initial viewport.
+        let hex_col_width = 0.0;
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
             let ed = editor_entity.read(cx);
@@ -248,8 +311,7 @@ impl HexView {
                 this.radix = new_radix;
                 this.group_size = new_group_size;
                 this.is_big_endian = new_endian;
-                let max_bytes = ed.line_starts().max_bytes_per_row();
-                this.hex_col_width = calculate_data_col_width(new_radix, new_group_size, max_bytes, this.font_size_prop);
+                this.hex_content_width = 0.0;
             }
             this.clamp_scroll_offsets(cx);
             this.ensure_cursor_visible(cx);
@@ -287,6 +349,7 @@ impl HexView {
             font_size_prop,
             address_col_width: ADDRESS_WIDTH,
             hex_col_width,
+            hex_content_width: 0.0,
             desc_col_width: DESC_WIDTH,
             comment_col_width: COMMENT_WIDTH,
             resizing_column: None,
@@ -295,10 +358,8 @@ impl HexView {
     }
 
     pub fn max_hex_scroll(&self, cx: &App) -> f32 {
-        let editor = self.editor.read(cx);
-        let max_bytes = editor.line_starts().max_bytes_per_row();
-        let total_data_width = calculate_data_col_width(self.radix, self.group_size, max_bytes, self.font_size_prop);
-        (total_data_width - self.hex_col_width).max(0.0)
+        let _ = cx;
+        (self.hex_content_width - self.hex_col_width).max(0.0)
     }
 
     pub fn max_desc_scroll(&self, cx: &App) -> f32 {
@@ -373,9 +434,9 @@ impl HexView {
                 self.address_col_width = ADDRESS_WIDTH;
             }
             ResizingColumn::Hex => {
-                let editor = self.editor.read(cx);
-                let max_bytes = editor.line_starts().max_bytes_per_row();
-                self.hex_col_width = calculate_data_col_width(self.radix, self.group_size, max_bytes, self.font_size_prop);
+                if self.hex_content_width > 0.0 {
+                    self.hex_col_width = self.hex_content_width;
+                }
                 self.hex_scroll_x = 0.0;
             }
             ResizingColumn::Description => {
@@ -597,11 +658,13 @@ impl HexView {
 
     pub fn set_font_family(&mut self, font_family: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.font_family_prop = font_family.into();
+        self.hex_content_width = 0.0;
         cx.notify();
     }
 
     pub fn set_font_size(&mut self, font_size: impl Into<Pixels>, cx: &mut Context<Self>) {
         self.font_size_prop = font_size.into();
+        self.hex_content_width = 0.0;
         cx.notify();
     }
 
@@ -734,22 +797,8 @@ impl HexView {
             self.scroll_to_bottom_row(cursor_row, cx);
         }
 
-        // Horizontal visibility in Hex column
-        let line_offset = line_starts.get(cursor_row).unwrap_or(0);
-        let byte_in_line = cursor_offset.saturating_sub(line_offset);
-        let group_bytes = self.group_size.byte_count();
-        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, self.font_size_prop);
-        let item_step = item_width + item_gap;
-        let item_idx = byte_in_line / group_bytes;
-        let item_left = item_idx as f32 * item_step;
-        let item_right = item_left + item_width;
-
-        let max_hex = self.max_hex_scroll(cx);
-        if item_left < self.hex_scroll_x {
-            self.hex_scroll_x = item_left.clamp(0.0, max_hex);
-        } else if item_right > self.hex_scroll_x + self.hex_col_width {
-            self.hex_scroll_x = (item_right - self.hex_col_width + item_gap).clamp(0.0, max_hex);
-        }
+        // Horizontal visibility is adjusted from the row's shaped layout in
+        // `render`, where GPUI's actual glyph positions are available.
     }
 
     fn exec_move(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Editor)) {
@@ -1185,7 +1234,7 @@ impl HexView {
         });
     }
 
-    fn offset_from_point(&self, point: Point<Pixels>, cx: &App) -> Option<usize> {
+    fn offset_from_point(&self, point: Point<Pixels>, window: &Window, cx: &App) -> Option<usize> {
         let root_bounds = self.bounds.get()?;
         let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
 
@@ -1249,51 +1298,62 @@ impl HexView {
             return Some(line_offset);
         }
 
-        let group_bytes = self.group_size.byte_count();
-        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, self.font_size_prop);
-        let item_step = item_width + item_gap;
-
         let byte_offset_in_row = if !is_struct_mode && self.show_ascii && rel_x >= hex_end_x + SECTION_GAP {
             let ascii_x = (rel_x - (hex_end_x + SECTION_GAP)).max(0.0);
             (ascii_x / 10.0) as usize
         } else {
-            let col_x = (rel_x - hex_start_x + self.hex_scroll_x).max(0.0);
-            let item_idx = (col_x / item_step) as usize;
-            let within_item_x = col_x - item_idx as f32 * item_step;
+            let source = build_hex_text_source(
+                doc.buffer.get_range(line_offset, chunk_len),
+                line_offset,
+                self.radix,
+                self.group_size,
+                self.is_big_endian,
+            );
+            let shaped = shape_hex_text(
+                window,
+                &source,
+                gpui::font(self.font_family_prop.clone()),
+                self.font_size_prop,
+                hsla(0.0, 0.0, 0.0, 0.0),
+            );
+            let origin_x = px(hex_start_x - self.hex_scroll_x);
 
-            let mut chunk_idx = 0;
-            let mut curr_item = 0;
-            let mut target_item_info = None;
-
-            while chunk_idx < chunk_len {
-                let item_start_offset = line_offset + chunk_idx;
-                let start_slot = item_start_offset % group_bytes;
-                let max_in_group = group_bytes - start_slot;
-                let item_slice_len = (chunk_len - chunk_idx).min(max_in_group);
-
-                if curr_item == item_idx {
-                    target_item_info = Some((chunk_idx, start_slot, item_slice_len));
+            let mut target_group_idx = 0;
+            for (idx, group) in source.groups.iter().enumerate() {
+                let (group_start, group_end) = shaped_group_x(&shaped, *group, origin_x);
+                let next_start = source
+                    .groups
+                    .get(idx + 1)
+                    .map(|next| shaped.x_for_index(next.text_start) + origin_x)
+                    .unwrap_or(group_end);
+                if point.x < next_start || idx + 1 == source.groups.len() {
+                    target_group_idx = idx;
                     break;
                 }
-
-                chunk_idx += item_slice_len;
-                curr_item += 1;
-                if chunk_idx < chunk_len {
-                    let next_start_slot = (line_offset + chunk_idx) % group_bytes;
-                    let next_max = group_bytes - next_start_slot;
-                    target_item_info = Some((chunk_idx, next_start_slot, (chunk_len - chunk_idx).min(next_max)));
+                if point.x >= group_start {
+                    target_group_idx = idx;
                 }
             }
 
-            let (item_chunk_start, start_slot, item_slice_len) = target_item_info.unwrap_or((0, line_offset % group_bytes, chunk_len.min(group_bytes)));
-            let slot_w = item_width / group_bytes as f32;
-            let slot_idx = ((within_item_x / slot_w) as usize).min(group_bytes.saturating_sub(1));
-            let byte_in_item = if slot_idx < start_slot {
+            let group = source.groups[target_group_idx];
+            let (group_start, group_end) = shaped_group_x(&shaped, group, origin_x);
+            let group_width = (group_end - group_start).max(Pixels::from(0.001));
+            let relative_x = f32::from(point.x - group_start) / f32::from(group_width);
+            let visual_slot = (relative_x.clamp(0.0, 0.999_999) * self.group_size.byte_count() as f32) as usize;
+            let is_full_group = group.start_slot == 0 && group.chunk_end - group.chunk_start == self.group_size.byte_count();
+            let byte_in_group = if is_full_group {
+                if self.is_big_endian {
+                    visual_slot.min(group.chunk_end - group.chunk_start - 1)
+                } else {
+                    (group.chunk_end - group.chunk_start - 1).saturating_sub(visual_slot)
+                }
+            } else if visual_slot < group.start_slot {
                 0
             } else {
-                (slot_idx - start_slot).min(item_slice_len.saturating_sub(1))
+                (visual_slot - group.start_slot).min(group.chunk_end - group.chunk_start - 1)
             };
-            item_chunk_start + byte_in_item
+
+            group.chunk_start + byte_in_group
         };
 
         let byte_idx = byte_offset_in_row.min(chunk_len.saturating_sub(1));
@@ -1330,6 +1390,7 @@ impl HexView {
         hex_col_width: f32,
         desc_col_width: f32,
         comment_col_width: f32,
+        font_family: SharedString,
         font_size: Pixels,
         window: &mut Window,
         cx: &mut App,
@@ -1345,15 +1406,11 @@ impl HexView {
         };
 
         let chunk_len = next_offset - offset;
-        let chunk = doc.buffer.get_range(offset, chunk_len).to_vec();
+        let chunk = doc.buffer.get_range(offset, chunk_len);
 
         let is_struct_mode = parse_result.is_some();
-        let collapsed_structs_arc = collapsed_structs.clone();
-        let highlights_arc = highlights.clone();
-        let highlight_items_arc = highlight_items.clone();
-        let line_starts_clone = line_starts.clone();
 
-        let active_row_highlights = row_highlights(&highlights_arc, max_highlight_len, offset, next_offset);
+        let active_row_highlights = row_highlights(highlights, max_highlight_len, offset, next_offset);
         let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
             let theme = cx.theme();
             (
@@ -1368,7 +1425,7 @@ impl HexView {
             )
         };
         let line_height = px(ROW_HEIGHT);
-        let font = window.text_style().font();
+        let font = gpui::font(font_family);
 
         // 1. Draw Left Columns (Address OR Offset)
         let (offset_w, gap) = if is_struct_mode {
@@ -1461,128 +1518,116 @@ impl HexView {
             ));
         }
 
-        // 2. Background Quads Pass for Data Items (with clipping mask)
-        let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
-        let group_bytes = group_size.byte_count();
-        let (item_width, item_gap) = item_metrics(radix, group_size, font_size);
-        let item_step = item_width + item_gap;
+        // Build and shape the exact text stream before painting any geometry.
+        // Every X coordinate below is derived from this ShapedLine, just as in
+        // Zed's editor implementation.
+        let hex_source = build_hex_text_source(chunk, offset, radix, group_size, is_big_endian);
+        let mut hex_runs: Vec<gpui::TextRun> = Vec::with_capacity(hex_source.groups.len() * 2);
+        let mut group_visuals: Vec<(Hsla, Option<Hsla>, bool, bool)> = Vec::with_capacity(hex_source.groups.len());
 
-        window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
-            let mut chunk_idx = 0;
-            let mut item_idx = 0;
-            while chunk_idx < chunk.len() {
-                let item_start_offset = offset + chunk_idx;
-                let start_slot = item_start_offset % group_bytes;
-                let max_in_group = group_bytes - start_slot;
-                let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
-                let item_end_offset = item_start_offset + item_slice_len;
+        for (group_idx, group) in hex_source.groups.iter().enumerate() {
+            let item_start_offset = offset + group.chunk_start;
+            let item_end_offset = offset + group.chunk_end;
+            let item_slice = &chunk[group.chunk_start..group.chunk_end];
+            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
+            let is_zero = is_group_zero(item_slice);
+            let text_color = if is_cursor && is_focused {
+                fg_color
+            } else if is_zero {
+                muted_color.opacity(0.5)
+            } else {
+                fg_color
+            };
 
-                let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-                let is_selected = if min_sel <= max_sel {
-                    let sel_start = min_sel;
-                    let sel_end = max_sel;
-                    item_start_offset <= sel_end && item_end_offset > sel_start
-                } else {
-                    false
-                };
+            let is_selected = if min_sel <= max_sel {
+                item_start_offset <= max_sel && item_end_offset > min_sel
+            } else {
+                false
+            };
 
-                let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
-                let mut current_hl_color = None;
-
-                if !active_row_highlights.is_empty() {
-                    let mut smallest_len = usize::MAX;
-                    for (range, color) in active_row_highlights.iter() {
-                        if range.start < item_end_offset && range.end > item_start_offset {
-                            let len = range.end.saturating_sub(range.start);
-                            if len <= smallest_len {
-                                smallest_len = len;
-                                bg_color = *color;
-                                current_hl_color = Some(*color);
-                            }
+            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
+            let mut current_hl_color = None;
+            if !active_row_highlights.is_empty() {
+                let mut smallest_len = usize::MAX;
+                for (range, color) in active_row_highlights.iter() {
+                    if range.start < item_end_offset && range.end > item_start_offset {
+                        let len = range.end.saturating_sub(range.start);
+                        if len <= smallest_len {
+                            smallest_len = len;
+                            bg_color = *color;
+                            current_hl_color = Some(*color);
                         }
                     }
                 }
+            }
+            group_visuals.push((bg_color, current_hl_color, is_cursor, is_selected));
 
-                let next_start_offset = item_end_offset;
-                let next_is_selected = is_selected && min_sel <= max_sel && next_start_offset <= max_sel && (chunk_idx + item_slice_len < chunk.len());
-                let next_has_same_highlight = if let Some(cur_col) = current_hl_color {
-                    if chunk_idx + item_slice_len < chunk.len() {
-                        let mut next_col = None;
-                        let mut smallest_len = usize::MAX;
-                        for (range, color) in active_row_highlights.iter() {
-                            if range.start < next_start_offset + 1 && range.end > next_start_offset {
-                                let len = range.end.saturating_sub(range.start);
-                                if len <= smallest_len {
-                                    smallest_len = len;
-                                    next_col = Some(*color);
-                                }
-                            }
-                        }
-                        next_col == Some(cur_col)
-                    } else {
-                        false
-                    }
+            if group_idx > 0 {
+                hex_runs.push(gpui::TextRun {
+                    len: 1,
+                    font: font.clone(),
+                    color: hsla(0.0, 0.0, 0.0, 0.0),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            hex_runs.push(gpui::TextRun {
+                len: group.text_end - group.text_start,
+                font: font.clone(),
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
+        }
+
+        let shaped_hex = window.text_system().shape_line(hex_source.text.clone(), font_size, &hex_runs, None);
+        let text_origin_x = hex_start_x - px(hex_scroll_x);
+        let total_data_width = f32::from(shaped_hex.width);
+
+        // 2. Background Quads Pass for Data Items (with clipping mask)
+        let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
+
+        window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
+            for (item_idx, group) in hex_source.groups.iter().enumerate() {
+                let (bg_color, current_hl_color, is_cursor, is_selected) = group_visuals[item_idx];
+                let (group_start_x, group_end_x) = shaped_group_x(&shaped_hex, *group, text_origin_x);
+                let has_next = item_idx + 1 < hex_source.groups.len();
+                let next_group_start_x = if has_next {
+                    shaped_group_x(&shaped_hex, hex_source.groups[item_idx + 1], text_origin_x).0
                 } else {
-                    false
+                    group_end_x
+                };
+                let next_is_selected = is_selected && min_sel <= max_sel && has_next && offset + hex_source.groups[item_idx + 1].chunk_start <= max_sel;
+                let next_has_same_highlight = current_hl_color.is_some() && has_next && group_visuals[item_idx + 1].1 == current_hl_color;
+                let fill_end_x = if next_is_selected || next_has_same_highlight {
+                    next_group_start_x
+                } else {
+                    group_end_x
                 };
 
-                let fill_width = if next_is_selected || next_has_same_highlight { item_step } else { item_width };
-                let item_draw_x = hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step);
-
-                let item_fill_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(fill_width), px(ROW_HEIGHT - 2.0)));
-
-                let item_box_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(item_width), px(ROW_HEIGHT - 2.0)));
-
                 if bg_color.a > 0.0 {
+                    let item_fill_bounds = Bounds::new(
+                        point(group_start_x, bounds.top() + px(1.0)),
+                        size(fill_end_x - group_start_x, px(ROW_HEIGHT - 2.0)),
+                    );
                     window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
                 }
 
                 if is_cursor {
                     let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                    let item_box_bounds = Bounds::new(
+                        point(group_start_x, bounds.top() + px(1.0)),
+                        size(group_end_x - group_start_x, px(ROW_HEIGHT - 2.0)),
+                    );
                     paint_border_box(window, item_box_bounds, px(1.5), cursor_border_color);
                 }
-
-                chunk_idx += item_slice_len;
-                item_idx += 1;
             }
 
-            // 3. Text Pass for Data Items
-            let mut chunk_idx = 0;
-            let mut item_idx = 0;
-            while chunk_idx < chunk.len() {
-                let item_start_offset = offset + chunk_idx;
-                let start_slot = item_start_offset % group_bytes;
-                let max_in_group = group_bytes - start_slot;
-                let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
-                let item_slice = &chunk[chunk_idx..chunk_idx + item_slice_len];
-                let item_end_offset = item_start_offset + item_slice_len;
-
-                let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-                let is_zero = is_group_zero(item_slice);
-
-                let text_color = if is_cursor && is_focused {
-                    fg_color
-                } else if is_zero {
-                    muted_color.opacity(0.5)
-                } else {
-                    fg_color
-                };
-
-                let item_str = SharedString::from(format_group(item_slice, start_slot, radix, group_size, is_big_endian));
-                let run = gpui::TextRun {
-                    len: item_str.len(),
-                    font: font.clone(),
-                    color: text_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped_item = window.text_system().shape_line(item_str, font_size, &[run], None);
-                let item_pos = point(hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
-                let _ = shaped_item.paint(item_pos, line_height, window, cx);
-
-                chunk_idx += item_slice_len;
-                item_idx += 1;
+            // 3. Text Pass for Data Items (same shaped line as the geometry pass)
+            if !hex_source.text.is_empty() {
+                let _ = shaped_hex.paint(point(text_origin_x, bounds.top() + px(2.0)), line_height, window, cx);
             }
 
             // Left-edge subtle gradient fade when hex_scroll_x > 1.0
@@ -1599,8 +1644,7 @@ impl HexView {
             }
 
             // Right-edge subtle gradient fade when row data overflows hex_col_width
-            let total_row_data_width = item_idx as f32 * item_step;
-            if hex_scroll_x + hex_col_width < total_row_data_width - 1.0 {
+            if hex_scroll_x + hex_col_width < total_data_width - 1.0 {
                 let fade_w = 22.0;
                 let fade_start = hex_end_x - px(fade_w);
                 let bg = bg_color_theme;
@@ -1622,7 +1666,7 @@ impl HexView {
                 let mut map = vec![None; chunk.len()];
                 let mut j = 0;
                 while j < chunk.len() {
-                    if let Some((c, byte_len)) = encoding.decode_char_at(&chunk, j) {
+                    if let Some((c, byte_len)) = encoding.decode_char_at(chunk, j) {
                         map[j] = Some((c, byte_len));
                         j += byte_len.max(1);
                     } else {
@@ -1667,24 +1711,43 @@ impl HexView {
                 }
             }
 
+            // Batched ASCII text rendering (single shape_line)
+            let mut ascii_text = String::with_capacity(chunk.len());
+            let mut ascii_runs: Vec<gpui::TextRun> = Vec::with_capacity(chunk.len());
             for (j, opt) in char_map.into_iter().enumerate() {
-                if let Some((c, _)) = opt {
-                    let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
-                    let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
+                let c = if let Some((c, _)) = opt { c } else { continue };
+                let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
+                let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
 
-                    let char_str = SharedString::from(c.to_string());
-                    let run = gpui::TextRun {
-                        len: char_str.len(),
+                // Pad with spaces to position at fixed-width slots
+                while ascii_text.len() < j {
+                    ascii_text.push(' ');
+                    ascii_runs.push(gpui::TextRun {
+                        len: 1,
                         font: font.clone(),
-                        color: text_color,
+                        color: hsla(0.0, 0.0, 0.0, 0.0),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
-                    };
-                    let shaped_ascii = window.text_system().shape_line(char_str, font_size, &[run], None);
-                    let ascii_pos = point(ascii_start_x + px(j as f32 * 10.0 + 1.0), bounds.top() + px(2.0));
-                    let _ = shaped_ascii.paint(ascii_pos, line_height, window, cx);
+                    });
                 }
+
+                let ch_str = c.to_string();
+                ascii_runs.push(gpui::TextRun {
+                    len: ch_str.len(),
+                    font: font.clone(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+                ascii_text.push_str(&ch_str);
+            }
+
+            if !ascii_text.is_empty() {
+                let shaped = window.text_system().shape_line(ascii_text.into(), font_size, &ascii_runs, None);
+                let ascii_pos = point(ascii_start_x + px(1.0), bounds.top() + px(2.0));
+                let _ = shaped.paint(ascii_pos, line_height, window, cx);
             }
         }
 
@@ -1699,7 +1762,7 @@ impl HexView {
 
             let is_collapsed = container_structs
                 .first()
-                .map(|c| collapsed_structs_arc.as_ref().map(|s| s.contains(&c.id)).unwrap_or(false))
+                .map(|c| collapsed_structs.as_ref().map(|s| s.contains(&c.id)).unwrap_or(false))
                 .unwrap_or(false);
 
             let struct_depth = active_ranges.len().saturating_sub(1);
@@ -1784,16 +1847,16 @@ impl HexView {
         }
 
         // 5. Highlight Comments Column
-        let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items_arc
+        let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items
             .iter()
             .filter(|h| {
                 if h.comment.trim().is_empty() {
                     return false;
                 }
-                let h_start_row = Editor::find_line_index(h.offset, &line_starts_clone);
+                let h_start_row = Editor::find_line_index(h.offset, line_starts);
                 let h_end_offset = h.offset.saturating_add(h.size);
                 let h_last_byte = h_end_offset.saturating_sub(1).max(h.offset);
-                let h_end_row = Editor::find_line_index(h_last_byte, &line_starts_clone);
+                let h_end_row = Editor::find_line_index(h_last_byte, line_starts);
                 let display_row = h_start_row.max(top_visible_row);
                 row_idx == display_row && row_idx <= h_end_row
             })
@@ -1964,25 +2027,86 @@ impl Render for HexView {
 
         let container = container.focus_indicator(is_focused, theme);
 
-        let (item_width, item_gap) = item_metrics(self.radix, self.group_size, font_size);
-        let item_step = item_width + item_gap;
         let group_bytes = self.group_size.byte_count();
         let items_in_row = max_bytes_per_row.div_ceil(group_bytes).max(1);
-        let total_data_width = items_in_row as f32 * item_step;
+        let probe_bytes = vec![0u8; items_in_row * group_bytes];
+        let probe_source = build_hex_text_source(&probe_bytes, 0, self.radix, self.group_size, self.is_big_endian);
+        let probe_run = gpui::TextRun {
+            len: probe_source.text.len(),
+            font: gpui::font(font_family.clone()),
+            color: hsla(0.0, 0.0, 0.0, 0.0),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let probe = window.text_system().shape_line(probe_source.text.clone(), font_size, &[probe_run], None);
+        let total_data_width = f32::from(probe.width);
+        self.hex_content_width = total_data_width;
+        if self.hex_col_width <= 0.0 {
+            self.hex_col_width = total_data_width;
+        }
         let max_hex_scroll = (total_data_width - self.hex_col_width).max(0.0);
+        self.hex_scroll_x = self.hex_scroll_x.clamp(0.0, max_hex_scroll);
+
+        // Keep the cursor visible using the actual shaped bounds of its row.
+        // This is deliberately done here, where the same font/layout used by
+        // the paint pass is available, instead of estimating a cell width.
+        {
+            let cursor_layout = {
+                let editor = self.editor.read(cx);
+                let line_starts = editor.line_starts();
+                let row = Editor::find_line_index(editor.cursor_offset, &line_starts);
+                let line_offset = line_starts.get(row).unwrap_or(0);
+                let next_offset = line_starts
+                    .get(row + 1)
+                    .unwrap_or_else(|| editor.document.read().map(|doc| doc.buffer.len()).unwrap_or(line_offset));
+                editor.document.read().ok().map(|doc| {
+                    let source = build_hex_text_source(
+                        doc.buffer.get_range(line_offset, next_offset.saturating_sub(line_offset)),
+                        line_offset,
+                        self.radix,
+                        self.group_size,
+                        self.is_big_endian,
+                    );
+                    let shaped = shape_hex_text(window, &source, gpui::font(font_family.clone()), font_size, hsla(0.0, 0.0, 0.0, 0.0));
+                    (editor.cursor_offset.saturating_sub(line_offset), source, shaped)
+                })
+            };
+            if let Some((cursor_in_row, source, shaped)) = cursor_layout
+                && let Some(group) = source
+                    .groups
+                    .iter()
+                    .find(|group| group.chunk_start <= cursor_in_row && cursor_in_row < group.chunk_end)
+            {
+                let cursor_left = f32::from(shaped.x_for_index(group.text_start));
+                let cursor_right = f32::from(shaped.x_for_index(group.text_end));
+                if cursor_left < self.hex_scroll_x {
+                    self.hex_scroll_x = cursor_left.clamp(0.0, max_hex_scroll);
+                } else if cursor_right > self.hex_scroll_x + self.hex_col_width {
+                    self.hex_scroll_x = (cursor_right - self.hex_col_width).clamp(0.0, max_hex_scroll);
+                }
+            }
+        }
         let is_hex_clipped_left = self.hex_scroll_x > 1.0;
         let is_hex_clipped_right = self.hex_scroll_x < max_hex_scroll - 1.0;
 
         let header = if self.show_header {
             let mut hex_cols = Vec::with_capacity(items_in_row);
-            for i in 0..items_in_row {
+            for (i, group) in probe_source.groups.iter().enumerate() {
                 let byte_offset = i * group_bytes;
                 let label = SharedString::from(format!("+{:X}", byte_offset));
+                let group_start = f32::from(probe.x_for_index(group.text_start));
+                let group_end = f32::from(probe.x_for_index(group.text_end));
                 hex_cols.push(
                     div()
-                        .w(px(item_width))
-                        .mr(px(item_gap))
-                        .flex_none()
+                        .absolute()
+                        .left(px(group_start - self.hex_scroll_x))
+                        .top_0()
+                        .h_full()
+                        .w(px(group_end - group_start))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .text_center()
                         .text_xs()
                         .text_color(theme.muted_foreground)
@@ -2103,7 +2227,7 @@ impl Render for HexView {
                                 .w(px(self.hex_col_width))
                                 .overflow_hidden()
                                 .relative()
-                                .child(h_flex().ml(px(-self.hex_scroll_x)).children(hex_cols))
+                                .child(div().relative().w(px(self.hex_col_width)).h_full().children(hex_cols))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {
@@ -2373,7 +2497,7 @@ impl Render for HexView {
                         }
                     }
 
-                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
+                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
                         this.is_selecting = true;
                         this.editor.update(cx, |editor, cx| {
                             if event.modifiers.shift {
@@ -2393,7 +2517,7 @@ impl Render for HexView {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.focus_handle.focus(window);
-                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
+                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
                         this.editor.update(cx, |editor, cx| {
                             let in_selection = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
                                 let min = s.min(e);
@@ -2410,7 +2534,7 @@ impl Render for HexView {
                     }
                 }),
             )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.is_dragging_scrollbar {
                     let current_y = f32::from(event.position.y);
                     let delta_y = current_y - this.scrollbar_drag_start_y;
@@ -2479,7 +2603,7 @@ impl Render for HexView {
                         }
                     }
 
-                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
+                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
                         this.editor.update(cx, |editor, cx| {
                             let prev_end = editor.selection_end;
                             if prev_end != Some(target_pos) {
@@ -2610,6 +2734,7 @@ impl Render for HexView {
                                 hex_col_width,
                                 desc_col_width,
                                 comment_col_width,
+                                font_family.clone(),
                                 font_size,
                                 window,
                                 cx,

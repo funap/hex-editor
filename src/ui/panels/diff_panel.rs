@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use crate::actions::{NextDifference, PrevDifference, ToggleSyncScroll};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
-use crate::ui::components::hex_view::{HexView, HexViewEvent};
+use crate::ui::components::hex_view::{HexView, HexViewEvent, HorizontalScrollTarget, ScrollColumn};
 
 const CONTEXT: &str = "DiffPanel";
 
@@ -68,27 +68,45 @@ impl DiffPanel {
         let mut subscriptions = Vec::new();
 
         subscriptions.push(cx.subscribe_in(&left_view, window, |this, _left_view, event, _window, cx| {
-            if this.sync_scroll
-                && !this.is_syncing
-                && let HexViewEvent::Scrolled(offset) = event
-            {
+            if this.sync_scroll && !this.is_syncing {
                 this.is_syncing = true;
-                this.right_view.update(cx, |view, cx| {
-                    view.scroll_to_row(*offset, cx);
-                });
+                match event {
+                    HexViewEvent::Scrolled(offset) => {
+                        this.right_view.update(cx, |view, cx| {
+                            view.scroll_to_row(*offset, cx);
+                        });
+                    }
+                    HexViewEvent::HorizontalScrolled { target, progress }
+                        if matches!(target, HorizontalScrollTarget::View | HorizontalScrollTarget::Column(ScrollColumn::Hex)) =>
+                    {
+                        this.right_view.update(cx, |view, cx| {
+                            view.set_horizontal_scroll(*target, *progress, cx);
+                        });
+                    }
+                    _ => {}
+                }
                 this.is_syncing = false;
             }
         }));
 
         subscriptions.push(cx.subscribe_in(&right_view, window, |this, _right_view, event, _window, cx| {
-            if this.sync_scroll
-                && !this.is_syncing
-                && let HexViewEvent::Scrolled(offset) = event
-            {
+            if this.sync_scroll && !this.is_syncing {
                 this.is_syncing = true;
-                this.left_view.update(cx, |view, cx| {
-                    view.scroll_to_row(*offset, cx);
-                });
+                match event {
+                    HexViewEvent::Scrolled(offset) => {
+                        this.left_view.update(cx, |view, cx| {
+                            view.scroll_to_row(*offset, cx);
+                        });
+                    }
+                    HexViewEvent::HorizontalScrolled { target, progress }
+                        if matches!(target, HorizontalScrollTarget::View | HorizontalScrollTarget::Column(ScrollColumn::Hex)) =>
+                    {
+                        this.left_view.update(cx, |view, cx| {
+                            view.set_horizontal_scroll(*target, *progress, cx);
+                        });
+                    }
+                    _ => {}
+                }
                 this.is_syncing = false;
             }
         }));
@@ -305,6 +323,9 @@ impl Render for DiffPanel {
             .flex()
             .flex_col()
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .bg(theme.background)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle);
@@ -315,6 +336,8 @@ impl Render for DiffPanel {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .min_w_0()
+                    .flex_shrink_0()
                     .gap_2()
                     .px_2()
                     .py_1()
@@ -360,9 +383,21 @@ impl Render for DiffPanel {
                     .flex()
                     .flex_row()
                     .flex_1()
+                    .min_w_0()
                     .min_h_0()
-                    .child(div().flex_1().h_full().border_r_1().border_color(theme.border).child(self.left_view.clone()))
-                    .child(div().flex_1().h_full().child(self.right_view.clone())),
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .border_r_1()
+                            .border_color(theme.border)
+                            .child(self.left_view.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().min_h_0().h_full().overflow_hidden().child(self.right_view.clone())),
             )
             .on_action(cx.listener(Self::next_difference))
             .on_action(cx.listener(Self::prev_difference))

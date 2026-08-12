@@ -438,7 +438,7 @@ where
 }
 
 fn render_node(node: &PaneNode) -> AnyElement {
-    match node {
+    let content = match node {
         PaneNode::Leaf { group, .. } => group.clone().into_any_element(),
         PaneNode::HSplit { id, left, right } => h_resizable(ElementId::NamedInteger("h-split".into(), *id as u64))
             .child(resizable_panel().child(render_node(left)))
@@ -448,7 +448,9 @@ fn render_node(node: &PaneNode) -> AnyElement {
             .child(resizable_panel().child(render_node(top)))
             .child(resizable_panel().child(render_node(bottom)))
             .into_any_element(),
-    }
+    };
+
+    div().size_full().min_w_0().min_h_0().overflow_hidden().child(content).into_any_element()
 }
 
 impl EventEmitter<PaneTreeEvent> for PaneTree {}
@@ -456,7 +458,13 @@ impl EventEmitter<PaneTreeEvent> for PaneTree {}
 impl Render for PaneTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(root) = &self.root {
-            div().id("pane-tree-root").size_full().child(render_node(root))
+            div()
+                .id("pane-tree-root")
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .overflow_hidden()
+                .child(render_node(root))
         } else {
             div()
                 .id("pane-tree-empty")

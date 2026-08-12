@@ -259,6 +259,9 @@ impl Render for EditorGroup {
         div()
             .id(ElementId::NamedInteger("editor-group".into(), group_id as u64))
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .bg(theme.background)
@@ -273,6 +276,8 @@ impl Render for EditorGroup {
                     .items_center()
                     .w_full()
                     .h(px(34.0))
+                    .min_w_0()
+                    .flex_shrink_0()
                     .bg(tab_bar_bg)
                     .border_b_1()
                     .border_color(theme.border)
@@ -284,6 +289,7 @@ impl Render for EditorGroup {
                             .flex_row()
                             .items_center()
                             .flex_1()
+                            .min_w_0()
                             .h_full()
                             .overflow_x_scroll()
                             .on_drop(cx.listener(move |this, drag: &TabDrag, _, cx| {
@@ -354,7 +360,7 @@ impl Render for EditorGroup {
                                             .size(px(14.0))
                                             .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
                                     )
-                                    .child(div().flex_1().truncate().text_sm().child(title))
+                                    .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
                                     .child(
                                         div()
                                             .id(ElementId::NamedInteger("tab-close-btn".into(), tab_id as u64))
@@ -386,6 +392,7 @@ impl Render for EditorGroup {
                             .flex()
                             .flex_row()
                             .items_center()
+                            .flex_shrink_0()
                             .gap_1()
                             .px_2()
                             .child(
@@ -427,6 +434,9 @@ impl Render for EditorGroup {
                     .relative()
                     .flex_1()
                     .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
                     // Active content rendering
                     .children(self.tabs.get(active_index).map(|t| t.content.render()))
                     // Visual Drop Zones (ONLY rendered during active drag-and-drop)

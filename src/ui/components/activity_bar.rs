@@ -49,6 +49,7 @@ impl Render for ActivityBar {
             .flex()
             .flex_col()
             .w(px(42.0))
+            .flex_shrink_0()
             .h_full()
             .bg(bg_color)
             .when(self.active_activity.is_some(), |this| this.border_r_1().border_color(border_color))

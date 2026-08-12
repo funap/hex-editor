@@ -974,20 +974,35 @@ impl Render for Workspace {
             }))
             .relative()
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .child(self.title_bar.clone())
             .child(
-                div().flex().flex_row().flex_1().child(self.activity_bar.clone()).child(
-                    h_resizable("workspace-h-resize")
-                        .child(
-                            resizable_panel()
-                                .visible(self.is_left_panel_visible)
-                                .size(px(250.))
-                                .child(self.left_panel.clone()),
-                        )
-                        .child(resizable_panel().child(div().relative().size_full().child(self.pane_tree.clone()))),
-                ),
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.activity_bar.clone())
+                    .child(
+                        div().flex_1().min_w_0().min_h_0().overflow_hidden().child(
+                            h_resizable("workspace-h-resize")
+                                .child(
+                                    resizable_panel()
+                                        .visible(self.is_left_panel_visible)
+                                        .size(px(250.))
+                                        .child(div().size_full().min_w_0().min_h_0().overflow_hidden().child(self.left_panel.clone())),
+                                )
+                                .child(
+                                    resizable_panel().child(div().relative().size_full().min_w_0().min_h_0().overflow_hidden().child(self.pane_tree.clone())),
+                                ),
+                        ),
+                    ),
             )
             .child(self.status_bar.clone())
             .children(Root::render_dialog_layer(window, cx))

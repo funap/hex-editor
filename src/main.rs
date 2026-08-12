@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![recursion_limit = "256"]
+#![recursion_limit = "1024"]
 
 use gpui::Application;
 use gpui_component_assets::Assets;

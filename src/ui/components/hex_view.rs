@@ -1113,6 +1113,26 @@ impl HexView {
         }
     }
 
+    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dragging_scrollbar {
+            self.is_dragging_scrollbar = false;
+            cx.notify();
+        }
+        if self.resizing_column.is_some() {
+            self.resizing_column = None;
+            cx.notify();
+        }
+        if self.is_selecting {
+            self.is_selecting = false;
+            let (start, end, cursor_offset) = {
+                let ed = self.editor.read(cx);
+                (ed.selection_start, ed.selection_end, ed.cursor_offset)
+            };
+            cx.emit(HexViewEvent::SelectionChanged { start, end });
+            cx.emit(HexViewEvent::CursorMoved(cursor_offset));
+        }
+    }
+
     pub fn font_family(mut self, font_family: impl Into<SharedString>) -> Self {
         self.font_family_prop = font_family.into();
         self
@@ -3308,28 +3328,8 @@ impl Render for HexView {
                     }
                 }
             }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    if this.is_dragging_scrollbar {
-                        this.is_dragging_scrollbar = false;
-                        cx.notify();
-                    }
-                    if this.resizing_column.is_some() {
-                        this.resizing_column = None;
-                        cx.notify();
-                    }
-                    if this.is_selecting {
-                        this.is_selecting = false;
-                        let (start, end, cursor_offset) = {
-                            let ed = this.editor.read(cx);
-                            (ed.selection_start, ed.selection_end, ed.cursor_offset)
-                        };
-                        cx.emit(HexViewEvent::SelectionChanged { start, end });
-                        cx.emit(HexViewEvent::CursorMoved(cursor_offset));
-                    }
-                }),
-            )
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .child(
                 canvas(
                     move |bounds, _window, cx| {

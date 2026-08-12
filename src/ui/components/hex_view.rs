@@ -414,6 +414,40 @@ mod horizontal_scroll_tests {
     }
 }
 
+#[cfg(test)]
+mod hex_grid_tests {
+    use super::{ByteGroupSize, DisplayRadix, build_hex_text_source, centered_glyph_offset, hex_grid_width, hex_grid_x, px};
+
+    #[test]
+    fn group_boundaries_use_the_same_fixed_grid_as_the_header() {
+        let source = build_hex_text_source(&[0x12, 0x34, 0x56], 0, DisplayRadix::Hexadecimal, ByteGroupSize::One, false);
+        let cell_width = px(8.0);
+
+        assert_eq!(source.text.as_ref(), "12 34 56");
+        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_start, cell_width)), 0.0);
+        assert_eq!(f32::from(hex_grid_x(source.groups[1].text_start, cell_width)), 24.0);
+        assert_eq!(f32::from(hex_grid_x(source.groups[2].text_start, cell_width)), 48.0);
+        assert_eq!(f32::from(hex_grid_width(source.text.len(), cell_width)), 64.0);
+    }
+
+    #[test]
+    fn group_grid_keeps_partial_group_slots_aligned() {
+        let source = build_hex_text_source(&[0x12], 1, DisplayRadix::Hexadecimal, ByteGroupSize::Four, false);
+        let cell_width = px(8.0);
+
+        assert_eq!(source.text.as_ref(), "..12....");
+        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_start, cell_width)), 0.0);
+        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_end, cell_width)), 64.0);
+        assert_eq!(f32::from(hex_grid_width(source.text.len(), cell_width)), 64.0);
+    }
+
+    #[test]
+    fn glyphs_are_centered_in_fixed_cells() {
+        assert_eq!(centered_glyph_offset(10.0, 6.0), 2.0);
+        assert_eq!(centered_glyph_offset(10.0, 12.0), 0.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HexGroupInfo {
     chunk_start: usize,
@@ -428,6 +462,8 @@ struct HexTextSource {
     text: SharedString,
     groups: Vec<HexGroupInfo>,
 }
+
+const HEX_METRIC_CHARS: &str = "0123456789abcdef.";
 
 /// Build the exact text stream used by the batched Hex renderer and retain the
 /// byte/text ranges needed to translate shaped coordinates back to bytes.
@@ -471,23 +507,101 @@ fn build_hex_text_source(chunk: &[u8], line_offset: usize, radix: DisplayRadix, 
     }
 }
 
-fn shape_hex_text(window: &Window, source: &HexTextSource, font: Font, font_size: Pixels, color: Hsla) -> gpui::ShapedLine {
-    if source.text.is_empty() {
-        return window.text_system().shape_line(source.text.clone(), font_size, &[], None);
+/// Measure the widest glyph used by the formatted Hex stream.
+///
+/// This is intentionally a small, cached probe rather than a per-row
+/// measurement. The extra pixel gives centered glyphs a little breathing
+/// room for rounding and side bearings in proportional fonts.
+fn measure_hex_cell_width(window: &Window, font: Font, font_size: Pixels) -> Pixels {
+    let mut max_advance: f32 = 0.0;
+
+    for character in HEX_METRIC_CHARS.chars() {
+        let text = SharedString::from(character.to_string());
+        let run = gpui::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: hsla(0.0, 0.0, 0.0, 0.0),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window.text_system().shape_line(text, font_size, &[run], None);
+        max_advance = max_advance.max(f32::from(shaped.width));
     }
-    let run = gpui::TextRun {
-        len: source.text.len(),
-        font,
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    window.text_system().shape_line(source.text.clone(), font_size, &[run], None)
+
+    px((max_advance + 1.01).max(1.0))
 }
 
-fn shaped_group_x(shaped: &gpui::ShapedLine, group: HexGroupInfo, origin_x: Pixels) -> (Pixels, Pixels) {
-    (origin_x + shaped.x_for_index(group.text_start), origin_x + shaped.x_for_index(group.text_end))
+#[inline]
+fn hex_grid_x(text_index: usize, cell_width: Pixels) -> Pixels {
+    px(text_index as f32 * f32::from(cell_width))
+}
+
+#[inline]
+fn hex_grid_width(text_len: usize, cell_width: Pixels) -> Pixels {
+    hex_grid_x(text_len, cell_width)
+}
+
+#[inline]
+fn centered_glyph_offset(cell_width: f32, glyph_width: f32) -> f32 {
+    ((cell_width - glyph_width) / 2.0).max(0.0)
+}
+
+fn hex_group_x(group: HexGroupInfo, origin_x: Pixels, cell_width: Pixels) -> (Pixels, Pixels) {
+    (
+        origin_x + hex_grid_x(group.text_start, cell_width),
+        origin_x + hex_grid_x(group.text_end, cell_width),
+    )
+}
+
+/// Paint every glyph centered in its fixed Hex cell while reusing the line
+/// shaped for the row. This keeps shaping batched and avoids a per-row glyph
+/// position allocation.
+fn paint_centered_hex_glyphs(
+    shaped: &gpui::ShapedLine,
+    groups: &[HexGroupInfo],
+    group_colors: &[Hsla],
+    cell_width: Pixels,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+) {
+    let natural_width = shaped.width;
+    let cell_width_f = f32::from(cell_width);
+
+    let text_width = hex_grid_width(shaped.text.len(), cell_width);
+    let line_bounds = Bounds::new(origin, size(text_width, line_height));
+    window.paint_layer(line_bounds, |window| {
+        let baseline_offset = point(px(0.0), (line_height - shaped.ascent - shaped.descent) / 2.0 + shaped.ascent);
+        let mut group_idx = 0;
+        let mut glyphs = shaped
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(move |glyph| (run.font_id, glyph)))
+            .peekable();
+
+        while let Some((font_id, glyph)) = glyphs.next() {
+            let natural_end = glyphs.peek().map(|(_, next)| next.position.x).unwrap_or(natural_width);
+            let glyph_width = f32::from(natural_end - glyph.position.x).max(0.0);
+            let centered_offset = centered_glyph_offset(cell_width_f, glyph_width);
+            let glyph_origin = point(origin.x + hex_grid_x(glyph.index, cell_width) + px(centered_offset), origin.y) + baseline_offset;
+
+            while group_idx < groups.len() && glyph.index >= groups[group_idx].text_end {
+                group_idx += 1;
+            }
+            if group_idx < groups.len()
+                && groups[group_idx].text_start <= glyph.index
+                && glyph.index < groups[group_idx].text_end
+                && let Some(&color) = group_colors.get(group_idx)
+            {
+                if glyph.is_emoji {
+                    let _ = window.paint_emoji(glyph_origin, font_id, glyph.id, shaped.font_size);
+                } else {
+                    let _ = window.paint_glyph(glyph_origin, font_id, glyph.id, shaped.font_size, color);
+                }
+            }
+        }
+    });
 }
 
 #[inline]
@@ -630,6 +744,7 @@ pub struct HexView {
     font_size_prop: Pixels,
     pub address_col_width: f32,
     pub hex_col_width: f32,
+    hex_cell_width: f32,
     hex_content_width: f32,
     pub ascii_col_width: f32,
     pub desc_col_width: f32,
@@ -650,8 +765,8 @@ impl HexView {
             (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
         };
         let font_size_prop = px(14.0);
-        // The actual content width is populated from a shaped probe during
-        // the first render. This value only controls the initial viewport.
+        // The actual grid width is populated from measured glyph metrics
+        // during the first render. This value only controls the initial viewport.
         let hex_col_width = 0.0;
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
@@ -713,6 +828,7 @@ impl HexView {
             font_size_prop,
             address_col_width: ADDRESS_WIDTH,
             hex_col_width,
+            hex_cell_width: 0.0,
             hex_content_width: 0.0,
             ascii_col_width: 0.0,
             desc_col_width: DESC_WIDTH,
@@ -1135,16 +1251,19 @@ impl HexView {
 
     pub fn font_family(mut self, font_family: impl Into<SharedString>) -> Self {
         self.font_family_prop = font_family.into();
+        self.hex_cell_width = 0.0;
         self
     }
 
     pub fn font_size(mut self, font_size: impl Into<Pixels>) -> Self {
         self.font_size_prop = font_size.into();
+        self.hex_cell_width = 0.0;
         self
     }
 
     pub fn set_font_family(&mut self, font_family: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.font_family_prop = font_family.into();
+        self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cursor_reveal_pending = true;
         cx.notify();
@@ -1152,6 +1271,7 @@ impl HexView {
 
     pub fn set_font_size(&mut self, font_size: impl Into<Pixels>, cx: &mut Context<Self>) {
         self.font_size_prop = font_size.into();
+        self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cursor_reveal_pending = true;
         cx.notify();
@@ -1726,7 +1846,7 @@ impl HexView {
         });
     }
 
-    fn offset_from_point(&self, point: Point<Pixels>, window: &Window, cx: &App) -> Option<usize> {
+    fn offset_from_point(&self, point: Point<Pixels>, _window: &Window, cx: &App) -> Option<usize> {
         let root_bounds = self.bounds.get()?;
         let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
 
@@ -1796,22 +1916,16 @@ impl HexView {
                 self.group_size,
                 self.is_big_endian,
             );
-            let shaped = shape_hex_text(
-                window,
-                &source,
-                gpui::font(self.font_family_prop.clone()),
-                self.font_size_prop,
-                hsla(0.0, 0.0, 0.0, 0.0),
-            );
+            let cell_width = px(self.hex_cell_width.max(1.0));
             let origin_x = px(base_x + layout.hex.start - self.outer_scroll_x - self.hex_scroll_x);
 
             let mut target_group_idx = 0;
             for (idx, group) in source.groups.iter().enumerate() {
-                let (group_start, group_end) = shaped_group_x(&shaped, *group, origin_x);
+                let (group_start, group_end) = hex_group_x(*group, origin_x, cell_width);
                 let next_start = source
                     .groups
                     .get(idx + 1)
-                    .map(|next| shaped.x_for_index(next.text_start) + origin_x)
+                    .map(|next| origin_x + hex_grid_x(next.text_start, cell_width))
                     .unwrap_or(group_end);
                 if point.x < next_start || idx + 1 == source.groups.len() {
                     target_group_idx = idx;
@@ -1823,7 +1937,7 @@ impl HexView {
             }
 
             let group = source.groups[target_group_idx];
-            let (group_start, group_end) = shaped_group_x(&shaped, group, origin_x);
+            let (group_start, group_end) = hex_group_x(group, origin_x, cell_width);
             let group_width = (group_end - group_start).max(Pixels::from(0.001));
             let relative_x = f32::from(point.x - group_start) / f32::from(group_width);
             let visual_slot = (relative_x.clamp(0.0, 0.999_999) * self.group_size.byte_count() as f32) as usize;
@@ -1877,6 +1991,7 @@ impl HexView {
         comment_scroll_x: f32,
         address_col_width: f32,
         hex_col_width: f32,
+        hex_cell_width: Pixels,
         desc_col_width: f32,
         comment_col_width: f32,
         font_family: SharedString,
@@ -2020,11 +2135,12 @@ impl HexView {
         );
 
         // Build and shape the exact text stream before painting any geometry.
-        // Every X coordinate below is derived from this ShapedLine, just as in
-        // Zed's editor implementation.
+        // Group geometry uses the fixed cell grid; glyphs are centered in that
+        // grid during the text pass.
         let hex_source = build_hex_text_source(chunk, offset, radix, group_size, is_big_endian);
         let mut hex_runs: Vec<gpui::TextRun> = Vec::with_capacity(hex_source.groups.len() * 2);
         let mut group_visuals: Vec<(Hsla, Option<Hsla>, bool, bool)> = Vec::with_capacity(hex_source.groups.len());
+        let mut group_text_colors: Vec<Hsla> = Vec::with_capacity(hex_source.groups.len());
 
         for (group_idx, group) in hex_source.groups.iter().enumerate() {
             let item_start_offset = offset + group.chunk_start;
@@ -2062,6 +2178,7 @@ impl HexView {
                 }
             }
             group_visuals.push((bg_color, current_hl_color, is_cursor, is_selected));
+            group_text_colors.push(text_color);
 
             if group_idx > 0 {
                 hex_runs.push(gpui::TextRun {
@@ -2085,7 +2202,7 @@ impl HexView {
 
         let shaped_hex = window.text_system().shape_line(hex_source.text.clone(), font_size, &hex_runs, None);
         let text_origin_x = hex_start_x - px(hex_scroll_x);
-        let total_data_width = f32::from(shaped_hex.width);
+        let total_data_width = f32::from(hex_grid_width(hex_source.text.len(), hex_cell_width));
 
         // 2. Background Quads Pass for Data Items (with clipping mask)
         let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
@@ -2098,10 +2215,10 @@ impl HexView {
                 window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
                     for (item_idx, group) in hex_source.groups.iter().enumerate() {
                         let (bg_color, current_hl_color, is_cursor, is_selected) = group_visuals[item_idx];
-                        let (group_start_x, group_end_x) = shaped_group_x(&shaped_hex, *group, text_origin_x);
+                        let (group_start_x, group_end_x) = hex_group_x(*group, text_origin_x, hex_cell_width);
                         let has_next = item_idx + 1 < hex_source.groups.len();
                         let next_group_start_x = if has_next {
-                            shaped_group_x(&shaped_hex, hex_source.groups[item_idx + 1], text_origin_x).0
+                            hex_group_x(hex_source.groups[item_idx + 1], text_origin_x, hex_cell_width).0
                         } else {
                             group_end_x
                         };
@@ -2133,7 +2250,15 @@ impl HexView {
 
                     // 3. Text Pass for Data Items (same shaped line as the geometry pass)
                     if !hex_source.text.is_empty() {
-                        let _ = shaped_hex.paint(point(text_origin_x, bounds.top() + px(2.0)), line_height, window, cx);
+                        paint_centered_hex_glyphs(
+                            &shaped_hex,
+                            &hex_source.groups,
+                            &group_text_colors,
+                            hex_cell_width,
+                            point(text_origin_x, bounds.top() + px(2.0)),
+                            line_height,
+                            window,
+                        );
                     }
 
                     // Left-edge subtle gradient fade when hex_scroll_x > 1.0
@@ -2215,10 +2340,9 @@ impl HexView {
                             }
                         }
 
-                        // Paint each glyph from its byte cell origin. A single
-                        // shape_line would place glyphs at their natural
-                        // advances, while selection/cursor geometry uses the
-                        // fixed ASCII_CELL_WIDTH grid.
+                        // Paint each glyph centered in its fixed byte cell.
+                        // Shaping remains one character at a time, as before;
+                        // only the already-known glyph position is adjusted.
                         for (j, opt) in char_map.into_iter().enumerate() {
                             let c = if let Some((c, _)) = opt { c } else { continue };
                             let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
@@ -2234,7 +2358,8 @@ impl HexView {
                                 strikethrough: None,
                             };
                             let shaped = window.text_system().shape_line(ch_str.into(), font_size, &[ascii_run], None);
-                            let ascii_pos = point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH + 1.0), bounds.top() + px(2.0));
+                            let glyph_offset = centered_glyph_offset(ASCII_CELL_WIDTH, f32::from(shaped.width));
+                            let ascii_pos = point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH + glyph_offset), bounds.top() + px(2.0));
                             let _ = shaped.paint(ascii_pos, line_height, window, cx);
                         }
 
@@ -2565,18 +2690,16 @@ impl Render for HexView {
 
         let group_bytes = self.group_size.byte_count();
         let items_in_row = max_bytes_per_row.div_ceil(group_bytes).max(1);
+        let hex_cell_width = if self.hex_cell_width > 0.0 {
+            px(self.hex_cell_width)
+        } else {
+            let measured = measure_hex_cell_width(window, gpui::font(font_family.clone()), font_size);
+            self.hex_cell_width = f32::from(measured);
+            measured
+        };
         let probe_bytes = vec![0u8; items_in_row * group_bytes];
         let probe_source = build_hex_text_source(&probe_bytes, 0, self.radix, self.group_size, self.is_big_endian);
-        let probe_run = gpui::TextRun {
-            len: probe_source.text.len(),
-            font: gpui::font(font_family.clone()),
-            color: hsla(0.0, 0.0, 0.0, 0.0),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let probe = window.text_system().shape_line(probe_source.text.clone(), font_size, &[probe_run], None);
-        let total_data_width = f32::from(probe.width);
+        let total_data_width = f32::from(hex_grid_width(probe_source.text.len(), hex_cell_width));
         self.hex_content_width = total_data_width;
         if self.hex_col_width <= 0.0 {
             self.hex_col_width = total_data_width;
@@ -2587,9 +2710,7 @@ impl Render for HexView {
         self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
         self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
 
-        // Keep the cursor visible using the actual shaped bounds of its row.
-        // This is deliberately done here, where the same font/layout used by
-        // the paint pass is available, instead of estimating a cell width.
+        // Keep the cursor visible using the same fixed grid as the paint pass.
         let cursor_offset = self.editor.read(cx).cursor_offset;
         let should_reveal_cursor = self.cursor_reveal_pending || self.last_cursor_offset != Some(cursor_offset);
         if should_reveal_cursor {
@@ -2609,18 +2730,17 @@ impl Render for HexView {
                         self.group_size,
                         self.is_big_endian,
                     );
-                    let shaped = shape_hex_text(window, &source, gpui::font(font_family.clone()), font_size, hsla(0.0, 0.0, 0.0, 0.0));
-                    (editor.cursor_offset.saturating_sub(line_offset), source, shaped)
+                    (editor.cursor_offset.saturating_sub(line_offset), source)
                 })
             };
-            if let Some((cursor_in_row, source, shaped)) = cursor_layout
+            if let Some((cursor_in_row, source)) = cursor_layout
                 && let Some(group) = source
                     .groups
                     .iter()
                     .find(|group| group.chunk_start <= cursor_in_row && cursor_in_row < group.chunk_end)
             {
-                let cursor_left = f32::from(shaped.x_for_index(group.text_start));
-                let cursor_right = f32::from(shaped.x_for_index(group.text_end));
+                let cursor_left = f32::from(hex_grid_x(group.text_start, hex_cell_width));
+                let cursor_right = f32::from(hex_grid_x(group.text_end, hex_cell_width));
                 if cursor_left < self.hex_scroll_x {
                     self.hex_scroll_x = cursor_left.clamp(0.0, max_hex_scroll);
                 } else if cursor_right > self.hex_scroll_x + self.hex_col_width {
@@ -2654,8 +2774,8 @@ impl Render for HexView {
             for (i, group) in probe_source.groups.iter().enumerate() {
                 let byte_offset = i * group_bytes;
                 let label = SharedString::from(format!("+{:X}", byte_offset));
-                let group_start = f32::from(probe.x_for_index(group.text_start));
-                let group_end = f32::from(probe.x_for_index(group.text_end));
+                let group_start = f32::from(hex_grid_x(group.text_start, hex_cell_width));
+                let group_end = f32::from(hex_grid_x(group.text_end, hex_cell_width));
                 hex_cols.push(
                     div()
                         .absolute()
@@ -3438,6 +3558,7 @@ impl Render for HexView {
                                 comment_scroll_x,
                                 address_col_width,
                                 hex_col_width,
+                                hex_cell_width,
                                 desc_col_width,
                                 comment_col_width,
                                 font_family.clone(),

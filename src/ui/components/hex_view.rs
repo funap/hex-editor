@@ -171,8 +171,6 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-use gpui_component::scroll::{Scrollbar, ScrollbarAxis};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizingColumn {
     Address,
@@ -190,8 +188,12 @@ pub enum ScrollAxisLock {
 pub struct HexView {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
-    uniform_scroll_handle: UniformListScrollHandle,
     scroll_offset: usize,
+    accum_scroll_y: f32,
+    is_dragging_scrollbar: bool,
+    scrollbar_hovered: bool,
+    scrollbar_drag_start_y: f32,
+    scrollbar_drag_start_row: usize,
     pub hex_scroll_x: f32,
     pub desc_scroll_x: f32,
     pub comment_scroll_x: f32,
@@ -201,8 +203,6 @@ pub struct HexView {
     is_selecting: bool,
     bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     list_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
-    visible_range: std::cell::Cell<Option<(usize, usize)>>,
-    visible_row_info: std::cell::Cell<Option<(usize, Pixels, Pixels)>>,
     highlights: Arc<Vec<(Range<usize>, Hsla)>>,
     max_highlight_len: usize,
     show_offset: bool,
@@ -259,8 +259,12 @@ impl HexView {
         Self {
             editor,
             focus_handle: cx.focus_handle(),
-            uniform_scroll_handle: UniformListScrollHandle::new(),
             scroll_offset: 0,
+            accum_scroll_y: 0.0,
+            is_dragging_scrollbar: false,
+            scrollbar_hovered: false,
+            scrollbar_drag_start_y: 0.0,
+            scrollbar_drag_start_row: 0,
             hex_scroll_x: 0.0,
             desc_scroll_x: 0.0,
             comment_scroll_x: 0.0,
@@ -270,8 +274,6 @@ impl HexView {
             is_selecting: false,
             bounds: std::cell::Cell::new(None),
             list_bounds: std::cell::Cell::new(None),
-            visible_range: std::cell::Cell::new(None),
-            visible_row_info: std::cell::Cell::new(None),
             highlights: Arc::new(Vec::new()),
             max_highlight_len: 0,
             show_offset: true,
@@ -472,6 +474,23 @@ impl HexView {
 
         // 縦スクロールロック中の場合は横スクロールを行わずスルー
         if self.scroll_lock_axis == Some(ScrollAxisLock::Vertical) {
+            // 縦スクロール処理を実行
+            let total_rows = self.editor.read(cx).line_starts().len().max(1);
+            let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+            let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+            let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+
+            self.accum_scroll_y += delta_y;
+            let rows_to_scroll = -(self.accum_scroll_y / ROW_HEIGHT) as isize;
+            if rows_to_scroll != 0 {
+                self.accum_scroll_y += (rows_to_scroll as f32) * ROW_HEIGHT;
+                let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
+                if new_offset != self.scroll_offset {
+                    self.scroll_offset = new_offset;
+                    cx.notify();
+                    cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+                }
+            }
             return;
         }
 
@@ -481,7 +500,7 @@ impl HexView {
             // 横スクロールロック中は縦スクロール位置を固定して縦揺れを防止
             if self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) {
                 let lock_row = self.scroll_lock_top_row;
-                self.uniform_scroll_handle.scroll_to_item(lock_row, ScrollStrategy::Top);
+                self.scroll_to_row(lock_row, cx);
             }
 
             let bounds = if let Some(b) = self.bounds.get() {
@@ -544,6 +563,23 @@ impl HexView {
                 if (new_scroll - self.comment_scroll_x).abs() > 0.01 {
                     self.comment_scroll_x = new_scroll;
                     cx.notify();
+                }
+            }
+        } else if !is_horizontal && abs_y > 0.01 {
+            let total_rows = self.editor.read(cx).line_starts().len().max(1);
+            let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+            let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+            let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+
+            self.accum_scroll_y += delta_y;
+            let rows_to_scroll = -(self.accum_scroll_y / ROW_HEIGHT) as isize;
+            if rows_to_scroll != 0 {
+                self.accum_scroll_y += (rows_to_scroll as f32) * ROW_HEIGHT;
+                let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
+                if new_offset != self.scroll_offset {
+                    self.scroll_offset = new_offset;
+                    cx.notify();
+                    cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
                 }
             }
         }
@@ -634,21 +670,22 @@ impl HexView {
     }
 
     pub fn current_scroll_top_row(&self) -> usize {
-        if let Some((top_row, _)) = self.visible_range.get() {
-            top_row
-        } else {
-            self.scroll_offset
-        }
+        self.scroll_offset
     }
 
     pub fn viewport_byte_range(&self, cx: &App) -> (usize, usize) {
         let editor = self.editor.read(cx);
         let line_starts = editor.line_starts();
-        let current_top = self.current_scroll_top_row();
+        let current_top = self.scroll_offset;
         let start_byte = line_starts.get(current_top).unwrap_or(0);
-        let end_row = (current_top + 30).min(line_starts.len());
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).ceil() as usize
+        } else {
+            30
+        };
+        let end_row = (current_top + visible_rows + 2).min(line_starts.len());
         let end_byte = if end_row < line_starts.len() {
-            line_starts.get(end_row).expect("valid line start at end_row")
+            line_starts.get(end_row).unwrap_or_else(|| editor.total_size())
         } else {
             editor.total_size()
         };
@@ -656,25 +693,25 @@ impl HexView {
     }
 
     pub fn scroll_to_row(&mut self, row: usize, cx: &mut Context<Self>) {
-        let total_rows = self.editor.read(cx).line_starts().len();
-        let max_offset = total_rows.saturating_sub(1);
+        let total_rows = self.editor.read(cx).line_starts().len().max(1);
+        let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+        let max_offset = total_rows.saturating_sub(visible_rows.max(1));
         let new_offset = row.min(max_offset);
 
-        self.scroll_offset = new_offset;
-        self.uniform_scroll_handle.scroll_to_item(new_offset, ScrollStrategy::Top);
-        cx.notify();
-        cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+        if self.scroll_offset != new_offset {
+            self.scroll_offset = new_offset;
+            self.accum_scroll_y = 0.0;
+            cx.notify();
+            cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+        }
     }
 
     pub fn scroll_to_bottom_row(&mut self, row: usize, cx: &mut Context<Self>) {
-        let total_rows = self.editor.read(cx).line_starts().len();
-        let max_offset = total_rows.saturating_sub(1);
-        let new_offset = row.min(max_offset);
-
-        self.scroll_offset = new_offset;
-        self.uniform_scroll_handle.scroll_to_item(new_offset, ScrollStrategy::Bottom);
-        cx.notify();
-        cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+        let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+        let target_top = row.saturating_sub(visible_rows.saturating_sub(1));
+        self.scroll_to_row(target_top, cx);
     }
 
     fn ensure_cursor_visible(&mut self, cx: &mut Context<Self>) {
@@ -683,14 +720,18 @@ impl HexView {
         let line_starts = editor.line_starts();
         let cursor_row = Editor::find_line_index(cursor_offset, &line_starts);
 
-        if let Some((top_row, bottom_row)) = self.visible_range.get() {
-            if cursor_row < top_row {
-                self.scroll_to_row(cursor_row, cx);
-            } else if cursor_row >= bottom_row {
-                self.scroll_to_bottom_row(cursor_row, cx);
-            }
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
         } else {
+            30
+        };
+        let top_row = self.scroll_offset;
+        let bottom_row = top_row + visible_rows.saturating_sub(1);
+
+        if cursor_row < top_row {
             self.scroll_to_row(cursor_row, cx);
+        } else if cursor_row > bottom_row {
+            self.scroll_to_bottom_row(cursor_row, cx);
         }
 
         // Horizontal visibility in Hex column
@@ -771,16 +812,28 @@ impl HexView {
     }
 
     fn page_up(&mut self, _: &PageUp, window: &mut Window, cx: &mut Context<Self>) {
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
+        } else {
+            30
+        };
+        let count = visible_rows.saturating_sub(2).max(1);
         self.exec_move(window, cx, |e| {
-            for _ in 0..10 {
+            for _ in 0..count {
                 e.move_up();
             }
         });
     }
 
     fn page_down(&mut self, _: &PageDown, window: &mut Window, cx: &mut Context<Self>) {
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
+        } else {
+            30
+        };
+        let count = visible_rows.saturating_sub(2).max(1);
         self.exec_move(window, cx, |e| {
-            for _ in 0..10 {
+            for _ in 0..count {
                 e.move_down();
             }
         });
@@ -798,16 +851,28 @@ impl HexView {
     }
 
     fn select_page_up(&mut self, _: &SelectPageUp, window: &mut Window, cx: &mut Context<Self>) {
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
+        } else {
+            30
+        };
+        let count = visible_rows.saturating_sub(2).max(1);
         self.exec_select(window, cx, |e| {
-            for _ in 0..10 {
+            for _ in 0..count {
                 e.select_up();
             }
         });
     }
 
     fn select_page_down(&mut self, _: &SelectPageDown, window: &mut Window, cx: &mut Context<Self>) {
+        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
+            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
+        } else {
+            30
+        };
+        let count = visible_rows.saturating_sub(2).max(1);
         self.exec_select(window, cx, |e| {
-            for _ in 0..10 {
+            for _ in 0..count {
                 e.select_down();
             }
         });
@@ -1128,7 +1193,7 @@ impl HexView {
             return None;
         }
 
-        let (sample_row_idx, sample_top, sample_left) = self.visible_row_info.get()?;
+        let list_bounds = self.list_bounds.get()?;
 
         let editor = self.editor.read(cx);
         let doc = editor.document.read().ok()?;
@@ -1141,11 +1206,9 @@ impl HexView {
             return Some(0);
         }
 
-        let row_0_top = sample_top - px(sample_row_idx as f32 * ROW_HEIGHT);
-        let rel_y = f32::from((point.y - row_0_top).max(px(0.0)));
-        let row_idx = (rel_y / ROW_HEIGHT) as usize;
-
-        let row_idx = row_idx.min(line_starts.len().saturating_sub(1));
+        let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
+        let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
+        let row_idx = (self.scroll_offset + row_offset_in_view).min(line_starts.len().saturating_sub(1));
         let line_offset = line_starts.get(row_idx)?;
 
         let next_offset = if row_idx + 1 < line_starts.len() {
@@ -1170,7 +1233,7 @@ impl HexView {
             0.0
         };
 
-        let base_x = f32::from(sample_left) + 8.0;
+        let base_x = f32::from(list_bounds.left()) + 8.0;
         let hex_start_x = base_x + offset_width;
         let hex_end_x = hex_start_x + self.hex_col_width;
         let desc_start_x = hex_end_x + SECTION_GAP;
@@ -1238,8 +1301,9 @@ impl HexView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_hex_row(
+    fn paint_hex_row(
         row_idx: usize,
+        bounds: Bounds<Pixels>,
         top_visible_row: usize,
         doc: &Document,
         line_starts: &crate::core::editor::LineMap,
@@ -1266,14 +1330,13 @@ impl HexView {
         hex_col_width: f32,
         desc_col_width: f32,
         comment_col_width: f32,
-        _font_family: &SharedString,
         font_size: Pixels,
-        view: Entity<Self>,
-        _focus_handle: &FocusHandle,
-    ) -> AnyElement {
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let offset = match line_starts.get(row_idx) {
             Some(o) => o,
-            None => return div().into_any_element(),
+            None => return,
         };
         let next_offset = if row_idx + 1 < line_starts.len() {
             line_starts.get(row_idx + 1).unwrap_or(doc.buffer.len())
@@ -1285,557 +1348,585 @@ impl HexView {
         let chunk = doc.buffer.get_range(offset, chunk_len).to_vec();
 
         let is_struct_mode = parse_result.is_some();
-        let visible_row_view = view.clone();
         let collapsed_structs_arc = collapsed_structs.clone();
         let highlights_arc = highlights.clone();
         let highlight_items_arc = highlight_items.clone();
         let line_starts_clone = line_starts.clone();
 
-        div()
-            .id(row_idx)
-            .w_full()
-            .h(px(ROW_HEIGHT))
-            .child(canvas(
-                move |bounds, _window, cx| {
-                    visible_row_view.update(cx, |this, _cx| {
-                        this.visible_row_info.set(Some((row_idx, bounds.top(), bounds.left())));
-                    });
-                },
-                move |bounds, _prepaint, window, cx| {
-                    let active_row_highlights = row_highlights(&highlights_arc, max_highlight_len, offset, next_offset);
-                    let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
-                        let theme = cx.theme();
-                        (
-                            if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
-                            theme.accent,
-                            theme.muted_foreground,
-                            theme.foreground,
-                            theme.accent_foreground,
-                            theme.border,
-                            theme.sidebar,
-                            theme.background,
-                        )
-                    };
-                    let line_height = px(ROW_HEIGHT);
-                    let font = window.text_style().font();
+        let active_row_highlights = row_highlights(&highlights_arc, max_highlight_len, offset, next_offset);
+        let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
+            let theme = cx.theme();
+            (
+                if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
+                theme.accent,
+                theme.muted_foreground,
+                theme.foreground,
+                theme.accent_foreground,
+                theme.border,
+                theme.sidebar,
+                theme.background,
+            )
+        };
+        let line_height = px(ROW_HEIGHT);
+        let font = window.text_style().font();
 
-                    // 1. Draw Left Columns (Address OR Offset)
-                    let (offset_w, gap) = if is_struct_mode {
-                        let addr_str = format_offset_08(offset);
-                        let run = gpui::TextRun {
-                            len: addr_str.len(),
-                            font: font.clone(),
-                            color: muted_color,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped = window.text_system().shape_line(addr_str, font_size, &[run], None);
-                        let addr_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
-                        let _ = shaped.paint(addr_pos, line_height, window, cx);
-                        (address_col_width, SECTION_GAP)
-                    } else {
-                        if show_offset {
-                            let offset_str = format_offset_08(offset);
-                            let run = gpui::TextRun {
-                                len: offset_str.len(),
-                                font: font.clone(),
-                                color: muted_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped = window.text_system().shape_line(offset_str, font_size, &[run], None);
-                            let offset_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
-                            let _ = shaped.paint(offset_pos, line_height, window, cx);
+        // 1. Draw Left Columns (Address OR Offset)
+        let (offset_w, gap) = if is_struct_mode {
+            let addr_str = format_offset_08(offset);
+            let run = gpui::TextRun {
+                len: addr_str.len(),
+                font: font.clone(),
+                color: muted_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line(addr_str, font_size, &[run], None);
+            let addr_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
+            let _ = shaped.paint(addr_pos, line_height, window, cx);
+            (address_col_width, SECTION_GAP)
+        } else {
+            if show_offset {
+                let offset_str = format_offset_08(offset);
+                let run = gpui::TextRun {
+                    len: offset_str.len(),
+                    font: font.clone(),
+                    color: muted_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(offset_str, font_size, &[run], None);
+                let offset_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
+                let _ = shaped.paint(offset_pos, line_height, window, cx);
+            }
+            (if show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
+        };
+
+        let base_x = bounds.left() + px(8.0);
+        let hex_start_x = base_x + px(offset_w + gap);
+        let hex_end_x = hex_start_x + px(hex_col_width);
+        let (comment_start_x, ascii_width) = if is_struct_mode {
+            let desc_start_x = hex_end_x + px(gap);
+            let comment_start_x = desc_start_x + px(desc_col_width + gap);
+            (comment_start_x, 0.0)
+        } else {
+            let ascii_w = if show_ascii { _max_bytes_per_row as f32 * 10.0 } else { 0.0 };
+            let comment_start_x = if show_ascii {
+                hex_end_x + px(gap + ascii_w + gap)
+            } else {
+                hex_end_x + px(gap)
+            };
+            (comment_start_x, ascii_w)
+        };
+
+        // Vertical Column Divider Borders (matching header splitters exactly)
+        let border_line_color = border_color.opacity(0.4);
+        if is_struct_mode || show_offset {
+            let div1_x = base_x + px(offset_w + (gap / 2.0));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div1_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_line_color,
+            ));
+        }
+        let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
+        window.paint_quad(gpui::fill(
+            Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+            border_line_color,
+        ));
+        if is_struct_mode {
+            let desc_start_x = hex_end_x + px(gap);
+            let div3_x = desc_start_x + px(desc_col_width + (gap / 2.0));
+            let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_line_color,
+            ));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_line_color,
+            ));
+        } else {
+            if show_ascii {
+                let div3_x = hex_end_x + px(gap + ascii_width + (gap / 2.0));
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                    border_line_color,
+                ));
+            }
+            let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_line_color,
+            ));
+        }
+
+        // 2. Background Quads Pass for Data Items (with clipping mask)
+        let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
+        let group_bytes = group_size.byte_count();
+        let (item_width, item_gap) = item_metrics(radix, group_size, font_size);
+        let item_step = item_width + item_gap;
+
+        window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
+            let mut chunk_idx = 0;
+            let mut item_idx = 0;
+            while chunk_idx < chunk.len() {
+                let item_start_offset = offset + chunk_idx;
+                let start_slot = item_start_offset % group_bytes;
+                let max_in_group = group_bytes - start_slot;
+                let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
+                let item_end_offset = item_start_offset + item_slice_len;
+
+                let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
+                let is_selected = if min_sel <= max_sel {
+                    let sel_start = min_sel;
+                    let sel_end = max_sel;
+                    item_start_offset <= sel_end && item_end_offset > sel_start
+                } else {
+                    false
+                };
+
+                let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
+                let mut current_hl_color = None;
+
+                if !active_row_highlights.is_empty() {
+                    let mut smallest_len = usize::MAX;
+                    for (range, color) in active_row_highlights.iter() {
+                        if range.start < item_end_offset && range.end > item_start_offset {
+                            let len = range.end.saturating_sub(range.start);
+                            if len <= smallest_len {
+                                smallest_len = len;
+                                bg_color = *color;
+                                current_hl_color = Some(*color);
+                            }
                         }
-                        (if show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
-                    };
-
-                    let base_x = bounds.left() + px(8.0);
-                    let hex_start_x = base_x + px(offset_w + gap);
-                    let hex_end_x = hex_start_x + px(hex_col_width);
-                    let (comment_start_x, ascii_width) = if is_struct_mode {
-                        let desc_start_x = hex_end_x + px(gap);
-                        let comment_start_x = desc_start_x + px(desc_col_width + gap);
-                        (comment_start_x, 0.0)
-                    } else {
-                        let ascii_w = if show_ascii { _max_bytes_per_row as f32 * 10.0 } else { 0.0 };
-                        let comment_start_x = if show_ascii {
-                            hex_end_x + px(gap + ascii_w + gap)
-                        } else {
-                            hex_end_x + px(gap)
-                        };
-                        (comment_start_x, ascii_w)
-                    };
-
-                    // Vertical Column Divider Borders (matching header splitters exactly)
-                    let border_line_color = border_color.opacity(0.4);
-                    if is_struct_mode || show_offset {
-                        let div1_x = base_x + px(offset_w + (gap / 2.0));
-                        window.paint_quad(gpui::fill(
-                            Bounds::new(point(div1_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
-                        ));
                     }
-                    let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                        border_line_color,
-                    ));
-                    if is_struct_mode {
-                        let desc_start_x = hex_end_x + px(gap);
-                        let div3_x = desc_start_x + px(desc_col_width + (gap / 2.0));
-                        let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
-                        window.paint_quad(gpui::fill(
-                            Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
-                        ));
-                        window.paint_quad(gpui::fill(
-                            Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
-                        ));
+                }
+
+                let next_start_offset = item_end_offset;
+                let next_is_selected = is_selected && min_sel <= max_sel && next_start_offset <= max_sel && (chunk_idx + item_slice_len < chunk.len());
+                let next_has_same_highlight = if let Some(cur_col) = current_hl_color {
+                    if chunk_idx + item_slice_len < chunk.len() {
+                        let mut next_col = None;
+                        let mut smallest_len = usize::MAX;
+                        for (range, color) in active_row_highlights.iter() {
+                            if range.start < next_start_offset + 1 && range.end > next_start_offset {
+                                let len = range.end.saturating_sub(range.start);
+                                if len <= smallest_len {
+                                    smallest_len = len;
+                                    next_col = Some(*color);
+                                }
+                            }
+                        }
+                        next_col == Some(cur_col)
                     } else {
-                        if show_ascii {
-                            let div3_x = hex_end_x + px(gap + ascii_width + (gap / 2.0));
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                let fill_width = if next_is_selected || next_has_same_highlight { item_step } else { item_width };
+                let item_draw_x = hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step);
+
+                let item_fill_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(fill_width), px(ROW_HEIGHT - 2.0)));
+
+                let item_box_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(item_width), px(ROW_HEIGHT - 2.0)));
+
+                if bg_color.a > 0.0 {
+                    window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
+                }
+
+                if is_cursor {
+                    let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                    paint_border_box(window, item_box_bounds, px(1.5), cursor_border_color);
+                }
+
+                chunk_idx += item_slice_len;
+                item_idx += 1;
+            }
+
+            // 3. Text Pass for Data Items
+            let mut chunk_idx = 0;
+            let mut item_idx = 0;
+            while chunk_idx < chunk.len() {
+                let item_start_offset = offset + chunk_idx;
+                let start_slot = item_start_offset % group_bytes;
+                let max_in_group = group_bytes - start_slot;
+                let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
+                let item_slice = &chunk[chunk_idx..chunk_idx + item_slice_len];
+                let item_end_offset = item_start_offset + item_slice_len;
+
+                let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
+                let is_zero = is_group_zero(item_slice);
+
+                let text_color = if is_cursor && is_focused {
+                    fg_color
+                } else if is_zero {
+                    muted_color.opacity(0.5)
+                } else {
+                    fg_color
+                };
+
+                let item_str = SharedString::from(format_group(item_slice, start_slot, radix, group_size, is_big_endian));
+                let run = gpui::TextRun {
+                    len: item_str.len(),
+                    font: font.clone(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped_item = window.text_system().shape_line(item_str, font_size, &[run], None);
+                let item_pos = point(hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
+                let _ = shaped_item.paint(item_pos, line_height, window, cx);
+
+                chunk_idx += item_slice_len;
+                item_idx += 1;
+            }
+
+            // Left-edge subtle gradient fade when hex_scroll_x > 1.0
+            if hex_scroll_x > 1.0 {
+                let bg = bg_color_theme;
+                for step in 0..5 {
+                    let x = hex_start_x + px(step as f32 * 3.2);
+                    let alpha = 1.0 - (step as f32 / 5.0);
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                        bg.opacity(alpha * 0.95),
+                    ));
+                }
+            }
+
+            // Right-edge subtle gradient fade when row data overflows hex_col_width
+            let total_row_data_width = item_idx as f32 * item_step;
+            if hex_scroll_x + hex_col_width < total_row_data_width - 1.0 {
+                let fade_w = 22.0;
+                let fade_start = hex_end_x - px(fade_w);
+                let bg = bg_color_theme;
+                for step in 0..6 {
+                    let x = fade_start + px(step as f32 * 3.6);
+                    let alpha = (step + 1) as f32 / 7.0;
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(x, bounds.top()), size(px(3.8), px(ROW_HEIGHT))),
+                        bg.opacity(alpha * 0.95),
+                    ));
+                }
+            }
+        });
+
+        // 3. ASCII Column (when not in structure definition mode and ASCII view is enabled)
+        if !is_struct_mode && show_ascii {
+            let ascii_start_x = hex_end_x + px(gap);
+            let char_map: Vec<Option<(char, usize)>> = {
+                let mut map = vec![None; chunk.len()];
+                let mut j = 0;
+                while j < chunk.len() {
+                    if let Some((c, byte_len)) = encoding.decode_char_at(&chunk, j) {
+                        map[j] = Some((c, byte_len));
+                        j += byte_len.max(1);
+                    } else {
+                        j += 1;
+                    }
+                }
+                map
+            };
+
+            for (j, _) in chunk.iter().enumerate() {
+                let byte_pos = offset + j;
+                let is_cursor = byte_pos == cursor_offset;
+                let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
+
+                let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
+
+                if !active_row_highlights.is_empty() {
+                    let mut smallest_len = usize::MAX;
+                    for (range, color) in active_row_highlights.iter() {
+                        if range.contains(&byte_pos) {
+                            let len = range.end.saturating_sub(range.start);
+                            if len <= smallest_len {
+                                smallest_len = len;
+                                bg_color = *color;
+                            }
+                        }
+                    }
+                }
+
+                let ascii_item_bounds = Bounds::new(
+                    point(ascii_start_x + px(j as f32 * 10.0), bounds.top() + px(1.0)),
+                    size(px(10.0), px(ROW_HEIGHT - 2.0)),
+                );
+
+                if bg_color.a > 0.0 {
+                    window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
+                }
+
+                if is_cursor {
+                    let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                    paint_border_box(window, ascii_item_bounds, px(1.5), cursor_border_color);
+                }
+            }
+
+            for (j, opt) in char_map.into_iter().enumerate() {
+                if let Some((c, _)) = opt {
+                    let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
+                    let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
+
+                    let char_str = SharedString::from(c.to_string());
+                    let run = gpui::TextRun {
+                        len: char_str.len(),
+                        font: font.clone(),
+                        color: text_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped_ascii = window.text_system().shape_line(char_str, font_size, &[run], None);
+                    let ascii_pos = point(ascii_start_x + px(j as f32 * 10.0 + 1.0), bounds.top() + px(2.0));
+                    let _ = shaped_ascii.paint(ascii_pos, line_height, window, cx);
+                }
+            }
+        }
+
+        // 4. Description Column (when structure definition is present)
+        if let Some(ref parse_res) = parse_result {
+            let desc_start_x = hex_end_x + px(SECTION_GAP);
+            let desc_end_x = desc_start_x + px(desc_col_width);
+
+            let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
+            let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
+            let leaf_fields = parse_res.find_leaf_fields_starting_at(offset, chunk_len);
+
+            let is_collapsed = container_structs
+                .first()
+                .map(|c| collapsed_structs_arc.as_ref().map(|s| s.contains(&c.id)).unwrap_or(false))
+                .unwrap_or(false);
+
+            let struct_depth = active_ranges.len().saturating_sub(1);
+            let indent_level = if !container_structs.is_empty() {
+                active_ranges
+                    .iter()
+                    .find(|r| container_structs.first().map(|c| c.id == r.3).unwrap_or(false))
+                    .map(|r| r.2)
+                    .unwrap_or(struct_depth)
+            } else {
+                active_ranges.len()
+            };
+            let indent_px = indent_level as f32 * 14.0;
+
+            let mut desc_parts = Vec::new();
+            if let Some(container) = container_structs.first() {
+                let icon = if is_collapsed { "▶" } else { "▼" };
+                if is_collapsed {
+                    desc_parts.push(format!("{} {} ({} bytes)", icon, container.id, container.size));
+                } else {
+                    desc_parts.push(format!("{} {}", icon, container.id));
+                }
+            }
+            if !is_collapsed {
+                for f in &leaf_fields {
+                    desc_parts.push(f.format_expression());
+                }
+            }
+
+            if !desc_parts.is_empty() {
+                let expr_shared = SharedString::from(desc_parts.join("  "));
+                let text_color = if !container_structs.is_empty() { accent_fg_color } else { fg_color };
+                let run = gpui::TextRun {
+                    len: expr_shared.len(),
+                    font: font.clone(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped_expr = window.text_system().shape_line(expr_shared, font_size, &[run], None);
+                let desc_mask_bounds = Bounds::new(point(desc_start_x, bounds.top()), size(px(desc_col_width), px(ROW_HEIGHT)));
+                let desc_text_width = f32::from(shaped_expr.width) + indent_px + 8.0;
+
+                window.with_content_mask(Some(gpui::ContentMask { bounds: desc_mask_bounds }), |window| {
+                    let _ = shaped_expr.paint(
+                        point(desc_start_x - px(desc_scroll_x) + px(indent_px), bounds.top() + px(2.0)),
+                        line_height,
+                        window,
+                        cx,
+                    );
+
+                    // Left fade
+                    if desc_scroll_x > 1.0 {
+                        let bg = bg_color_theme;
+                        for step in 0..5 {
+                            let x = desc_start_x + px(step as f32 * 3.2);
+                            let alpha = 1.0 - (step as f32 / 5.0);
                             window.paint_quad(gpui::fill(
-                                Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                                border_line_color,
+                                Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                                bg.opacity(alpha * 0.95),
                             ));
                         }
-                        let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
+                    }
+
+                    // Right fade
+                    if desc_scroll_x + desc_col_width < desc_text_width - 1.0 {
+                        let fade_w = 20.0;
+                        let fade_start = desc_end_x - px(fade_w);
+                        let bg = bg_color_theme;
+                        for step in 0..5 {
+                            let x = fade_start + px(step as f32 * 4.0);
+                            let alpha = (step + 1) as f32 / 6.0;
+                            window.paint_quad(gpui::fill(
+                                Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
+                                bg.opacity(alpha * 0.95),
+                            ));
+                        }
+                    }
+                });
+            }
+        }
+
+        // 5. Highlight Comments Column
+        let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items_arc
+            .iter()
+            .filter(|h| {
+                if h.comment.trim().is_empty() {
+                    return false;
+                }
+                let h_start_row = Editor::find_line_index(h.offset, &line_starts_clone);
+                let h_end_offset = h.offset.saturating_add(h.size);
+                let h_last_byte = h_end_offset.saturating_sub(1).max(h.offset);
+                let h_end_row = Editor::find_line_index(h_last_byte, &line_starts_clone);
+                let display_row = h_start_row.max(top_visible_row);
+                row_idx == display_row && row_idx <= h_end_row
+            })
+            .map(|h| (h.color.to_badge_hsla(), SharedString::from(h.comment.trim().to_string())))
+            .collect();
+
+        if !row_highlight_comments.is_empty() {
+            let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
+            let comment_end_x = comment_start_x + px(comment_col_width);
+
+            let dot_size = 8.0;
+            let dot_radius = 4.0;
+            let dot_margin_right = 5.0;
+            let item_spacing = 14.0;
+
+            let mut shaped_items = Vec::new();
+            let mut total_content_width = 4.0;
+
+            for (badge_color, comment_shared) in &row_highlight_comments {
+                let run = gpui::TextRun {
+                    len: comment_shared.len(),
+                    font: font.clone(),
+                    color: muted_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped_comment = window.text_system().shape_line(comment_shared.clone(), font_size, &[run], None);
+                let text_w = f32::from(shaped_comment.width);
+                shaped_items.push((*badge_color, shaped_comment, text_w));
+                total_content_width += dot_size + dot_margin_right + text_w + item_spacing;
+            }
+            let comment_text_width = total_content_width;
+
+            window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
+                let mut cur_x = comment_start_x - px(comment_scroll_x) + px(4.0);
+                let dot_y = bounds.top() + px((ROW_HEIGHT - dot_size) / 2.0);
+
+                for (badge_color, shaped_comment, text_w) in shaped_items {
+                    // Highlight colored circle dot
+                    let dot_bounds = Bounds::new(point(cur_x, dot_y), size(px(dot_size), px(dot_size)));
+                    let mut dot_quad = gpui::fill(dot_bounds, badge_color);
+                    dot_quad.corner_radii = gpui::Corners {
+                        top_left: px(dot_radius),
+                        top_right: px(dot_radius),
+                        bottom_left: px(dot_radius),
+                        bottom_right: px(dot_radius),
+                    };
+                    window.paint_quad(dot_quad);
+
+                    // Comment text
+                    let text_x = cur_x + px(dot_size + dot_margin_right);
+                    let _ = shaped_comment.paint(point(text_x, bounds.top() + px(2.0)), line_height, window, cx);
+
+                    cur_x = text_x + px(text_w + item_spacing);
+                }
+
+                // Left fade
+                if comment_scroll_x > 1.0 {
+                    let bg = bg_color_theme;
+                    for step in 0..5 {
+                        let x = comment_start_x + px(step as f32 * 3.2);
+                        let alpha = 1.0 - (step as f32 / 5.0);
                         window.paint_quad(gpui::fill(
-                            Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
+                            Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
+                            bg.opacity(alpha * 0.95),
                         ));
                     }
+                }
 
-                    // 2. Background Quads Pass for Data Items (with clipping mask)
-                    let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
-                    let group_bytes = group_size.byte_count();
-                    let (item_width, item_gap) = item_metrics(radix, group_size, font_size);
-                    let item_step = item_width + item_gap;
-
-                    window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
-                        let mut chunk_idx = 0;
-                        let mut item_idx = 0;
-                        while chunk_idx < chunk.len() {
-                            let item_start_offset = offset + chunk_idx;
-                            let start_slot = item_start_offset % group_bytes;
-                            let max_in_group = group_bytes - start_slot;
-                            let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
-                            let item_end_offset = item_start_offset + item_slice_len;
-
-                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-                            let is_selected = if min_sel <= max_sel {
-                                let sel_start = min_sel;
-                                let sel_end = max_sel;
-                                item_start_offset <= sel_end && item_end_offset > sel_start
-                            } else {
-                                false
-                            };
-
-                            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
-                            let mut current_hl_color = None;
-
-                            if !active_row_highlights.is_empty() {
-                                let mut smallest_len = usize::MAX;
-                                for (range, color) in active_row_highlights.iter() {
-                                    if range.start < item_end_offset && range.end > item_start_offset {
-                                        let len = range.end.saturating_sub(range.start);
-                                        if len <= smallest_len {
-                                            smallest_len = len;
-                                            bg_color = *color;
-                                            current_hl_color = Some(*color);
-                                        }
-                                    }
-                                }
-                            }
-
-                            let next_start_offset = item_end_offset;
-                            let next_is_selected =
-                                is_selected && min_sel <= max_sel && next_start_offset <= max_sel && (chunk_idx + item_slice_len < chunk.len());
-                            let next_has_same_highlight = if let Some(cur_col) = current_hl_color {
-                                if chunk_idx + item_slice_len < chunk.len() {
-                                    let mut next_col = None;
-                                    let mut smallest_len = usize::MAX;
-                                    for (range, color) in active_row_highlights.iter() {
-                                        if range.start < next_start_offset + 1 && range.end > next_start_offset {
-                                            let len = range.end.saturating_sub(range.start);
-                                            if len <= smallest_len {
-                                                smallest_len = len;
-                                                next_col = Some(*color);
-                                            }
-                                        }
-                                    }
-                                    next_col == Some(cur_col)
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
-
-                            let fill_width = if next_is_selected || next_has_same_highlight { item_step } else { item_width };
-                            let item_draw_x = hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step);
-
-                            let item_fill_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(fill_width), px(ROW_HEIGHT - 2.0)));
-
-                            let item_box_bounds = Bounds::new(point(item_draw_x, bounds.top() + px(1.0)), size(px(item_width), px(ROW_HEIGHT - 2.0)));
-
-                            if bg_color.a > 0.0 {
-                                window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
-                            }
-
-                            if is_cursor {
-                                let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
-                                paint_border_box(window, item_box_bounds, px(1.5), cursor_border_color);
-                            }
-
-                            chunk_idx += item_slice_len;
-                            item_idx += 1;
-                        }
-
-                        // 3. Text Pass for Data Items
-                        let mut chunk_idx = 0;
-                        let mut item_idx = 0;
-                        while chunk_idx < chunk.len() {
-                            let item_start_offset = offset + chunk_idx;
-                            let start_slot = item_start_offset % group_bytes;
-                            let max_in_group = group_bytes - start_slot;
-                            let item_slice_len = (chunk.len() - chunk_idx).min(max_in_group);
-                            let item_slice = &chunk[chunk_idx..chunk_idx + item_slice_len];
-                            let item_end_offset = item_start_offset + item_slice_len;
-
-                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-                            let is_zero = is_group_zero(item_slice);
-
-                            let text_color = if is_cursor && is_focused {
-                                fg_color
-                            } else if is_zero {
-                                muted_color.opacity(0.5)
-                            } else {
-                                fg_color
-                            };
-
-                            let item_str = SharedString::from(format_group(item_slice, start_slot, radix, group_size, is_big_endian));
-                            let run = gpui::TextRun {
-                                len: item_str.len(),
-                                font: font.clone(),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped_item = window.text_system().shape_line(item_str, font_size, &[run], None);
-                            let item_pos = point(hex_start_x - px(hex_scroll_x) + px(item_idx as f32 * item_step + 3.0), bounds.top() + px(2.0));
-                            let _ = shaped_item.paint(item_pos, line_height, window, cx);
-
-                            chunk_idx += item_slice_len;
-                            item_idx += 1;
-                        }
-
-                        // Left-edge subtle gradient fade when hex_scroll_x > 1.0
-                        if hex_scroll_x > 1.0 {
-                            let bg = bg_color_theme;
-                            for step in 0..5 {
-                                let x = hex_start_x + px(step as f32 * 3.2);
-                                let alpha = 1.0 - (step as f32 / 5.0);
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-
-                        // Right-edge subtle gradient fade when row data overflows hex_col_width
-                        let total_row_data_width = item_idx as f32 * item_step;
-                        if hex_scroll_x + hex_col_width < total_row_data_width - 1.0 {
-                            let fade_w = 22.0;
-                            let fade_start = hex_end_x - px(fade_w);
-                            let bg = bg_color_theme;
-                            for step in 0..6 {
-                                let x = fade_start + px(step as f32 * 3.6);
-                                let alpha = (step + 1) as f32 / 7.0;
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(3.8), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-                    });
-
-                    // 3. ASCII Column (when not in structure definition mode and ASCII view is enabled)
-                    if !is_struct_mode && show_ascii {
-                        let ascii_start_x = hex_end_x + px(gap);
-                        let char_map: Vec<Option<(char, usize)>> = {
-                            let mut map = vec![None; chunk.len()];
-                            let mut j = 0;
-                            while j < chunk.len() {
-                                if let Some((c, byte_len)) = encoding.decode_char_at(&chunk, j) {
-                                    map[j] = Some((c, byte_len));
-                                    j += byte_len.max(1);
-                                } else {
-                                    j += 1;
-                                }
-                            }
-                            map
-                        };
-
-                        for (j, _) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
-                            let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
-
-                            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
-
-                            if !active_row_highlights.is_empty() {
-                                let mut smallest_len = usize::MAX;
-                                for (range, color) in active_row_highlights.iter() {
-                                    if range.contains(&byte_pos) {
-                                        let len = range.end.saturating_sub(range.start);
-                                        if len <= smallest_len {
-                                            smallest_len = len;
-                                            bg_color = *color;
-                                        }
-                                    }
-                                }
-                            }
-
-                            let ascii_item_bounds = Bounds::new(
-                                point(ascii_start_x + px(j as f32 * 10.0), bounds.top() + px(1.0)),
-                                size(px(10.0), px(ROW_HEIGHT - 2.0)),
-                            );
-
-                            if bg_color.a > 0.0 {
-                                window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
-                            }
-
-                            if is_cursor {
-                                let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
-                                paint_border_box(window, ascii_item_bounds, px(1.5), cursor_border_color);
-                            }
-                        }
-
-                        for (j, opt) in char_map.into_iter().enumerate() {
-                            if let Some((c, _)) = opt {
-                                let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
-                                let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
-
-                                let char_str = SharedString::from(c.to_string());
-                                let run = gpui::TextRun {
-                                    len: char_str.len(),
-                                    font: font.clone(),
-                                    color: text_color,
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                };
-                                let shaped_ascii = window.text_system().shape_line(char_str, font_size, &[run], None);
-                                let ascii_pos = point(ascii_start_x + px(j as f32 * 10.0 + 1.0), bounds.top() + px(2.0));
-                                let _ = shaped_ascii.paint(ascii_pos, line_height, window, cx);
-                            }
-                        }
+                // Right fade
+                if comment_scroll_x + comment_col_width < comment_text_width - 1.0 {
+                    let fade_w = 20.0;
+                    let fade_start = comment_end_x - px(fade_w);
+                    let bg = bg_color_theme;
+                    for step in 0..5 {
+                        let x = fade_start + px(step as f32 * 4.0);
+                        let alpha = (step + 1) as f32 / 6.0;
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
+                            bg.opacity(alpha * 0.95),
+                        ));
                     }
+                }
+            });
+        }
+    }
 
-                    // 4. Description Column (when structure definition is present)
-                    if let Some(ref parse_res) = parse_result {
-                        let desc_start_x = hex_end_x + px(SECTION_GAP);
-                        let desc_end_x = desc_start_x + px(desc_col_width);
+    fn paint_scrollbar(
+        list_bounds: Bounds<Pixels>,
+        scroll_offset: usize,
+        total_rows: usize,
+        is_dragging: bool,
+        is_hovered: bool,
+        theme: &gpui_component::Theme,
+        window: &mut Window,
+    ) {
+        let list_h = f32::from(list_bounds.size.height);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+        if total_rows <= visible_rows || list_h <= 0.0 {
+            return;
+        }
+        let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+        let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
+        let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
+        let max_thumb_top = (list_h - thumb_h).max(0.0);
 
-                        let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
-                        let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
-                        let leaf_fields = parse_res.find_leaf_fields_starting_at(offset, chunk_len);
+        let scroll_ratio = if max_top_row > 0 {
+            (scroll_offset as f64 / max_top_row as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let thumb_top = (scroll_ratio * max_thumb_top as f64) as f32;
 
-                        let is_collapsed = container_structs
-                            .first()
-                            .map(|c| collapsed_structs_arc.as_ref().map(|s| s.contains(&c.id)).unwrap_or(false))
-                            .unwrap_or(false);
+        let bar_w = 10.0;
+        let bar_x = list_bounds.right() - px(bar_w);
+        let bar_bounds = Bounds::new(point(bar_x, list_bounds.top()), size(px(bar_w), list_bounds.size.height));
 
-                        let struct_depth = active_ranges.len().saturating_sub(1);
-                        let indent_level = if !container_structs.is_empty() {
-                            active_ranges
-                                .iter()
-                                .find(|r| container_structs.first().map(|c| c.id == r.3).unwrap_or(false))
-                                .map(|r| r.2)
-                                .unwrap_or(struct_depth)
-                        } else {
-                            active_ranges.len()
-                        };
-                        let indent_px = indent_level as f32 * 14.0;
+        if is_hovered || is_dragging {
+            window.paint_quad(gpui::fill(bar_bounds, theme.border.opacity(0.15)));
+        }
 
-                        let mut desc_parts = Vec::new();
-                        if let Some(container) = container_structs.first() {
-                            let icon = if is_collapsed { "▶" } else { "▼" };
-                            if is_collapsed {
-                                desc_parts.push(format!("{} {} ({} bytes)", icon, container.id, container.size));
-                            } else {
-                                desc_parts.push(format!("{} {}", icon, container.id));
-                            }
-                        }
-                        if !is_collapsed {
-                            for f in &leaf_fields {
-                                desc_parts.push(f.format_expression());
-                            }
-                        }
-
-                        if !desc_parts.is_empty() {
-                            let expr_shared = SharedString::from(desc_parts.join("  "));
-                            let text_color = if !container_structs.is_empty() { accent_fg_color } else { fg_color };
-                            let run = gpui::TextRun {
-                                len: expr_shared.len(),
-                                font: font.clone(),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped_expr = window.text_system().shape_line(expr_shared, font_size, &[run], None);
-                            let desc_mask_bounds = Bounds::new(point(desc_start_x, bounds.top()), size(px(desc_col_width), px(ROW_HEIGHT)));
-                            let desc_text_width = f32::from(shaped_expr.width) + indent_px + 8.0;
-
-                            window.with_content_mask(Some(gpui::ContentMask { bounds: desc_mask_bounds }), |window| {
-                                let _ = shaped_expr.paint(
-                                    point(desc_start_x - px(desc_scroll_x) + px(indent_px), bounds.top() + px(2.0)),
-                                    line_height,
-                                    window,
-                                    cx,
-                                );
-
-                                // Left fade
-                                if desc_scroll_x > 1.0 {
-                                    let bg = bg_color_theme;
-                                    for step in 0..5 {
-                                        let x = desc_start_x + px(step as f32 * 3.2);
-                                        let alpha = 1.0 - (step as f32 / 5.0);
-                                        window.paint_quad(gpui::fill(
-                                            Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                            bg.opacity(alpha * 0.95),
-                                        ));
-                                    }
-                                }
-
-                                // Right fade
-                                if desc_scroll_x + desc_col_width < desc_text_width - 1.0 {
-                                    let fade_w = 20.0;
-                                    let fade_start = desc_end_x - px(fade_w);
-                                    let bg = bg_color_theme;
-                                    for step in 0..5 {
-                                        let x = fade_start + px(step as f32 * 4.0);
-                                        let alpha = (step + 1) as f32 / 6.0;
-                                        window.paint_quad(gpui::fill(
-                                            Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
-                                            bg.opacity(alpha * 0.95),
-                                        ));
-                                    }
-                                }
-                            });
-                        }
-                    }
-
-                    // 5. Highlight Comments Column
-                    // Only display comment once per highlight in the visible range:
-                    // - On the highlight's starting row if visible (>= top_visible_row)
-                    // - Or on top_visible_row if the highlight started before top_visible_row but extends into it
-                    let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items_arc
-                        .iter()
-                        .filter(|h| {
-                            if h.comment.trim().is_empty() {
-                                return false;
-                            }
-                            let h_start_row = Editor::find_line_index(h.offset, &line_starts_clone);
-                            let h_end_offset = h.offset.saturating_add(h.size);
-                            let h_last_byte = h_end_offset.saturating_sub(1).max(h.offset);
-                            let h_end_row = Editor::find_line_index(h_last_byte, &line_starts_clone);
-                            let display_row = h_start_row.max(top_visible_row);
-                            row_idx == display_row && row_idx <= h_end_row
-                        })
-                        .map(|h| (h.color.to_badge_hsla(), SharedString::from(h.comment.trim().to_string())))
-                        .collect();
-
-                    if !row_highlight_comments.is_empty() {
-                        let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
-                        let comment_end_x = comment_start_x + px(comment_col_width);
-
-                        let dot_size = 8.0;
-                        let dot_radius = 4.0;
-                        let dot_margin_right = 5.0;
-                        let item_spacing = 14.0;
-
-                        let mut shaped_items = Vec::new();
-                        let mut total_content_width = 4.0;
-
-                        for (badge_color, comment_shared) in &row_highlight_comments {
-                            let run = gpui::TextRun {
-                                len: comment_shared.len(),
-                                font: font.clone(),
-                                color: muted_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped_comment = window.text_system().shape_line(comment_shared.clone(), font_size, &[run], None);
-                            let text_w = f32::from(shaped_comment.width);
-                            shaped_items.push((*badge_color, shaped_comment, text_w));
-                            total_content_width += dot_size + dot_margin_right + text_w + item_spacing;
-                        }
-                        let comment_text_width = total_content_width;
-
-                        window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
-                            let mut cur_x = comment_start_x - px(comment_scroll_x) + px(4.0);
-                            let dot_y = bounds.top() + px((ROW_HEIGHT - dot_size) / 2.0);
-
-                            for (badge_color, shaped_comment, text_w) in shaped_items {
-                                // Highlight colored circle dot
-                                let dot_bounds = Bounds::new(point(cur_x, dot_y), size(px(dot_size), px(dot_size)));
-                                let mut dot_quad = gpui::fill(dot_bounds, badge_color);
-                                dot_quad.corner_radii = gpui::Corners {
-                                    top_left: px(dot_radius),
-                                    top_right: px(dot_radius),
-                                    bottom_left: px(dot_radius),
-                                    bottom_right: px(dot_radius),
-                                };
-                                window.paint_quad(dot_quad);
-
-                                // Comment text
-                                let text_x = cur_x + px(dot_size + dot_margin_right);
-                                let _ = shaped_comment.paint(point(text_x, bounds.top() + px(2.0)), line_height, window, cx);
-
-                                cur_x = text_x + px(text_w + item_spacing);
-                            }
-
-                            // Left fade
-                            if comment_scroll_x > 1.0 {
-                                let bg = bg_color_theme;
-                                for step in 0..5 {
-                                    let x = comment_start_x + px(step as f32 * 3.2);
-                                    let alpha = 1.0 - (step as f32 / 5.0);
-                                    window.paint_quad(gpui::fill(
-                                        Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                        bg.opacity(alpha * 0.95),
-                                    ));
-                                }
-                            }
-
-                            // Right fade
-                            if comment_scroll_x + comment_col_width < comment_text_width - 1.0 {
-                                let fade_w = 20.0;
-                                let fade_start = comment_end_x - px(fade_w);
-                                let bg = bg_color_theme;
-                                for step in 0..5 {
-                                    let x = fade_start + px(step as f32 * 4.0);
-                                    let alpha = (step + 1) as f32 / 6.0;
-                                    window.paint_quad(gpui::fill(
-                                        Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
-                                        bg.opacity(alpha * 0.95),
-                                    ));
-                                }
-                            }
-                        });
-                    }
-                },
-            ))
-            .into_any_element()
+        let thumb_bounds = Bounds::new(point(bar_x + px(2.0), list_bounds.top() + px(thumb_top)), size(px(6.0), px(thumb_h)));
+        let thumb_color = if is_dragging {
+            theme.muted_foreground.opacity(0.85)
+        } else if is_hovered {
+            theme.muted_foreground.opacity(0.7)
+        } else {
+            theme.border.opacity(0.6)
+        };
+        let mut quad = gpui::fill(thumb_bounds, thumb_color);
+        quad.corner_radii = gpui::Corners::all(px(3.0));
+        window.paint_quad(quad);
     }
 }
 
@@ -1862,25 +1953,6 @@ impl Render for HexView {
                 editor.show_inline_structure_view && editor.parse_result.is_some(),
             )
         };
-
-        let total_width = {
-            let mut w = 8.0;
-            if is_struct_mode {
-                w += self.address_col_width + SECTION_GAP;
-            } else if self.show_offset {
-                w += OFFSET_WIDTH + SECTION_GAP;
-            }
-            w += self.hex_col_width + SECTION_GAP;
-            if is_struct_mode {
-                w += self.desc_col_width + SECTION_GAP;
-            } else if self.show_ascii {
-                w += (max_bytes_per_row as f32 * 10.0) + SECTION_GAP;
-            }
-            w += self.comment_col_width + SECTION_GAP;
-            w + 16.0
-        };
-
-        let total_height = total_rows as f32 * ROW_HEIGHT;
 
         let container = div()
             .flex()
@@ -2187,13 +2259,6 @@ impl Render for HexView {
             div().into_any_element()
         };
 
-        let focus_handle = self.focus_handle.clone();
-        let show_offset = self.show_offset;
-        let show_ascii = self.show_ascii;
-        let encoding = self.encoding;
-        let highlights = self.highlights.clone();
-        let max_highlight_len = self.max_highlight_len;
-
         let bounds_view = view.clone();
         let list_bounds_view = view.clone();
 
@@ -2262,6 +2327,52 @@ impl Render for HexView {
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.focus_handle.focus(window);
+
+                    // スクロールバー領域（右端12px）でのクリック判定
+                    if let Some(list_b) = this.list_bounds.get() {
+                        let click_x = f32::from(event.position.x);
+                        let bar_x = f32::from(list_b.right()) - 12.0;
+                        if click_x >= bar_x {
+                            let click_y = f32::from(event.position.y);
+                            let list_top = f32::from(list_b.top());
+                            let rel_y = click_y - list_top;
+                            let list_h = f32::from(list_b.size.height);
+
+                            let total_rows = this.editor.read(cx).line_starts().len().max(1);
+                            let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+                            let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+                            let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
+                            let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
+                            let max_thumb_top = (list_h - thumb_h).max(0.0);
+
+                            let cur_thumb_top = if max_top_row > 0 {
+                                ((this.scroll_offset as f64 / max_top_row as f64) * max_thumb_top as f64) as f32
+                            } else {
+                                0.0
+                            };
+
+                            if rel_y >= cur_thumb_top && rel_y <= cur_thumb_top + thumb_h {
+                                this.is_dragging_scrollbar = true;
+                                this.scrollbar_drag_start_y = click_y;
+                                this.scrollbar_drag_start_row = this.scroll_offset;
+                            } else {
+                                let target_thumb_top = (rel_y - thumb_h / 2.0).clamp(0.0, max_thumb_top);
+                                let new_ratio = if max_thumb_top > 0.0 {
+                                    target_thumb_top as f64 / max_thumb_top as f64
+                                } else {
+                                    0.0
+                                };
+                                let new_row = (new_ratio * max_top_row as f64).round() as usize;
+                                this.scroll_to_row(new_row, cx);
+                                this.is_dragging_scrollbar = true;
+                                this.scrollbar_drag_start_y = click_y;
+                                this.scrollbar_drag_start_row = new_row;
+                            }
+                            cx.notify();
+                            return;
+                        }
+                    }
+
                     if let Some(target_pos) = this.offset_from_point(event.position, cx) {
                         this.is_selecting = true;
                         this.editor.update(cx, |editor, cx| {
@@ -2300,6 +2411,35 @@ impl Render for HexView {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.is_dragging_scrollbar {
+                    let current_y = f32::from(event.position.y);
+                    let delta_y = current_y - this.scrollbar_drag_start_y;
+                    let total_rows = this.editor.read(cx).line_starts().len().max(1);
+                    let list_h = this.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+                    let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+                    let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
+                    let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
+                    let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
+                    let max_thumb_top = (list_h - thumb_h).max(0.0);
+
+                    if max_thumb_top > 0.0 && max_top_row > 0 {
+                        let delta_ratio = delta_y as f64 / max_thumb_top as f64;
+                        let delta_rows = delta_ratio * max_top_row as f64;
+                        let new_row = ((this.scrollbar_drag_start_row as f64 + delta_rows).round() as isize).clamp(0, max_top_row as isize) as usize;
+                        this.scroll_to_row(new_row, cx);
+                    }
+                    return;
+                }
+
+                if let Some(list_b) = this.list_bounds.get() {
+                    let pos = event.position;
+                    let is_in_bar = pos.x >= list_b.right() - px(12.0) && pos.x <= list_b.right() && pos.y >= list_b.top() && pos.y <= list_b.bottom();
+                    if this.scrollbar_hovered != is_in_bar {
+                        this.scrollbar_hovered = is_in_bar;
+                        cx.notify();
+                    }
+                }
+
                 if let Some((col, start_x, start_w)) = this.resizing_column {
                     let current_x: f32 = event.position.x.into();
                     let delta = current_x - start_x;
@@ -2321,21 +2461,42 @@ impl Render for HexView {
                     cx.notify();
                     return;
                 }
-                if this.is_selecting
-                    && let Some(target_pos) = this.offset_from_point(event.position, cx)
-                {
-                    this.editor.update(cx, |editor, cx| {
-                        let prev_end = editor.selection_end;
-                        if prev_end != Some(target_pos) {
-                            editor.continue_drag(target_pos);
-                            cx.notify();
+                if this.is_selecting {
+                    if let Some(list_b) = this.list_bounds.get() {
+                        let y = f32::from(event.position.y);
+                        let list_top = f32::from(list_b.top());
+                        let list_bottom = f32::from(list_b.bottom());
+                        if y < list_top {
+                            let rows_up = ((list_top - y) / ROW_HEIGHT).ceil() as usize;
+                            let new_row = this.scroll_offset.saturating_sub(rows_up.min(5));
+                            this.scroll_to_row(new_row, cx);
+                        } else if y > list_bottom {
+                            let rows_down = ((y - list_bottom) / ROW_HEIGHT).ceil() as usize;
+                            let total_rows = this.editor.read(cx).line_starts().len().max(1);
+                            let max_top_row = total_rows.saturating_sub(1);
+                            let new_row = (this.scroll_offset + rows_down.min(5)).min(max_top_row);
+                            this.scroll_to_row(new_row, cx);
                         }
-                    });
+                    }
+
+                    if let Some(target_pos) = this.offset_from_point(event.position, cx) {
+                        this.editor.update(cx, |editor, cx| {
+                            let prev_end = editor.selection_end;
+                            if prev_end != Some(target_pos) {
+                                editor.continue_drag(target_pos);
+                                cx.notify();
+                            }
+                        });
+                    }
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.is_dragging_scrollbar {
+                        this.is_dragging_scrollbar = false;
+                        cx.notify();
+                    }
                     if this.resizing_column.is_some() {
                         this.resizing_column = None;
                         cx.notify();
@@ -2364,108 +2525,103 @@ impl Render for HexView {
                 .inset_0(),
             )
             .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .relative()
-                    .overflow_hidden()
-                    .child(
-                        canvas(
-                            move |bounds, _window, cx| {
-                                list_bounds_view.update(cx, |this, _cx| {
-                                    this.list_bounds.set(Some(bounds));
-                                });
-                            },
-                            |_bounds, _prepaint, _window, _cx| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .child(
-                        uniform_list(
-                            if is_struct_mode { "hex-view-list-struct" } else { "hex-view-list-std" },
-                            total_rows,
-                            move |range, _window, cx| {
-                                let top_row = range.start;
-                                let bottom_row = range.end.saturating_sub(2);
-                                view.update(cx, |this, _cx| {
-                                    this.visible_range.set(Some((top_row, bottom_row)));
-                                });
-                                let view_read = view.read(cx);
-                                let hex_scroll_x = view_read.hex_scroll_x;
-                                let desc_scroll_x = view_read.desc_scroll_x;
-                                let comment_scroll_x = view_read.comment_scroll_x;
-                                let address_col_width = view_read.address_col_width;
-                                let hex_col_width = view_read.hex_col_width;
-                                let desc_col_width = view_read.desc_col_width;
-                                let comment_col_width = view_read.comment_col_width;
-                                let editor = view_read.editor.read(cx);
-                                let parse_result = editor.parse_result.clone();
-                                let collapsed_structs = Arc::new(editor.collapsed_struct_ids.clone());
-                                let highlight_items = Arc::new(editor.highlights.clone());
-                                let doc = editor.document.read().expect("document read lock");
-                                let line_starts = editor.line_starts();
-                                let cursor_offset = editor.cursor_offset;
-                                let radix = editor.radix;
-                                let group_size = editor.group_size;
-                                let is_big_endian = editor.is_big_endian;
-                                let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
-                                    if s <= e { (s, e) } else { (e, s) }
-                                } else {
-                                    (usize::MAX, usize::MIN)
-                                };
+            .child(div().flex_1().w_full().min_h_0().relative().overflow_hidden().child({
+                let editor_entity = self.editor.clone();
+                let scroll_offset = self.scroll_offset;
+                let hex_scroll_x = self.hex_scroll_x;
+                let desc_scroll_x = self.desc_scroll_x;
+                let comment_scroll_x = self.comment_scroll_x;
+                let address_col_width = self.address_col_width;
+                let hex_col_width = self.hex_col_width;
+                let desc_col_width = self.desc_col_width;
+                let comment_col_width = self.comment_col_width;
+                let show_offset = self.show_offset;
+                let show_ascii = self.show_ascii;
+                let encoding = self.encoding;
+                let radix = self.radix;
+                let group_size = self.group_size;
+                let is_big_endian = self.is_big_endian;
+                let max_highlight_len = self.max_highlight_len;
+                let highlights = self.highlights.clone();
+                let is_dragging_scrollbar = self.is_dragging_scrollbar;
+                let scrollbar_hovered = self.scrollbar_hovered;
 
-                                range
-                                    .map(|row_idx| {
-                                        Self::render_hex_row(
-                                            row_idx,
-                                            top_row,
-                                            &doc,
-                                            &line_starts,
-                                            parse_result.clone(),
-                                            Some(collapsed_structs.clone()),
-                                            max_bytes_per_row,
-                                            encoding,
-                                            radix,
-                                            group_size,
-                                            is_big_endian,
-                                            cursor_offset,
-                                            min_sel,
-                                            max_sel,
-                                            &highlights,
-                                            &highlight_items,
-                                            max_highlight_len,
-                                            show_offset,
-                                            show_ascii,
-                                            is_focused,
-                                            hex_scroll_x,
-                                            desc_scroll_x,
-                                            comment_scroll_x,
-                                            address_col_width,
-                                            hex_col_width,
-                                            desc_col_width,
-                                            comment_col_width,
-                                            &font_family,
-                                            font_size,
-                                            view.clone(),
-                                            &focus_handle,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                            },
-                        )
-                        .track_scroll(self.uniform_scroll_handle.clone())
-                        .size_full(),
-                    )
-                    .child(
-                        div().absolute().top_0().right_0().bottom_0().w_3().child(
-                            Scrollbar::vertical(&self.uniform_scroll_handle)
-                                .axis(ScrollbarAxis::Vertical)
-                                .scroll_size(size(px(total_width), px(total_height))),
-                        ),
-                    ),
-            )
+                canvas(
+                    move |bounds, _window, cx| {
+                        list_bounds_view.update(cx, |this, _cx| {
+                            this.list_bounds.set(Some(bounds));
+                        });
+                    },
+                    move |bounds, _prepaint, window, cx| {
+                        let (parse_result, collapsed_structs, highlight_items, doc_arc, line_starts, cursor_offset, min_sel, max_sel) = {
+                            let editor = editor_entity.read(cx);
+                            let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
+                                if s <= e { (s, e) } else { (e, s) }
+                            } else {
+                                (usize::MAX, usize::MIN)
+                            };
+                            (
+                                editor.parse_result.clone(),
+                                Some(Arc::new(editor.collapsed_struct_ids.clone())),
+                                Arc::new(editor.highlights.clone()),
+                                editor.document.clone(),
+                                editor.line_starts(),
+                                editor.cursor_offset,
+                                min_sel,
+                                max_sel,
+                            )
+                        };
+                        let doc = doc_arc.read().expect("document read lock");
+
+                        let list_h = f32::from(bounds.size.height);
+                        let visible_rows = (list_h / ROW_HEIGHT).ceil() as usize + 1;
+                        let top_row = scroll_offset.min(total_rows.saturating_sub(1));
+                        let end_row = (top_row + visible_rows).min(total_rows);
+
+                        for (k, row_idx) in (top_row..end_row).enumerate() {
+                            let row_y = bounds.top() + px(k as f32 * ROW_HEIGHT);
+                            let row_bounds = Bounds::new(point(bounds.left(), row_y), size(bounds.size.width, px(ROW_HEIGHT)));
+                            Self::paint_hex_row(
+                                row_idx,
+                                row_bounds,
+                                top_row,
+                                &doc,
+                                &line_starts,
+                                parse_result.clone(),
+                                collapsed_structs.clone(),
+                                max_bytes_per_row,
+                                encoding,
+                                radix,
+                                group_size,
+                                is_big_endian,
+                                cursor_offset,
+                                min_sel,
+                                max_sel,
+                                &highlights,
+                                &highlight_items,
+                                max_highlight_len,
+                                show_offset,
+                                show_ascii,
+                                is_focused,
+                                hex_scroll_x,
+                                desc_scroll_x,
+                                comment_scroll_x,
+                                address_col_width,
+                                hex_col_width,
+                                desc_col_width,
+                                comment_col_width,
+                                font_size,
+                                window,
+                                cx,
+                            );
+                        }
+
+                        let theme = cx.theme();
+                        Self::paint_scrollbar(bounds, top_row, total_rows, is_dragging_scrollbar, scrollbar_hovered, theme, window);
+                    },
+                )
+                .size_full()
+            }))
             .context_menu({
                 let focus_handle = self.focus_handle.clone();
                 move |menu, window, cx| {

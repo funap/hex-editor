@@ -1337,5 +1337,6 @@ types:
     assert_eq!(result.fields[1].children.len(), 4);
 
     println!("Parsed 50,000 nested records in {:?}", elapsed);
-    assert!(elapsed.as_secs_f64() < 2.0, "Parsing 50,000 records took too long: {:?}", elapsed);
+    let threshold = if cfg!(debug_assertions) { 5.0 } else { 2.0 };
+    assert!(elapsed.as_secs_f64() < threshold, "Parsing 50,000 records took too long: {:?}", elapsed);
 }

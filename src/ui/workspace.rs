@@ -27,6 +27,7 @@ pub struct Workspace {
     pub activity_bar: Entity<ActivityBar>,
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub is_left_panel_visible: bool,
+    focus_handle: FocusHandle,
 }
 
 pub fn init(cx: &mut App) {
@@ -36,16 +37,54 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-w", crate::actions::CloseActivePanel, None),
     ]);
 
+    cx.on_action::<OpenFileDialog>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_open_file_dialog(&OpenFileDialog, window, cx);
+        });
+    });
+    cx.on_action::<OpenFolder>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_open_folder(&OpenFolder, window, cx);
+        });
+    });
+    cx.on_action::<LoadStructureDefinition>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_load_structure_definition(&LoadStructureDefinition, window, cx);
+        });
+    });
+
     cx.activate(true);
+}
+
+fn defer_in_active_workspace(cx: &mut App, handler: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static) {
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+
+    cx.defer(move |cx| {
+        let Some(window) = window.downcast::<Root>() else {
+            return;
+        };
+
+        let _ = window.update(cx, |root, window, cx| {
+            let Ok(workspace) = root.view().clone().downcast::<Workspace>() else {
+                return;
+            };
+
+            workspace.update(cx, |workspace, cx| {
+                handler(workspace, window, cx);
+            });
+        });
+    });
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane_tree = cx.new(|_| PaneTree::new());
 
-        cx.subscribe_in(&pane_tree, window, |this, _, event: &PaneTreeEvent, _window, cx| match event {
+        cx.subscribe_in(&pane_tree, window, |this, _, event: &PaneTreeEvent, window, cx| match event {
             PaneTreeEvent::ActiveEditorChanged => {
-                this.sync_active_editor(cx);
+                this.sync_active_editor(window, cx);
             }
         })
         .detach();
@@ -80,10 +119,9 @@ impl Workspace {
         .detach();
 
         let status_bar = cx.new(StatusBar::new);
-        cx.subscribe(&status_bar, |this, _, event, cx| match event {
+        cx.subscribe_in(&status_bar, window, |this, _, event, window, cx| match event {
             crate::ui::components::status_bar::StatusBarEvent::ToggleLeftPanel => {
-                this.is_left_panel_visible = !this.is_left_panel_visible;
-                cx.notify();
+                this.set_left_panel_visible(!this.is_left_panel_visible, window, cx);
             }
         })
         .detach();
@@ -143,6 +181,7 @@ impl Workspace {
             activity_bar,
             ksy_definition: None,
             is_left_panel_visible: true,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -150,8 +189,9 @@ impl Workspace {
         self.pane_tree.read(cx).active_editor(cx)
     }
 
-    fn sync_active_editor(&self, cx: &mut Context<Self>) {
+    fn sync_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         let active_editor = self.active_editor(cx);
+        let pane_tree_is_empty = self.pane_tree.read(cx).is_empty();
         self.status_bar.update(cx, |status_bar, _| {
             status_bar.set_active_editor(active_editor.clone());
         });
@@ -159,6 +199,24 @@ impl Workspace {
             panel.set_editor(active_editor, cx);
         });
         self.on_focus_changed(cx);
+
+        if pane_tree_is_empty {
+            self.focus_handle.focus(window);
+        }
+    }
+
+    fn set_left_panel_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.is_left_panel_visible = visible;
+
+        if visible {
+            let focus_handle = self.left_panel.read(cx).focus_handle(cx);
+            focus_handle.focus(window);
+        } else {
+            self.focus_handle.focus(window);
+        }
+
+        self.sync_activity_bar(cx);
+        cx.notify();
     }
 
     fn new_local(cx: &mut App) -> Task<anyhow::Result<WindowHandle<Root>>> {
@@ -222,7 +280,7 @@ impl Workspace {
             tree.open_tab(content, window, cx);
         });
 
-        self.sync_active_editor(cx);
+        self.sync_active_editor(window, cx);
         cx.notify();
     }
 
@@ -415,7 +473,7 @@ impl Workspace {
                     self.pane_tree.update(cx, |tree, cx| {
                         tree.set_active_group(group.read(cx).id, cx);
                     });
-                    self.sync_active_editor(cx);
+                    self.sync_active_editor(window, cx);
                     cx.notify();
                     return;
                 }
@@ -477,7 +535,7 @@ impl Workspace {
                                 workspace_view.pane_tree.update(cx, |tree, cx| {
                                     tree.open_tab(content, window, cx);
                                 });
-                                workspace_view.sync_active_editor(cx);
+                                workspace_view.sync_active_editor(window, cx);
                                 cx.notify();
                             });
                         })
@@ -489,10 +547,8 @@ impl Workspace {
         .detach();
     }
 
-    fn on_action_toggle_left_panel(&mut self, _: &ToggleLeftPanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.is_left_panel_visible = !self.is_left_panel_visible;
-        self.sync_activity_bar(cx);
-        cx.notify();
+    fn on_action_toggle_left_panel(&mut self, _: &ToggleLeftPanel, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_left_panel_visible(!self.is_left_panel_visible, window, cx);
     }
 
     fn on_action_show_files_tab(&mut self, _: &ShowFilesTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -594,18 +650,13 @@ impl Workspace {
         let current_tab = self.left_panel.read(cx).active_tab;
 
         if self.is_left_panel_visible && current_tab == tab {
-            self.is_left_panel_visible = false;
+            self.set_left_panel_visible(false, window, cx);
         } else {
-            self.is_left_panel_visible = true;
             self.left_panel.update(cx, |p, cx| {
                 p.set_tab(tab, cx);
             });
-            let focus_handle = self.left_panel.read(cx).focus_handle(cx);
-            focus_handle.focus(window);
+            self.set_left_panel_visible(true, window, cx);
         }
-
-        self.sync_activity_bar(cx);
-        cx.notify();
     }
 
     fn on_action_load_structure_definition(&mut self, _: &LoadStructureDefinition, window: &mut Window, cx: &mut Context<Self>) {
@@ -624,7 +675,7 @@ impl Workspace {
                     Ok(contents) => match serde_yaml::from_str::<crate::core::structure::KsyDefinition>(&contents) {
                         Ok(ksy) => {
                             window
-                                .update(|_window, cx| {
+                                .update(|window, cx| {
                                     view.update(cx, |this, cx| {
                                         let ksy_arc = Arc::new(ksy);
                                         this.ksy_definition = Some(ksy_arc.clone());
@@ -647,8 +698,7 @@ impl Workspace {
                                             p.set_editor(active_editor, cx);
                                             p.set_tab(crate::ui::panels::left_panel::LeftPanelTab::Structure, cx);
                                         });
-                                        this.is_left_panel_visible = true;
-                                        cx.notify();
+                                        this.set_left_panel_visible(true, window, cx);
                                     });
                                 })
                                 .ok();
@@ -735,7 +785,7 @@ impl Workspace {
         self.pane_tree.update(cx, |tree, cx| {
             tree.close_active_tab(window, cx);
         });
-        self.sync_active_editor(cx);
+        self.sync_active_editor(window, cx);
         cx.notify();
     }
 
@@ -780,13 +830,13 @@ impl Workspace {
                 }
             }
         }
-        self.sync_active_editor(cx);
+        self.sync_active_editor(window, cx);
         cx.notify();
     }
 
-    fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, window: &mut Window, cx: &mut Context<Self>) {
         self.pane_tree = cx.new(|_| PaneTree::new());
-        self.sync_active_editor(cx);
+        self.sync_active_editor(window, cx);
         cx.notify();
     }
 
@@ -823,7 +873,7 @@ impl Workspace {
                     self.pane_tree.update(cx, |tree, cx| {
                         tree.set_active_group(group.read(cx).id, cx);
                     });
-                    self.sync_active_editor(cx);
+                    self.sync_active_editor(window, cx);
                     cx.notify();
                     return;
                 }
@@ -835,7 +885,7 @@ impl Workspace {
         self.pane_tree.update(cx, |tree, cx| {
             tree.open_tab(content, window, cx);
         });
-        self.sync_active_editor(cx);
+        self.sync_active_editor(window, cx);
         cx.notify();
     }
 
@@ -960,14 +1010,13 @@ impl Render for Workspace {
                         };
                         this.on_action_open_file(&action, window, cx);
                     } else if path.is_dir() {
-                        this.is_left_panel_visible = true;
                         this.left_panel.update(cx, |p, cx| {
                             p.set_tab(crate::ui::panels::left_panel::LeftPanelTab::Files, cx);
                             p.file_tree.update(cx, |ft, cx| {
                                 ft.set_root_path(path.clone(), cx);
                             });
                         });
-                        this.sync_activity_bar(cx);
+                        this.set_left_panel_visible(true, window, cx);
                     }
                 }
                 cx.notify();
@@ -982,6 +1031,7 @@ impl Render for Workspace {
             .child(self.title_bar.clone())
             .child(
                 div()
+                    .track_focus(&self.focus_handle)
                     .flex()
                     .flex_row()
                     .flex_1()
@@ -1008,6 +1058,12 @@ impl Render for Workspace {
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
+    }
+}
+
+impl Focusable for Workspace {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 

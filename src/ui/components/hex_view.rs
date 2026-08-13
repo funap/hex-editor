@@ -1665,18 +1665,14 @@ impl HexView {
     fn copy_formatted(&self, format: CopyFormat, cx: &mut Context<Self>) {
         let formatted = {
             let editor = self.editor.read(cx);
+            let selected_range = editor.selected_range_or_cursor();
             let doc = editor.document.read().expect("document read lock");
             let total = doc.buffer.len();
             if total == 0 {
                 String::new()
             } else {
-                let (start_offset, slice) = if let Some(range) = editor.selection_range() {
-                    if !range.is_empty() {
-                        (range.start, doc.buffer.get_range(range.start, range.len()))
-                    } else {
-                        let off = editor.cursor_offset.min(total.saturating_sub(1));
-                        (off, doc.buffer.get_range(off, 1))
-                    }
+                let (start_offset, slice) = if let Some(range) = selected_range {
+                    (range.start, doc.buffer.get_range(range.start, range.len()))
                 } else {
                     let off = editor.cursor_offset.min(total.saturating_sub(1));
                     (off, doc.buffer.get_range(off, 1))

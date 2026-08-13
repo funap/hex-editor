@@ -6,11 +6,20 @@ use gpui::*;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme as _, IconName, button::Button, button::ButtonVariants, h_flex, v_flex};
 use gpui_component::{Disableable, Selectable, Sizable, Size};
+use std::ops::Range;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CalculationRange {
     Selection,
     EntireFile,
+}
+
+fn selected_range_for_checksum(editor: &Editor) -> Option<Range<usize>> {
+    if editor.selection_start.is_some() && editor.selection_end.is_some() {
+        editor.selected_range_or_cursor()
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -96,18 +105,17 @@ impl ChecksumPanel {
         // Determine range and buffer parameters in a nested scope to free the immutable borrow on cx
         let (range, data) = {
             let editor = editor_entity.read(cx);
+            let selected_range = if self.calculation_range == CalculationRange::Selection {
+                selected_range_for_checksum(&editor)
+            } else {
+                None
+            };
             let doc = editor.document.read().unwrap();
             let buffer = &doc.buffer;
             let total_len = buffer.len();
 
             let r = match self.calculation_range {
-                CalculationRange::Selection => {
-                    if let Some(r) = editor.selection_range() {
-                        r
-                    } else {
-                        editor.cursor_offset..editor.cursor_offset
-                    }
-                }
+                CalculationRange::Selection => selected_range.unwrap_or(editor.cursor_offset..editor.cursor_offset),
                 CalculationRange::EntireFile => 0..total_len,
             };
 
@@ -257,18 +265,13 @@ impl Render for ChecksumPanel {
             info_text = format!("File Size: {} bytes", total_len);
 
             let range = match self.calculation_range {
-                CalculationRange::Selection => {
-                    if let Some(r) = editor.selection_range() {
-                        r
-                    } else {
-                        editor.cursor_offset..editor.cursor_offset
-                    }
-                }
+                CalculationRange::Selection => selected_range_for_checksum(&editor).unwrap_or(editor.cursor_offset..editor.cursor_offset),
                 CalculationRange::EntireFile => 0..total_len,
             };
             data_len = range.len();
             if data_len > 0 {
-                range_desc = format!("Range: 0x{:08X} - 0x{:08X} ({} bytes)", range.start, range.end, data_len);
+                let end_inclusive = range.end.saturating_sub(1);
+                range_desc = format!("Range: 0x{:08X} - 0x{:08X} ({} bytes)", range.start, end_inclusive, data_len);
             } else {
                 range_desc = "No selection (0 bytes)".to_string();
             }

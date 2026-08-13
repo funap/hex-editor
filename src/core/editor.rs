@@ -1336,6 +1336,7 @@ mod tests {
         assert_eq!(editor.selection_start, Some(0));
         assert_eq!(editor.selection_end, Some(1));
         assert_eq!(editor.cursor_offset, 1);
+        assert_eq!(editor.selected_range_or_cursor(), Some(0..2));
 
         // Clear selection on move
         editor.move_right();
@@ -1346,6 +1347,24 @@ mod tests {
         editor.select_all();
         assert_eq!(editor.selection_start, Some(0));
         assert_eq!(editor.selection_end, Some(5)); // Corrected expectation
+        assert_eq!(editor.selected_range_or_cursor(), Some(0..5));
+    }
+
+    #[test]
+    fn test_selected_range_or_cursor_includes_selection_end() {
+        let mut editor = create_editor_with_content(b"12345");
+
+        editor.selection_start = Some(1);
+        editor.selection_end = Some(3);
+        assert_eq!(editor.selected_range_or_cursor(), Some(1..4));
+
+        editor.selection_start = Some(3);
+        editor.selection_end = Some(1);
+        assert_eq!(editor.selected_range_or_cursor(), Some(1..4));
+
+        editor.selection_start = Some(4);
+        editor.selection_end = Some(4);
+        assert_eq!(editor.selected_range_or_cursor(), Some(4..5));
     }
 
     #[test]

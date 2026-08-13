@@ -54,11 +54,14 @@ impl Render for StatusBar {
 
         let selection_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            editor.selection_range().map(|range| {
-                let len = range.len();
-                let end_inclusive = range.end.saturating_sub(1);
-                format!("Sel: 0x{:08X}..0x{:08X} ({} B)", range.start, end_inclusive, len)
-            })
+            if editor.selection_start.is_some() && editor.selection_end.is_some() {
+                editor.selected_range_or_cursor().map(|range| {
+                    let end_inclusive = range.end.saturating_sub(1);
+                    format!("Sel: 0x{:08X}..0x{:08X} ({} B)", range.start, end_inclusive, range.len())
+                })
+            } else {
+                None
+            }
         } else {
             None
         };

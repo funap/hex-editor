@@ -775,7 +775,8 @@ impl HexView {
             let new_radix = ed.radix;
             let new_group_size = ed.group_size;
             let new_endian = ed.is_big_endian;
-            if this.last_cursor_offset != Some(ed.cursor_offset) {
+            let cursor_changed = this.last_cursor_offset != Some(ed.cursor_offset);
+            if cursor_changed {
                 this.cursor_reveal_pending = true;
             }
 
@@ -790,7 +791,9 @@ impl HexView {
                 this.cursor_reveal_pending = true;
             }
             this.clamp_scroll_offsets(cx);
-            this.ensure_cursor_visible(cx);
+            if cursor_changed {
+                this.ensure_cursor_visible(cx);
+            }
             cx.notify();
         });
 

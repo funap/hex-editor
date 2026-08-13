@@ -68,6 +68,9 @@ pub const COMMENT_WIDTH: f32 = 300.0;
 const VERTICAL_SCROLLBAR_WIDTH: f32 = 12.0;
 const HORIZONTAL_SCROLLBAR_HEIGHT: f32 = 12.0;
 const ASCII_CELL_WIDTH: f32 = 10.0;
+const CURSOR_BORDER_WIDTH: f32 = 1.0;
+const CURSOR_PADDING_X: f32 = 1.5;
+const CURSOR_PADDING_Y: f32 = 1.0;
 const MIN_ASCII_COLUMN_WIDTH: f32 = 80.0;
 const AUTO_FIT_SCAN_BYTES: usize = 64 * 1024;
 const AUTO_FIT_MAX_ITEMS: usize = 16 * 1024;
@@ -446,6 +449,20 @@ mod hex_grid_tests {
     }
 }
 
+#[cfg(test)]
+mod highlight_render_tests {
+    use super::{highlight_color_for_range, hsla};
+
+    #[test]
+    fn selection_takes_precedence_over_an_overlapping_highlight() {
+        let highlight_color = hsla(0.1, 0.8, 0.5, 0.35);
+        let highlights = [(0..16, highlight_color)];
+
+        assert_eq!(highlight_color_for_range(4, 8, true, &highlights), None);
+        assert_eq!(highlight_color_for_range(4, 8, false, &highlights), Some(highlight_color));
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HexGroupInfo {
     chunk_start: usize,
@@ -578,6 +595,20 @@ fn hex_group_x(group: HexGroupInfo, origin_x: Pixels, cell_width: Pixels) -> (Pi
     )
 }
 
+#[inline]
+fn pixel_midpoint(left: Pixels, right: Pixels) -> Pixels {
+    px((f32::from(left) + f32::from(right)) * 0.5)
+}
+
+#[inline]
+fn darken_cursor_color(color: Hsla) -> Hsla {
+    Hsla {
+        l: (color.l * 0.72).clamp(0.0, 1.0),
+        a: color.a.max(0.9),
+        ..color
+    }
+}
+
 /// Paint every glyph centered in its fixed Hex cell while reusing the line
 /// shaped for the row. This keeps shaping batched and avoids a per-row glyph
 /// position allocation.
@@ -642,20 +673,19 @@ fn format_offset_08(offset: usize) -> SharedString {
 
 #[inline]
 fn paint_border_box(window: &mut Window, bounds: Bounds<Pixels>, border_width: Pixels, color: Hsla) {
-    let top = Bounds::new(bounds.origin, size(bounds.size.width, border_width));
-    let bottom = Bounds::new(
-        point(bounds.origin.x, bounds.origin.y + bounds.size.height - border_width),
-        size(bounds.size.width, border_width),
+    let outline = gpui::outline(bounds, color, gpui::BorderStyle::Solid).border_widths(border_width);
+    window.paint_quad(outline);
+}
+
+#[inline]
+fn paint_cursor_border(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
+    let padding_x = px(CURSOR_PADDING_X);
+    let padding_y = px(CURSOR_PADDING_Y);
+    let padded_bounds = Bounds::new(
+        point(bounds.origin.x - padding_x, bounds.origin.y - padding_y),
+        size(bounds.size.width + padding_x + padding_x, bounds.size.height + padding_y + padding_y),
     );
-    let left = Bounds::new(bounds.origin, size(border_width, bounds.size.height));
-    let right = Bounds::new(
-        point(bounds.origin.x + bounds.size.width - border_width, bounds.origin.y),
-        size(border_width, bounds.size.height),
-    );
-    window.paint_quad(gpui::fill(top, color));
-    window.paint_quad(gpui::fill(bottom, color));
-    window.paint_quad(gpui::fill(left, color));
-    window.paint_quad(gpui::fill(right, color));
+    paint_border_box(window, padded_bounds, px(CURSOR_BORDER_WIDTH), color);
 }
 
 fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
@@ -666,6 +696,30 @@ fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: u
     let search_start = highlights.partition_point(|(r, _)| r.start < start_search);
     let search_end = highlights.partition_point(|(r, _)| r.start < next_offset);
     &highlights[search_start..search_end]
+}
+
+/// Return the smallest matching highlight, unless the item is selected.
+///
+/// Selection is transient UI state and must remain visible while a persistent
+/// highlight is underneath it, so it takes precedence over highlight colors.
+#[inline]
+fn highlight_color_for_range(item_start: usize, item_end: usize, is_selected: bool, active_highlights: &[(Range<usize>, Hsla)]) -> Option<Hsla> {
+    if is_selected {
+        return None;
+    }
+
+    let mut smallest_len = usize::MAX;
+    let mut color = None;
+    for (range, highlight_color) in active_highlights {
+        if range.start < item_end && range.end > item_start {
+            let len = range.end.saturating_sub(range.start);
+            if len <= smallest_len {
+                smallest_len = len;
+                color = Some(*highlight_color);
+            }
+        }
+    }
+    color
 }
 
 pub fn init(cx: &mut App) {
@@ -2061,7 +2115,7 @@ impl HexView {
             let theme = cx.theme();
             (
                 if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
-                theme.accent,
+                darken_cursor_color(theme.accent),
                 theme.muted_foreground,
                 theme.foreground,
                 theme.accent_foreground,
@@ -2181,7 +2235,7 @@ impl HexView {
         // grid during the text pass.
         let hex_source = build_hex_text_source(chunk, offset, radix, group_size, is_big_endian);
         let mut hex_runs: Vec<gpui::TextRun> = Vec::with_capacity(hex_source.groups.len() * 2);
-        let mut group_visuals: Vec<(Hsla, Option<Hsla>, bool, bool)> = Vec::with_capacity(hex_source.groups.len());
+        let mut group_visuals: Vec<(Hsla, bool)> = Vec::with_capacity(hex_source.groups.len());
         let mut group_text_colors: Vec<Hsla> = Vec::with_capacity(hex_source.groups.len());
 
         for (group_idx, group) in hex_source.groups.iter().enumerate() {
@@ -2204,22 +2258,13 @@ impl HexView {
                 false
             };
 
-            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
-            let mut current_hl_color = None;
-            if !active_row_highlights.is_empty() {
-                let mut smallest_len = usize::MAX;
-                for (range, color) in active_row_highlights.iter() {
-                    if range.start < item_end_offset && range.end > item_start_offset {
-                        let len = range.end.saturating_sub(range.start);
-                        if len <= smallest_len {
-                            smallest_len = len;
-                            bg_color = *color;
-                            current_hl_color = Some(*color);
-                        }
-                    }
-                }
-            }
-            group_visuals.push((bg_color, current_hl_color, is_cursor, is_selected));
+            let current_hl_color = highlight_color_for_range(item_start_offset, item_end_offset, is_selected, active_row_highlights);
+            let bg_color = if is_selected {
+                selection_bg
+            } else {
+                current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
+            };
+            group_visuals.push((bg_color, is_cursor));
             group_text_colors.push(text_color);
 
             if group_idx > 0 {
@@ -2256,37 +2301,53 @@ impl HexView {
             |window| {
                 window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
                     for (item_idx, group) in hex_source.groups.iter().enumerate() {
-                        let (bg_color, current_hl_color, is_cursor, is_selected) = group_visuals[item_idx];
+                        let (bg_color, is_cursor) = group_visuals[item_idx];
                         let (group_start_x, group_end_x) = hex_group_x(*group, text_origin_x, hex_cell_width);
+                        let previous_group_end_x = if item_idx > 0 {
+                            hex_group_x(hex_source.groups[item_idx - 1], text_origin_x, hex_cell_width).1
+                        } else {
+                            group_start_x
+                        };
+                        let previous_has_background = item_idx > 0 && group_visuals[item_idx - 1].0.a > 0.0;
                         let has_next = item_idx + 1 < hex_source.groups.len();
                         let next_group_start_x = if has_next {
                             hex_group_x(hex_source.groups[item_idx + 1], text_origin_x, hex_cell_width).0
                         } else {
                             group_end_x
                         };
-                        let next_is_selected = is_selected && min_sel <= max_sel && has_next && offset + hex_source.groups[item_idx + 1].chunk_start <= max_sel;
-                        let next_has_same_highlight = current_hl_color.is_some() && has_next && group_visuals[item_idx + 1].1 == current_hl_color;
-                        let fill_end_x = if next_is_selected || next_has_same_highlight {
-                            next_group_start_x
+                        let next_has_background = has_next && group_visuals[item_idx + 1].0.a > 0.0;
+                        let fill_start_x = if previous_has_background {
+                            pixel_midpoint(previous_group_end_x, group_start_x)
+                        } else {
+                            group_start_x
+                        };
+                        let fill_end_x = if next_has_background {
+                            pixel_midpoint(group_end_x, next_group_start_x)
                         } else {
                             group_end_x
                         };
 
                         if bg_color.a > 0.0 {
                             let item_fill_bounds = Bounds::new(
-                                point(group_start_x, bounds.top() + px(1.0)),
-                                size(fill_end_x - group_start_x, px(ROW_HEIGHT - 2.0)),
+                                point(fill_start_x, bounds.top() + px(1.0)),
+                                size(fill_end_x - fill_start_x, px(ROW_HEIGHT - 2.0)),
                             );
                             window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
                         }
 
                         if is_cursor {
-                            let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
+                            let cursor_border_color = if is_focused {
+                                cursor_bg
+                            } else {
+                                darken_cursor_color(muted_color).opacity(0.8)
+                            };
+                            let cursor_start_x = if bg_color.a > 0.0 { fill_start_x } else { group_start_x };
+                            let cursor_end_x = if bg_color.a > 0.0 { fill_end_x } else { group_end_x };
                             let item_box_bounds = Bounds::new(
-                                point(group_start_x, bounds.top() + px(1.0)),
-                                size(group_end_x - group_start_x, px(ROW_HEIGHT - 2.0)),
+                                point(cursor_start_x, bounds.top() + px(1.0)),
+                                size(cursor_end_x - cursor_start_x, px(ROW_HEIGHT - 2.0)),
                             );
-                            paint_border_box(window, item_box_bounds, px(1.5), cursor_border_color);
+                            paint_cursor_border(window, item_box_bounds, cursor_border_color);
                         }
                     }
 
@@ -2352,20 +2413,12 @@ impl HexView {
                             let is_cursor = byte_pos == cursor_offset;
                             let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
 
-                            let mut bg_color = if is_selected { selection_bg } else { hsla(0.0, 0.0, 0.0, 0.0) };
-
-                            if !active_row_highlights.is_empty() {
-                                let mut smallest_len = usize::MAX;
-                                for (range, color) in active_row_highlights.iter() {
-                                    if range.contains(&byte_pos) {
-                                        let len = range.end.saturating_sub(range.start);
-                                        if len <= smallest_len {
-                                            smallest_len = len;
-                                            bg_color = *color;
-                                        }
-                                    }
-                                }
-                            }
+                            let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), is_selected, active_row_highlights);
+                            let bg_color = if is_selected {
+                                selection_bg
+                            } else {
+                                current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
+                            };
 
                             let ascii_item_bounds = Bounds::new(
                                 point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH), bounds.top() + px(1.0)),
@@ -2377,8 +2430,12 @@ impl HexView {
                             }
 
                             if is_cursor {
-                                let cursor_border_color = if is_focused { cursor_bg } else { muted_color.opacity(0.6) };
-                                paint_border_box(window, ascii_item_bounds, px(1.5), cursor_border_color);
+                                let cursor_border_color = if is_focused {
+                                    cursor_bg
+                                } else {
+                                    darken_cursor_color(muted_color).opacity(0.8)
+                                };
+                                paint_cursor_border(window, ascii_item_bounds, cursor_border_color);
                             }
                         }
 

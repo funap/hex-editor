@@ -168,6 +168,11 @@ pub struct StructureIndex {
     pub leaf_fields: Vec<ParsedField>,
     pub active_ranges: Vec<ActiveStructRange>,
     pub highlights: Arc<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
+    /// Maximum weighted character count used by the structure description column.
+    pub max_container_id_chars: f32,
+    pub max_leaf_expression_chars: f32,
+    active_range_tree_base: usize,
+    active_range_max_tree: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,14 +234,44 @@ impl ParseResult {
         );
 
         highlights.sort_unstable_by_key(|(range, _)| range.start);
+        // The lookup helpers below use `partition_point`, so both collections
+        // must be ordered by file offset.  Structure traversal is normally in
+        // stream order, but `pos`-based instances are appended after `seq`
+        // fields and can point backwards in the file.
+        container_structs.sort_by_key(|field| field.offset);
+        leaf_fields.sort_by_key(|field| field.offset);
         active_ranges.sort_unstable_by_key(|r| r.start);
+        let (active_range_tree_base, active_range_max_tree) = Self::build_active_range_tree(&active_ranges);
+        let max_container_id_chars = container_structs.iter().map(|field| weighted_char_count(&field.id)).fold(0.0, f32::max);
+        let max_leaf_expression_chars = leaf_fields
+            .iter()
+            .map(|field| weighted_char_count(&field.format_expression()))
+            .fold(0.0, f32::max);
 
         StructureIndex {
             container_structs,
             leaf_fields,
             active_ranges,
             highlights: Arc::new(highlights),
+            max_container_id_chars,
+            max_leaf_expression_chars,
+            active_range_tree_base,
+            active_range_max_tree,
         }
+    }
+
+    fn build_active_range_tree(ranges: &[ActiveStructRange]) -> (usize, Vec<usize>) {
+        let base = ranges.len().max(1).next_power_of_two();
+        let mut tree = vec![0; base * 2];
+
+        for (index, range) in ranges.iter().enumerate() {
+            tree[base + index] = range.end;
+        }
+        for index in (1..base).rev() {
+            tree[index] = tree[index * 2].max(tree[index * 2 + 1]);
+        }
+
+        (base, tree)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -314,41 +349,72 @@ impl ParseResult {
         }
     }
 
-    pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
-        let end_offset = start_offset + len;
+    pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> &[ParsedField] {
+        let end_offset = start_offset.saturating_add(len);
         let containers = &self.index.container_structs;
         let start_idx = containers.partition_point(|f| f.offset < start_offset);
-        let mut result = Vec::new();
-        for field in &containers[start_idx..] {
-            if field.offset >= end_offset {
-                break;
-            }
-            result.push(field);
-        }
-        result
+        let end_idx = start_idx + containers[start_idx..].partition_point(|f| f.offset < end_offset);
+        &containers[start_idx..end_idx]
     }
 
-    pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> Vec<&ParsedField> {
-        let end_offset = start_offset + len;
+    pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> &[ParsedField] {
+        let end_offset = start_offset.saturating_add(len);
         let leaves = &self.index.leaf_fields;
         let start_idx = leaves.partition_point(|f| f.offset < start_offset);
-        let mut result = Vec::new();
-        for field in &leaves[start_idx..] {
-            if field.offset >= end_offset {
-                break;
-            }
-            result.push(field);
+        let end_idx = start_idx + leaves[start_idx..].partition_point(|f| f.offset < end_offset);
+        &leaves[start_idx..end_idx]
+    }
+
+    pub fn find_active_struct_ranges(&self, start_offset: usize, len: usize) -> Vec<&ActiveStructRange> {
+        let row_end = start_offset.saturating_add(len);
+        let ranges = &self.index.active_ranges;
+        let mut result = Vec::with_capacity(8);
+        if ranges.is_empty() {
+            return result;
         }
+
+        Self::collect_active_struct_ranges(
+            ranges,
+            &self.index.active_range_max_tree,
+            1,
+            0,
+            self.index.active_range_tree_base,
+            start_offset,
+            row_end,
+            &mut result,
+        );
         result
     }
 
-    pub fn find_active_struct_ranges(&self, start_offset: usize, len: usize) -> Vec<(usize, usize, usize, String)> {
-        let row_end = start_offset + len;
-        let ranges = &self.index.active_ranges;
-        ranges
-            .iter()
-            .filter(|r| r.start < row_end && r.end > start_offset)
-            .map(|r| (r.start, r.end, r.depth, r.id.clone()))
-            .collect()
+    #[allow(clippy::too_many_arguments)]
+    fn collect_active_struct_ranges<'a>(
+        ranges: &'a [ActiveStructRange],
+        tree: &[usize],
+        node: usize,
+        segment_start: usize,
+        segment_end: usize,
+        query_start: usize,
+        query_end: usize,
+        result: &mut Vec<&'a ActiveStructRange>,
+    ) {
+        if segment_start >= ranges.len() || ranges[segment_start].start >= query_end || tree[node] <= query_start {
+            return;
+        }
+
+        if segment_end - segment_start == 1 {
+            let range = &ranges[segment_start];
+            if range.start < query_end && range.end > query_start {
+                result.push(range);
+            }
+            return;
+        }
+
+        let middle = segment_start + (segment_end - segment_start) / 2;
+        Self::collect_active_struct_ranges(ranges, tree, node * 2, segment_start, middle, query_start, query_end, result);
+        Self::collect_active_struct_ranges(ranges, tree, node * 2 + 1, middle, segment_end, query_start, query_end, result);
     }
+}
+
+fn weighted_char_count(text: &str) -> f32 {
+    text.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum()
 }

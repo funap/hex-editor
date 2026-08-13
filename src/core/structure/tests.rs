@@ -835,10 +835,96 @@ fn test_parse_result_inline_helpers() {
 
     let active_ranges = result.find_active_struct_ranges(0, 16);
     assert_eq!(active_ranges.len(), 1);
-    assert_eq!(active_ranges[0].3, "IMAGE_DOS_HEADER");
+    assert_eq!(active_ranges[0].id, "IMAGE_DOS_HEADER");
 
     assert_eq!(leaf1.format_expression(), "e_magic = 5A4Dh (23117)");
     assert_eq!(leaf1.format_comment(), Some("Magic number".into()));
+}
+
+#[test]
+fn test_active_struct_range_index_handles_nested_ranges() {
+    use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+
+    fn struct_field(id: &str, offset: usize, size: usize, children: Vec<ParsedField>) -> ParsedField {
+        ParsedField {
+            id: id.into(),
+            field_type: id.into(),
+            offset,
+            size,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children,
+            enum_label: None,
+            is_instance: false,
+        }
+    }
+
+    let result = ParseResult::new(
+        "nested".into(),
+        vec![struct_field(
+            "outer",
+            0,
+            100,
+            vec![struct_field("inner_a", 0, 10, Vec::new()), struct_field("inner_b", 40, 20, Vec::new())],
+        )],
+        100,
+        Vec::new(),
+    );
+
+    let ranges = result.find_active_struct_ranges(45, 1);
+    let ids: Vec<_> = ranges.iter().map(|range| range.id.as_str()).collect();
+    assert_eq!(ids, ["outer", "inner_b"]);
+
+    let ranges = result.find_active_struct_ranges(20, 1);
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].id, "outer");
+
+    assert!(result.find_active_struct_ranges(100, 1).is_empty());
+}
+
+#[test]
+fn test_structure_index_sorts_offset_lookups() {
+    use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+
+    fn field(id: &str, offset: usize, size: usize, value: FieldValue, children: Vec<ParsedField>) -> ParsedField {
+        ParsedField {
+            id: id.into(),
+            field_type: id.into(),
+            offset,
+            size,
+            value,
+            color: gpui::Hsla::default(),
+            description: None,
+            children,
+            enum_label: None,
+            is_instance: false,
+        }
+    }
+
+    let earlier_section = field(
+        "section[2]",
+        0,
+        800,
+        FieldValue::Struct,
+        vec![field("body", 8, 792, FieldValue::Bytes(vec![0; 792]), Vec::new())],
+    );
+    let later_section = field("section[3]", 800, 16, FieldValue::Struct, Vec::new());
+
+    // This is the order produced when a later structure contains a `pos`
+    // instance that points backwards: traversal order is not file order.
+    let result = ParseResult::new("ordered_lookup".into(), vec![later_section, earlier_section], 816, Vec::new());
+
+    let body_containers = result.find_container_structs_starting_at(8, 16);
+    assert!(body_containers.is_empty(), "a body row must not inherit the next section name");
+
+    let section_containers = result.find_container_structs_starting_at(0, 8);
+    assert_eq!(section_containers.len(), 1);
+    assert_eq!(section_containers[0].id, "section[2]");
+
+    let body_fields = result.find_leaf_fields_starting_at(8, 16);
+    assert_eq!(body_fields.len(), 1);
+    assert_eq!(body_fields[0].id, "body");
 }
 
 #[test]

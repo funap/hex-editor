@@ -595,6 +595,7 @@ mod layout_state_tests {
 struct HexGroupInfo {
     chunk_start: usize,
     chunk_end: usize,
+    #[allow(dead_code)]
     start_slot: usize,
     text_start: usize,
     text_end: usize,
@@ -2073,7 +2074,26 @@ impl HexView {
     }
 
     pub fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::HexStream, window, cx);
+        let formatted = {
+            let editor = self.editor.read(cx);
+            let selected_range = editor.selected_range_or_cursor();
+            let doc = editor.document.read().expect("document read lock");
+            let total = doc.buffer.len();
+            if total == 0 {
+                String::new()
+            } else if let Some(range) = selected_range {
+                let radix = editor.radix;
+                let group_size = editor.group_size;
+                let is_big_endian = editor.is_big_endian;
+                let line_starts = editor.line_starts();
+                crate::core::radix::format_display_content_with_lines(doc.buffer.data(), range, &line_starts, radix, group_size, is_big_endian)
+            } else {
+                String::new()
+            }
+        };
+
+        self.focus_handle.focus(window);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(formatted));
     }
 
     pub fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
@@ -2344,7 +2364,11 @@ impl HexView {
             && world_x >= ascii_column.start
             && world_x < ascii_column.end()
         {
-            ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x)
+            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
+            let group_bytes = self.group_size.byte_count();
+            let abs_offset = line_offset + raw_idx;
+            let group_start_abs = (abs_offset / group_bytes) * group_bytes;
+            group_start_abs.saturating_sub(line_offset)
         } else {
             let source = build_hex_text_source(
                 doc.buffer.get_range(line_offset, chunk_len),
@@ -2374,24 +2398,7 @@ impl HexView {
             }
 
             let group = source.groups[target_group_idx];
-            let (group_start, group_end) = hex_group_x(group, origin_x, cell_width);
-            let group_width = (group_end - group_start).max(Pixels::from(0.001));
-            let relative_x = f32::from(point.x - group_start) / f32::from(group_width);
-            let visual_slot = (relative_x.clamp(0.0, 0.999_999) * self.group_size.byte_count() as f32) as usize;
-            let is_full_group = group.start_slot == 0 && group.chunk_end - group.chunk_start == self.group_size.byte_count();
-            let byte_in_group = if is_full_group {
-                if self.is_big_endian {
-                    visual_slot.min(group.chunk_end - group.chunk_start - 1)
-                } else {
-                    (group.chunk_end - group.chunk_start - 1).saturating_sub(visual_slot)
-                }
-            } else if visual_slot < group.start_slot {
-                0
-            } else {
-                (visual_slot - group.start_slot).min(group.chunk_end - group.chunk_start - 1)
-            };
-
-            group.chunk_start + byte_in_group
+            group.chunk_start
         };
 
         let byte_idx = byte_offset_in_row.min(chunk_len.saturating_sub(1));
@@ -2748,14 +2755,21 @@ impl HexView {
                     let ascii_mask_bounds = Bounds::new(point(ascii_start_x, bounds.top()), size(px(ascii_width), px(ROW_HEIGHT)));
                     window.with_content_mask(Some(gpui::ContentMask { bounds: ascii_mask_bounds }), |window| {
                         let char_map = build_ascii_char_map(encoding, doc.buffer.data(), offset, chunk.len());
+                        let group_bytes = group_size.byte_count();
 
+                        // 1. Background Quads Pass for ASCII Cells
                         for (j, _) in chunk.iter().enumerate() {
                             let byte_pos = offset + j;
-                            let is_cursor = byte_pos == cursor_offset;
-                            let is_selected = byte_pos >= min_sel && byte_pos <= max_sel;
+                            let in_selected_group = if min_sel <= max_sel {
+                                let group_start = (byte_pos / group_bytes) * group_bytes;
+                                let group_end = group_start + group_bytes;
+                                group_start <= max_sel && group_end > min_sel
+                            } else {
+                                false
+                            };
 
-                            let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), is_selected, active_row_highlights);
-                            let bg_color = if is_selected {
+                            let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), in_selected_group, active_row_highlights);
+                            let bg_color = if in_selected_group {
                                 selection_bg
                             } else {
                                 current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
@@ -2769,6 +2783,13 @@ impl HexView {
                             if bg_color.a > 0.0 {
                                 window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
                             }
+                        }
+
+                        // 2. Cursor Border Pass for ASCII Groups
+                        for group in hex_source.groups.iter() {
+                            let item_start_offset = offset + group.chunk_start;
+                            let item_end_offset = offset + group.chunk_end;
+                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
 
                             if is_cursor {
                                 let cursor_border_color = if is_focused {
@@ -2776,7 +2797,10 @@ impl HexView {
                                 } else {
                                     darken_cursor_color(muted_color).opacity(0.8)
                                 };
-                                paint_cursor_border(window, ascii_item_bounds, cursor_border_color);
+                                let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
+                                let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
+                                let ascii_group_bounds = Bounds::new(point(group_start_x, bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
+                                paint_cursor_border(window, ascii_group_bounds, cursor_border_color);
                             }
                         }
 

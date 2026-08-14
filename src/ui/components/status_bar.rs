@@ -40,13 +40,61 @@ impl Render for StatusBar {
         let current_byte_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
             let doc = editor.document.read().ok();
-            doc.and_then(|d| d.buffer.get_range(editor.cursor_offset, 1).first().copied()).map(|b| {
-                let ascii_repr = if (0x20..=0x7E).contains(&b) {
-                    format!(", '{}'", b as char)
-                } else {
-                    String::new()
-                };
-                format!("Val: 0x{:02X} ({}{}, 0b{:08b})", b, b, ascii_repr, b)
+            let group_bytes = editor.group_size.byte_count();
+            doc.and_then(|d| {
+                let slice = d.buffer.get_range(editor.cursor_offset, group_bytes);
+                if slice.is_empty() {
+                    return None;
+                }
+                match editor.group_size {
+                    crate::core::radix::ByteGroupSize::One => {
+                        let b = slice[0];
+                        let ascii_repr = if (0x20..=0x7E).contains(&b) {
+                            format!(", '{}'", b as char)
+                        } else {
+                            String::new()
+                        };
+                        Some(format!("Val: 0x{:02X} ({}{}, 0b{:08b})", b, b, ascii_repr, b))
+                    }
+                    crate::core::radix::ByteGroupSize::Two => {
+                        if slice.len() == 2 {
+                            let val = if editor.is_big_endian {
+                                u16::from_be_bytes([slice[0], slice[1]])
+                            } else {
+                                u16::from_le_bytes([slice[0], slice[1]])
+                            };
+                            Some(format!("Val: 0x{:04X} ({})", val, val))
+                        } else {
+                            Some(format!("Val: 0x{:02X} ({})", slice[0], slice[0]))
+                        }
+                    }
+                    crate::core::radix::ByteGroupSize::Four => {
+                        if slice.len() == 4 {
+                            let val = if editor.is_big_endian {
+                                u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]])
+                            } else {
+                                u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]])
+                            };
+                            Some(format!("Val: 0x{:08X} ({})", val, val))
+                        } else {
+                            let hex_str: String = slice.iter().map(|b| format!("{:02X}", b)).collect();
+                            Some(format!("Val: 0x{}", hex_str))
+                        }
+                    }
+                    crate::core::radix::ByteGroupSize::Eight => {
+                        if slice.len() == 8 {
+                            let val = if editor.is_big_endian {
+                                u64::from_be_bytes([slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7]])
+                            } else {
+                                u64::from_le_bytes([slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7]])
+                            };
+                            Some(format!("Val: 0x{:016X} ({})", val, val))
+                        } else {
+                            let hex_str: String = slice.iter().map(|b| format!("{:02X}", b)).collect();
+                            Some(format!("Val: 0x{}", hex_str))
+                        }
+                    }
+                }
             })
         } else {
             None

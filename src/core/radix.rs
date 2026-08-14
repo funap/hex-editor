@@ -263,6 +263,85 @@ pub fn is_group_zero(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes.iter().all(|&b| b == 0)
 }
 
+/// Formats a contiguous slice of bytes using the specified display radix, group size, and endianness.
+pub fn format_display_content(bytes: &[u8], start_offset: usize, radix: DisplayRadix, group_size: ByteGroupSize, is_big_endian: bool) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let group_bytes = group_size.byte_count();
+    let mut result = String::with_capacity(bytes.len() * 3);
+    let mut chunk_idx = 0;
+
+    while chunk_idx < bytes.len() {
+        let item_start_offset = start_offset + chunk_idx;
+        let start_slot = item_start_offset % group_bytes;
+        let item_slice_len = (bytes.len() - chunk_idx).min(group_bytes - start_slot);
+
+        if !result.is_empty() {
+            result.push(' ');
+        }
+        let group_str = format_group(&bytes[chunk_idx..chunk_idx + item_slice_len], start_slot, radix, group_size, is_big_endian);
+        if radix == DisplayRadix::Decimal {
+            result.push_str(group_str.trim());
+        } else {
+            result.push_str(&group_str);
+        }
+        chunk_idx += item_slice_len;
+    }
+
+    result
+}
+
+/// Formats a range of bytes across lines in a document/editor, preserving line breaks.
+pub fn format_display_content_with_lines(
+    buffer_data: &[u8],
+    range: std::ops::Range<usize>,
+    line_starts: &crate::core::editor::LineMap,
+    radix: DisplayRadix,
+    group_size: ByteGroupSize,
+    is_big_endian: bool,
+) -> String {
+    if range.is_empty() || range.start >= buffer_data.len() {
+        return String::new();
+    }
+    let clamped_end = range.end.min(buffer_data.len());
+    let mut lines = Vec::new();
+    let start_line_idx = crate::core::editor::Editor::find_line_index(range.start, line_starts);
+
+    for line_idx in start_line_idx..line_starts.len() {
+        let line_start = match line_starts.get(line_idx) {
+            Some(o) => o,
+            None => break,
+        };
+        if line_start >= clamped_end {
+            break;
+        }
+        let line_end = if line_idx + 1 < line_starts.len() {
+            line_starts.get(line_idx + 1).unwrap_or(buffer_data.len())
+        } else {
+            buffer_data.len()
+        };
+        let seg_start = range.start.max(line_start);
+        let seg_end = clamped_end.min(line_end);
+        if seg_start >= seg_end {
+            continue;
+        }
+
+        let slice = &buffer_data[seg_start..seg_end];
+        let line_text = format_display_content(slice, seg_start, radix, group_size, is_big_endian);
+        if !line_text.is_empty() {
+            lines.push(line_text);
+        }
+    }
+
+    if lines.is_empty() {
+        let slice = &buffer_data[range.start..clamped_end];
+        format_display_content(slice, range.start, radix, group_size, is_big_endian)
+    } else {
+        lines.join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +475,55 @@ mod tests {
         assert!(is_group_zero(&[0, 0, 0, 0]));
         assert!(!is_group_zero(&[0, 1, 0, 0]));
         assert!(!is_group_zero(&[]));
+    }
+
+    #[test]
+    fn test_format_display_content() {
+        let bytes = [0x12, 0x34, 0x56, 0x78];
+
+        // 1-byte Hex
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::One, false),
+            "12 34 56 78"
+        );
+
+        // 2-byte Hex LE
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Two, false),
+            "3412 7856"
+        );
+
+        // 2-byte Hex BE
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Two, true),
+            "1234 5678"
+        );
+
+        // 4-byte Hex LE
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Four, false),
+            "78563412"
+        );
+
+        // 4-byte Hex BE
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Four, true),
+            "12345678"
+        );
+
+        // 1-byte Decimal
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Decimal, ByteGroupSize::One, false),
+            "18 52 86 120"
+        );
+
+        // 2-byte Decimal LE
+        assert_eq!(
+            format_display_content(&bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Two, false),
+            "13330 30806"
+        );
+
+        // 2-byte Decimal BE
+        assert_eq!(format_display_content(&bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Two, true), "4660 22136");
     }
 }

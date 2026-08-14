@@ -183,6 +183,14 @@ impl Editor {
 
     pub fn set_group_size(&mut self, group_size: ByteGroupSize) {
         self.group_size = group_size;
+        let step = group_size.byte_count();
+        self.cursor_offset = (self.cursor_offset / step) * step;
+        if let Some(s) = self.selection_start {
+            self.selection_start = Some((s / step) * step);
+        }
+        if let Some(e) = self.selection_end {
+            self.selection_end = Some((e / step) * step);
+        }
     }
 
     pub fn set_is_big_endian(&mut self, is_big_endian: bool) {
@@ -208,17 +216,21 @@ impl Editor {
         if total == 0 {
             return None;
         }
+        let group_bytes = self.group_size.byte_count();
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
             let min = cmp::min(start, end);
             let max = cmp::max(start, end);
-            let s = min.min(total);
-            let e = (max + 1).min(total);
+            let s = ((min / group_bytes) * group_bytes).min(total);
+            let e_group = ((max / group_bytes) + 1) * group_bytes;
+            let e = e_group.min(total);
             if s < e {
                 return Some(s..e);
             }
         }
         let cur = self.cursor_offset.min(total.saturating_sub(1));
-        Some(cur..cur + 1)
+        let group_start = (cur / group_bytes) * group_bytes;
+        let group_end = (group_start + group_bytes).min(total);
+        Some(group_start..group_end)
     }
 
     pub fn highlights_snapshot(&self) -> Vec<HighlightItem> {
@@ -425,28 +437,34 @@ impl Editor {
         let buffer_len = self.total_size();
         self.selection_start = None;
         self.selection_end = None;
-        self.cursor_offset = offset.min(buffer_len.saturating_sub(1));
+        let step = self.group_size.byte_count();
+        let aligned = (offset / step) * step;
+        self.cursor_offset = aligned.min(buffer_len.saturating_sub(1));
     }
 
     pub fn move_left(&mut self) {
+        let step = self.group_size.byte_count();
         if self.cursor_offset > 0 {
-            self.cursor_offset -= 1;
+            self.cursor_offset = (self.cursor_offset / step).saturating_sub(1) * step;
             self.selection_start = None;
             self.selection_end = None;
         }
     }
 
     pub fn move_right(&mut self) {
+        let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
         let max_offset = buffer_len.saturating_sub(1);
-        if self.cursor_offset < max_offset {
-            self.cursor_offset += 1;
+        let next = ((self.cursor_offset / step) + 1) * step;
+        if next <= max_offset {
+            self.cursor_offset = next;
             self.selection_start = None;
             self.selection_end = None;
         }
     }
 
     pub fn move_up(&mut self) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -457,13 +475,16 @@ impl Editor {
             let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
             let prev_line_len = prev_line_end - prev_line_start;
 
-            self.cursor_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
+            let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
+            let aligned_offset = (target_offset / step) * step;
+            self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
             self.selection_start = None;
             self.selection_end = None;
         }
     }
 
     pub fn move_down(&mut self) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let total_size = self.total_size();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
@@ -480,41 +501,49 @@ impl Editor {
             let next_line_len = next_line_end - next_line_start;
 
             if next_line_len > 0 {
-                self.cursor_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
+                let target_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
+                let aligned_offset = (target_offset / step) * step;
+                self.cursor_offset = aligned_offset.min(next_line_end.saturating_sub(1));
             } else {
                 self.cursor_offset = next_line_start;
             }
             self.selection_start = None;
             self.selection_end = None;
         } else {
-            self.cursor_offset = total_size.saturating_sub(1);
+            let max_offset = total_size.saturating_sub(1);
+            self.cursor_offset = (max_offset / step) * step;
             self.selection_start = None;
             self.selection_end = None;
         }
     }
 
     pub fn select_left(&mut self) {
+        let step = self.group_size.byte_count();
         if self.cursor_offset > 0 {
             if self.selection_start.is_none() {
                 self.selection_start = Some(self.cursor_offset);
             }
-            self.cursor_offset -= 1;
+            self.cursor_offset = (self.cursor_offset / step).saturating_sub(1) * step;
             self.selection_end = Some(self.cursor_offset);
         }
     }
 
     pub fn select_right(&mut self) {
+        let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
-        if self.cursor_offset < buffer_len {
+        let max_offset = buffer_len.saturating_sub(1);
+        let next = ((self.cursor_offset / step) + 1) * step;
+        if next <= max_offset {
             if self.selection_start.is_none() {
                 self.selection_start = Some(self.cursor_offset);
             }
-            self.cursor_offset += 1;
+            self.cursor_offset = next;
             self.selection_end = Some(self.cursor_offset);
         }
     }
 
     pub fn select_up(&mut self) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -528,12 +557,15 @@ impl Editor {
             let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
             let prev_line_len = prev_line_end - prev_line_start;
 
-            self.cursor_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
+            let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
+            let aligned_offset = (target_offset / step) * step;
+            self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
             self.selection_end = Some(self.cursor_offset);
         }
     }
 
     pub fn select_down(&mut self) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let total_size = self.total_size();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
@@ -554,13 +586,16 @@ impl Editor {
             let next_line_len = next_line_end - next_line_start;
 
             if next_line_len > 0 {
-                self.cursor_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
+                let target_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
+                let aligned_offset = (target_offset / step) * step;
+                self.cursor_offset = aligned_offset.min(next_line_end.saturating_sub(1));
             } else {
                 self.cursor_offset = next_line_start;
             }
             self.selection_end = Some(self.cursor_offset);
         } else {
-            self.cursor_offset = total_size;
+            let max_offset = total_size.saturating_sub(1);
+            self.cursor_offset = (max_offset / step) * step;
             self.selection_end = Some(self.cursor_offset);
         }
     }
@@ -579,12 +614,15 @@ impl Editor {
     }
 
     pub fn go_to_end(&mut self) {
-        self.cursor_offset = self.total_size().saturating_sub(1);
+        let step = self.group_size.byte_count();
+        let max_offset = self.total_size().saturating_sub(1);
+        self.cursor_offset = (max_offset / step) * step;
         self.selection_start = None;
         self.selection_end = None;
     }
 
     pub fn page_up(&mut self, visible_rows: usize) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -603,10 +641,13 @@ impl Editor {
         };
         let target_line_len = target_line_end - target_line_start;
 
-        self.cursor_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+        let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+        let aligned_offset = (target_offset / step) * step;
+        self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
     }
 
     pub fn page_down(&mut self, visible_rows: usize) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -626,9 +667,12 @@ impl Editor {
         let target_line_len = target_line_end - target_line_start;
 
         if target_line_idx == line_starts.len() - 1 && target_line_len == 0 {
-            self.cursor_offset = self.total_size().saturating_sub(1);
+            let max_offset = self.total_size().saturating_sub(1);
+            self.cursor_offset = (max_offset / step) * step;
         } else {
-            self.cursor_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+            let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+            let aligned_offset = (target_offset / step) * step;
+            self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
     }
 
@@ -639,13 +683,16 @@ impl Editor {
     }
 
     pub fn end(&mut self) {
+        let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
         self.selection_start = None;
         self.selection_end = None;
-        self.cursor_offset = buffer_len.saturating_sub(1);
+        let max_offset = buffer_len.saturating_sub(1);
+        self.cursor_offset = (max_offset / step) * step;
     }
 
     pub fn select_page_up(&mut self, visible_rows: usize) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -665,11 +712,14 @@ impl Editor {
         };
         let target_line_len = target_line_end - target_line_start;
 
-        self.cursor_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+        let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+        let aligned_offset = (target_offset / step) * step;
+        self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         self.selection_end = Some(self.cursor_offset);
     }
 
     pub fn select_page_down(&mut self, visible_rows: usize) {
+        let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
@@ -690,9 +740,12 @@ impl Editor {
         let target_line_len = target_line_end - target_line_start;
 
         if target_line_idx == line_starts.len() - 1 && target_line_len == 0 {
-            self.cursor_offset = self.total_size();
+            let max_offset = self.total_size().saturating_sub(1);
+            self.cursor_offset = (max_offset / step) * step;
         } else {
-            self.cursor_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+            let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
+            let aligned_offset = (target_offset / step) * step;
+            self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
         self.selection_end = Some(self.cursor_offset);
     }
@@ -706,22 +759,28 @@ impl Editor {
     }
 
     pub fn select_end(&mut self) {
+        let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
         if self.selection_start.is_none() {
             self.selection_start = Some(self.cursor_offset);
         }
-        self.cursor_offset = buffer_len;
+        let max_offset = buffer_len.saturating_sub(1);
+        self.cursor_offset = (max_offset / step) * step;
         self.selection_end = Some(self.cursor_offset);
     }
 
     pub fn start_drag(&mut self, byte_pos: usize) {
-        self.cursor_offset = byte_pos;
-        self.selection_start = Some(byte_pos);
-        self.selection_end = Some(byte_pos);
+        let step = self.group_size.byte_count();
+        let aligned = (byte_pos / step) * step;
+        self.cursor_offset = aligned;
+        self.selection_start = Some(aligned);
+        self.selection_end = Some(aligned);
     }
 
     pub fn continue_drag(&mut self, byte_pos: usize) {
-        self.selection_end = Some(byte_pos);
+        let step = self.group_size.byte_count();
+        let aligned = (byte_pos / step) * step;
+        self.selection_end = Some(aligned);
     }
 
     pub fn set_search_query(&mut self, query: String) {
@@ -2057,6 +2116,49 @@ mod tests {
 
         editor.toggle_byte_order();
         assert!(!editor.is_big_endian);
+    }
+
+    #[test]
+    fn test_editor_grouping_cursor_movement_and_selection() {
+        let mut editor = create_editor_with_content(&[0u8; 64]);
+        editor.set_group_size(ByteGroupSize::Four);
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Move right by 4 bytes (1 group)
+        editor.move_right();
+        assert_eq!(editor.cursor_offset, 4);
+        editor.move_right();
+        assert_eq!(editor.cursor_offset, 8);
+
+        // Move left by 4 bytes
+        editor.move_left();
+        assert_eq!(editor.cursor_offset, 4);
+
+        // Selection right by 4 bytes
+        editor.select_right();
+        assert_eq!(editor.selection_start, Some(4));
+        assert_eq!(editor.selection_end, Some(8));
+        assert_eq!(editor.cursor_offset, 8);
+        assert_eq!(editor.selected_range_or_cursor(), Some(4..12));
+
+        // Selection left
+        editor.select_left();
+        assert_eq!(editor.cursor_offset, 4);
+        assert_eq!(editor.selected_range_or_cursor(), Some(4..8));
+
+        // Group 2 bytes
+        editor.set_group_size(ByteGroupSize::Two);
+        editor.go_to_beginning();
+        assert_eq!(editor.cursor_offset, 0);
+        editor.move_right();
+        assert_eq!(editor.cursor_offset, 2);
+        assert_eq!(editor.selected_range_or_cursor(), Some(2..4));
+
+        // Move down across 16-byte rows
+        editor.move_down();
+        assert_eq!(editor.cursor_offset, 18);
+        editor.move_up();
+        assert_eq!(editor.cursor_offset, 2);
     }
 
     #[test]

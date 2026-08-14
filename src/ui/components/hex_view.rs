@@ -413,6 +413,93 @@ mod horizontal_scroll_tests {
         assert!(range.start <= 1_020_000);
         assert_eq!(range.len(), AUTO_FIT_SCAN_BYTES);
     }
+
+    #[test]
+    fn description_content_width_aggregates_multiple_fields_in_row() {
+        use super::HexView;
+        use crate::core::buffer::Buffer;
+        use crate::core::document::Document;
+        use crate::core::editor::Editor;
+        use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
+        use std::path::PathBuf;
+        use std::sync::{Arc, RwLock};
+
+        let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 32]))));
+        let editor = Editor::new(doc);
+
+        let field1 = ParsedField {
+            id: "magic".into(),
+            field_type: "u4".into(),
+            offset: 0,
+            size: 4,
+            value: FieldValue::U32(0x12345678),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![],
+            enum_label: None,
+            is_instance: false,
+        };
+        let field2 = ParsedField {
+            id: "flags".into(),
+            field_type: "u4".into(),
+            offset: 4,
+            size: 4,
+            value: FieldValue::U32(0x00000001),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![],
+            enum_label: None,
+            is_instance: false,
+        };
+        let field3 = ParsedField {
+            id: "version".into(),
+            field_type: "u4".into(),
+            offset: 8,
+            size: 4,
+            value: FieldValue::U32(2),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![],
+            enum_label: None,
+            is_instance: false,
+        };
+
+        let container = ParsedField {
+            id: "header".into(),
+            field_type: "Header".into(),
+            offset: 0,
+            size: 12,
+            value: FieldValue::Struct,
+            color: gpui::Hsla::default(),
+            description: None,
+            children: vec![field1.clone(), field2.clone(), field3.clone()],
+            enum_label: None,
+            is_instance: false,
+        };
+
+        let parse_result = ParseResult::new("test_struct".into(), vec![container], 12, vec![]);
+        let char_w = 8.0;
+
+        // When expanded, width should combine container ID + all 3 leaf expressions + spacing
+        let width_expanded = HexView::description_content_width_in_range(&editor, &parse_result, &(0..16), char_w);
+
+        // Single field expression width
+        let single_field_width = super::weighted_text_width(&field1.format_expression(), char_w);
+        assert!(
+            width_expanded > single_field_width * 2.5,
+            "Expanded row width ({width_expanded}) must aggregate all fields, strictly greater than a single field ({single_field_width})"
+        );
+
+        // When collapsed, only the container id and size are displayed
+        let mut editor_collapsed = Editor::new(Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 32])))));
+        editor_collapsed.collapsed_struct_ids.insert("header".into());
+        let width_collapsed = HexView::description_content_width_in_range(&editor_collapsed, &parse_result, &(0..16), char_w);
+
+        assert!(
+            width_collapsed < width_expanded,
+            "Collapsed width ({width_collapsed}) should be smaller than expanded width ({width_expanded})"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -869,6 +956,7 @@ pub struct HexView {
     pub desc_col_width: f32,
     pub comment_col_width: f32,
     cached_comment_content_width: std::cell::Cell<Option<f32>>,
+    cached_desc_content_width: std::cell::Cell<Option<f32>>,
     resizing_column: Option<(ResizingColumn, f32, f32)>,
     last_cursor_offset: Option<usize>,
     cursor_reveal_pending: bool,
@@ -909,6 +997,7 @@ impl HexView {
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
             this.cached_comment_content_width.set(None);
+            this.cached_desc_content_width.set(None);
             let ed = editor_entity.read(cx);
             let new_encoding = ed.encoding;
             let new_radix = ed.radix;
@@ -976,6 +1065,7 @@ impl HexView {
             desc_col_width: DESC_WIDTH,
             comment_col_width: COMMENT_WIDTH,
             cached_comment_content_width: std::cell::Cell::new(None),
+            cached_desc_content_width: std::cell::Cell::new(None),
             resizing_column: None,
             last_cursor_offset: None,
             cursor_reveal_pending: true,
@@ -1017,6 +1107,8 @@ impl HexView {
         self.ascii_scroll_x = state.ascii_scroll_x;
         self.desc_scroll_x = state.desc_scroll_x;
         self.comment_scroll_x = state.comment_scroll_x;
+        self.cached_comment_content_width.set(None);
+        self.cached_desc_content_width.set(None);
     }
 
     pub fn copy_layout_from(&mut self, source: &HexView) {
@@ -1029,17 +1121,22 @@ impl HexView {
     }
 
     pub fn max_desc_scroll(&self, cx: &App) -> f32 {
+        if let Some(max_content_w) = self.cached_desc_content_width.get() {
+            let max_w = (max_content_w + 32.0).max(self.desc_col_width);
+            return (max_w - self.desc_col_width).max(0.0);
+        }
+
+        let scan_range = self.auto_fit_scan_range(cx);
         let editor = self.editor.read(cx);
-        if let Some(parse_res) = editor.parse_result() {
-            let char_w = f32::from(self.font_size_prop) * 0.61;
-            let container_width = parse_res.index.max_container_id_chars * char_w + 40.0;
-            let leaf_width = parse_res.index.max_leaf_expression_chars * char_w + 50.0;
-            let max_w = container_width.max(leaf_width);
-            let total_max = (max_w + 32.0).max(self.desc_col_width);
-            (total_max - self.desc_col_width).max(0.0)
+        let char_w = f32::from(self.font_size_prop) * 0.61;
+        let max_content_w = if let Some(parse_res) = editor.parse_result() {
+            Self::description_content_width_in_range(editor, &parse_res, &scan_range, char_w)
         } else {
             0.0
-        }
+        };
+        self.cached_desc_content_width.set(Some(max_content_w));
+        let max_w = (max_content_w + 32.0).max(self.desc_col_width);
+        (max_w - self.desc_col_width).max(0.0)
     }
 
     fn auto_fit_scan_range(&self, cx: &App) -> Range<usize> {
@@ -1048,26 +1145,90 @@ impl HexView {
         bounded_auto_fit_range(total_size, visible_start, visible_end)
     }
 
-    fn description_width_in_range(parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
+    fn description_content_width_in_range(editor: &Editor, parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
         let scan_len = scan_range.end.saturating_sub(scan_range.start);
         if scan_len == 0 {
             return 0.0;
         }
 
-        let max_container_width = parse_result
-            .find_container_structs_starting_at(scan_range.start, scan_len)
-            .iter()
-            .take(AUTO_FIT_MAX_ITEMS)
-            .map(|field| weighted_text_width(&field.id, char_w) + 40.0)
-            .fold(0.0, f32::max);
-        let max_leaf_width = parse_result
-            .find_leaf_fields_starting_at(scan_range.start, scan_len)
-            .iter()
-            .take(AUTO_FIT_MAX_ITEMS)
-            .map(|field| weighted_text_width(&field.format_expression(), char_w) + 50.0)
-            .fold(0.0, f32::max);
+        let line_starts = editor.line_starts();
+        let total_size = editor.total_size();
+        let collapsed_structs = &editor.collapsed_struct_ids;
 
-        max_container_width.max(max_leaf_width)
+        let start_row = Editor::find_line_index(scan_range.start, &line_starts);
+        let end_row = if scan_range.end >= total_size {
+            line_starts.len()
+        } else {
+            Editor::find_line_index(scan_range.end, &line_starts) + 1
+        };
+
+        let mut max_width: f32 = 0.0;
+
+        for (row_count, row) in (start_row..end_row).enumerate() {
+            if row_count >= AUTO_FIT_MAX_ITEMS {
+                break;
+            }
+
+            let Some(offset) = line_starts.get(row) else {
+                continue;
+            };
+            let next_offset = line_starts.get(row + 1).unwrap_or(total_size);
+            let chunk_len = next_offset.saturating_sub(offset);
+            if chunk_len == 0 {
+                continue;
+            }
+
+            let container_structs = parse_result.find_container_structs_starting_at(offset, chunk_len);
+            let leaf_fields = parse_result.find_leaf_fields_starting_at(offset, chunk_len);
+
+            if container_structs.is_empty() && leaf_fields.is_empty() {
+                continue;
+            }
+
+            let active_ranges = parse_result.find_active_struct_ranges(offset, chunk_len);
+            let is_collapsed = container_structs.first().map(|c| collapsed_structs.contains(&c.id)).unwrap_or(false);
+
+            let struct_depth = active_ranges.len().saturating_sub(1);
+            let indent_level = if !container_structs.is_empty() {
+                active_ranges
+                    .iter()
+                    .find(|r| container_structs.first().map(|c| c.id == r.id).unwrap_or(false))
+                    .map(|r| r.depth)
+                    .unwrap_or(struct_depth)
+            } else {
+                active_ranges.len()
+            };
+            let indent_px = indent_level as f32 * 14.0;
+
+            let mut parts_width = 0.0;
+            let mut part_count = 0;
+
+            if let Some(container) = container_structs.first() {
+                let text = if is_collapsed {
+                    format!("▶ {} ({} bytes)", container.id, container.size)
+                } else {
+                    format!("▼ {}", container.id)
+                };
+                parts_width += weighted_text_width(&text, char_w);
+                part_count += 1;
+            }
+
+            if !is_collapsed {
+                for f in leaf_fields {
+                    let expr = f.format_expression();
+                    parts_width += weighted_text_width(&expr, char_w);
+                    part_count += 1;
+                }
+            }
+
+            if part_count > 0 {
+                let spacing_width = (part_count - 1) as f32 * (char_w * 2.0);
+                let row_width = indent_px + parts_width + spacing_width + 8.0;
+                max_width = max_width.max(row_width);
+            }
+        }
+
+        max_width
     }
 
     fn comment_content_width_in_range(editor: &Editor, scan_range: &Range<usize>, char_w: f32) -> f32 {
@@ -1261,8 +1422,13 @@ impl HexView {
                 let editor = self.editor.read(cx);
                 if let Some(parse_res) = editor.parse_result() {
                     let char_w = f32::from(self.font_size_prop) * 0.61;
-                    let max_w = Self::description_width_in_range(&parse_res, &scan_range, char_w);
-                    self.desc_col_width = max_w.max(DESC_WIDTH);
+                    let max_content_w = Self::description_content_width_in_range(editor, &parse_res, &scan_range, char_w);
+                    self.cached_desc_content_width.set(Some(max_content_w));
+                    self.desc_col_width = if max_content_w > 0.0 {
+                        (max_content_w + 24.0).max(DESC_WIDTH)
+                    } else {
+                        DESC_WIDTH
+                    };
                     self.desc_scroll_x = 0.0;
                 } else {
                     self.desc_col_width = DESC_WIDTH;
@@ -1339,6 +1505,8 @@ impl HexView {
                 let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
                 if new_offset != self.scroll_offset {
                     self.scroll_offset = new_offset;
+                    self.cached_comment_content_width.set(None);
+                    self.cached_desc_content_width.set(None);
                     cx.notify();
                     cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
                 }
@@ -1397,6 +1565,8 @@ impl HexView {
                 let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
                 if new_offset != self.scroll_offset {
                     self.scroll_offset = new_offset;
+                    self.cached_comment_content_width.set(None);
+                    self.cached_desc_content_width.set(None);
                     cx.notify();
                     cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
                 }
@@ -1463,6 +1633,7 @@ impl HexView {
         self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cached_comment_content_width.set(None);
+        self.cached_desc_content_width.set(None);
         self.cursor_reveal_pending = true;
         cx.notify();
     }
@@ -1472,6 +1643,7 @@ impl HexView {
         self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cached_comment_content_width.set(None);
+        self.cached_desc_content_width.set(None);
         self.cursor_reveal_pending = true;
         cx.notify();
     }
@@ -1574,6 +1746,8 @@ impl HexView {
 
         if self.scroll_offset != new_offset {
             self.scroll_offset = new_offset;
+            self.cached_comment_content_width.set(None);
+            self.cached_desc_content_width.set(None);
             self.accum_scroll_y = 0.0;
             cx.notify();
             cx.emit(HexViewEvent::Scrolled(self.scroll_offset));

@@ -7,7 +7,10 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{self, Input, InputState};
 use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
 
-actions!(highlight_panel, [MoveUp, MoveDown, SelectCurrent, EditComment, CancelEdit, SaveEdit, DeleteSelected]);
+actions!(
+    highlight_panel,
+    [MoveUp, MoveDown, SelectCurrent, EditComment, CancelEdit, SaveEdit, DeleteSelected]
+);
 
 const CONTEXT: &str = "HighlightPanel";
 
@@ -310,10 +313,7 @@ impl HighlightPanel {
             return;
         }
 
-        let curr_idx = self
-            .selected_id
-            .as_ref()
-            .and_then(|id| highlights.iter().position(|h| &h.id == id));
+        let curr_idx = self.selected_id.as_ref().and_then(|id| highlights.iter().position(|h| &h.id == id));
 
         let next_idx = match curr_idx {
             Some(idx) => idx.saturating_sub(1),
@@ -337,10 +337,7 @@ impl HighlightPanel {
         }
 
         let max_idx = highlights.len() - 1;
-        let curr_idx = self
-            .selected_id
-            .as_ref()
-            .and_then(|id| highlights.iter().position(|h| &h.id == id));
+        let curr_idx = self.selected_id.as_ref().and_then(|id| highlights.iter().position(|h| &h.id == id));
 
         let next_idx = match curr_idx {
             Some(idx) => (idx + 1).min(max_idx),

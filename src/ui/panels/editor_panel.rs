@@ -8,10 +8,9 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::{ActiveTheme, Sizable};
 
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary,
-    CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray,
-    CopyAsPrintableText, CopyAsRustArray, FocusHexView, GoToBeginning, GoToEnd, HighlightBlue, HighlightCyan,
-    HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine,
+    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
+    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, FocusHexView, GoToBeginning, GoToEnd,
+    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine,
     RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch,
 };
 use crate::app_state::AppState;

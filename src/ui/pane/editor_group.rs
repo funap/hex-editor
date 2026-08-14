@@ -6,6 +6,7 @@ use gpui_component::{ActiveTheme, Icon, Sizable};
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
 use crate::core::editor::Editor;
+use crate::ui::panels::editor_panel::EditorPanel;
 
 #[allow(dead_code)]
 pub enum EditorGroupEvent {
@@ -65,6 +66,10 @@ impl EditorGroup {
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
         self.active_content().and_then(|c| c.editor(cx))
+    }
+
+    pub fn active_editor_panel(&self) -> Option<Entity<EditorPanel>> {
+        self.active_content().and_then(|c| c.editor_panel())
     }
 
     pub fn add_tab(&mut self, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {

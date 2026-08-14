@@ -6,6 +6,7 @@ use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use super::editor_group::{EditorGroup, EditorGroupEvent};
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
 use crate::core::editor::Editor;
+use crate::ui::panels::editor_panel::EditorPanel;
 
 #[derive(Clone)]
 pub enum PaneNode {
@@ -54,6 +55,10 @@ impl PaneTree {
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
         self.active_group(cx)?.read(cx).active_editor(cx)
+    }
+
+    pub fn active_editor_panel(&self, cx: &App) -> Option<Entity<EditorPanel>> {
+        self.active_group(cx)?.read(cx).active_editor_panel()
     }
 
     pub fn find_group(&self, group_id: usize) -> Option<Entity<EditorGroup>> {

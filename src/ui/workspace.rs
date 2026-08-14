@@ -126,7 +126,7 @@ impl Workspace {
         })
         .detach();
 
-        let (handles, highlight_panel) = {
+        let (handles, highlight_panel, struct_tree) = {
             let left_read = left_panel.read(cx);
             (
                 [
@@ -138,6 +138,7 @@ impl Workspace {
                     left_read.highlight_panel.read(cx).focus_handle(cx),
                 ],
                 left_read.highlight_panel.clone(),
+                left_read.struct_tree.clone(),
             )
         };
 
@@ -152,14 +153,35 @@ impl Workspace {
         cx.subscribe_in(
             &highlight_panel,
             window,
-            |this, _, event: &crate::ui::components::highlight_panel::HighlightPanelEvent, window, cx| match event {
+            |this, _, event: &crate::ui::components::highlight_panel::HighlightPanelEvent, _window, cx| match event {
                 crate::ui::components::highlight_panel::HighlightPanelEvent::Export => {
-                    this.on_action_export_highlights(&crate::actions::ExportHighlights, window, cx);
+                    this.on_action_export_highlights(&crate::actions::ExportHighlights, _window, cx);
                 }
                 crate::ui::components::highlight_panel::HighlightPanelEvent::Import => {
-                    this.on_action_import_highlights(&crate::actions::ImportHighlights, window, cx);
+                    this.on_action_import_highlights(&crate::actions::ImportHighlights, _window, cx);
                 }
-                crate::ui::components::highlight_panel::HighlightPanelEvent::NavigateTo { .. } => {}
+                crate::ui::components::highlight_panel::HighlightPanelEvent::NavigateTo { offset, .. } => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.scroll_to_byte(*offset, cx);
+                        });
+                    }
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe_in(
+            &struct_tree,
+            window,
+            |this, _, event: &crate::ui::components::struct_tree_view::StructTreeViewEvent, _window, cx| match event {
+                crate::ui::components::struct_tree_view::StructTreeViewEvent::NavigateTo { offset, .. } => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.scroll_to_byte(*offset, cx);
+                        });
+                    }
+                }
             },
         )
         .detach();
@@ -187,6 +209,10 @@ impl Workspace {
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
         self.pane_tree.read(cx).active_editor(cx)
+    }
+
+    pub fn active_editor_panel(&self, cx: &App) -> Option<Entity<EditorPanel>> {
+        self.pane_tree.read(cx).active_editor_panel(cx)
     }
 
     fn sync_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {

@@ -59,6 +59,13 @@ impl TabContent {
         }
     }
 
+    pub fn editor_panel(&self) -> Option<Entity<EditorPanel>> {
+        match self {
+            TabContent::Editor(p) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
     pub fn document(&self, cx: &App) -> Option<Arc<RwLock<Document>>> {
         match self {
             TabContent::Editor(p) => Some(p.read(cx).editor().read(cx).document.clone()),

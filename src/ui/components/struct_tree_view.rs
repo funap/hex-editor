@@ -25,6 +25,11 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+#[allow(dead_code)]
+pub enum StructTreeViewEvent {
+    NavigateTo { offset: usize, size: usize },
+}
+
 pub struct StructTreeView {
     pub parse_result: Option<std::sync::Arc<crate::core::structure::types::ParseResult>>,
     pub flattened_fields: Vec<FlattenedField>,
@@ -49,6 +54,8 @@ pub struct FlattenedField {
     pub has_children: bool,
     pub is_collapsed: bool,
 }
+
+impl EventEmitter<StructTreeViewEvent> for StructTreeView {}
 
 impl StructTreeView {
     pub fn new(
@@ -281,6 +288,7 @@ impl StructTreeView {
             item.offset
         };
 
+        let mut nav_offset = offset;
         if let Some(editor) = &self.editor {
             editor.update(cx, |editor, cx| {
                 let total = editor.total_size();
@@ -290,15 +298,22 @@ impl StructTreeView {
                     editor.selection_start = Some(start);
                     editor.selection_end = Some(end);
                     editor.cursor_offset = start;
+                    nav_offset = start;
                 } else {
                     editor.selection_start = None;
                     editor.selection_end = None;
-                    editor.cursor_offset = offset.min(total);
+                    let clamped = offset.min(total);
+                    editor.cursor_offset = clamped;
+                    nav_offset = clamped;
                 }
                 cx.notify();
             });
         }
 
+        cx.emit(StructTreeViewEvent::NavigateTo {
+            offset: nav_offset,
+            size: item.size,
+        });
         cx.notify();
     }
 

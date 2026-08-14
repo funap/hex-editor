@@ -161,6 +161,12 @@ impl EditorPanel {
         self.editor.clone()
     }
 
+    pub fn scroll_to_byte(&mut self, byte_offset: usize, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |view, cx| {
+            view.scroll_to_byte(byte_offset, cx);
+        });
+    }
+
     pub fn path(&self, cx: &App) -> std::path::PathBuf {
         self.editor.read(cx).document.read().expect("document read lock").path().to_path_buf()
     }
@@ -334,7 +340,7 @@ impl EditorPanel {
             // Scroll to current result if not preserving
             if !preserve_scroll {
                 self.hex_view.update(cx, |view, cx| {
-                    view.scroll_to_row(offset / 16, cx);
+                    view.scroll_to_byte(offset, cx);
                 });
                 self.editor.update(cx, |editor, cx| {
                     editor.set_cursor_offset(offset);

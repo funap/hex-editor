@@ -361,7 +361,8 @@ impl Render for ChecksumPanel {
             v_flex()
                 .flex_1()
                 .items_center()
-                .justify_center()
+                .pt_8()
+                .p_4()
                 .child(div().text_sm().text_color(theme.accent).child("Calculating sums..."))
                 .into_any_element()
         } else if let Some(res) = &self.results {
@@ -405,7 +406,7 @@ impl Render for ChecksumPanel {
             v_flex()
                 .flex_1()
                 .items_center()
-                .justify_center()
+                .pt_8()
                 .p_4()
                 .child(div().text_sm().text_color(theme.muted_foreground).child(msg))
                 .into_any_element()

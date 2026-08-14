@@ -394,18 +394,46 @@ seq:
     let mut editor = Editor::new(doc);
     editor.set_kaitai_definition(ksy);
 
-    assert_eq!(editor.parse_result.as_ref().unwrap().fields.len(), 2);
-    assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 2);
+    assert_eq!(editor.parse_result().as_ref().unwrap().fields.len(), 2);
+    assert_eq!(editor.parse_result().as_ref().unwrap().fields[1].size, 2);
 
     // Execute command that changes `len` from 2 to 1
     editor.set_cursor_offset(0);
     editor.execute_command(Box::new(InsertCharCommand::new(0, 0x01)));
 
-    assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 1);
+    assert_eq!(editor.parse_result().as_ref().unwrap().fields[1].size, 1);
 
     // Undo command
     editor.undo();
-    assert_eq!(editor.parse_result.as_ref().unwrap().fields[1].size, 2);
+    assert_eq!(editor.parse_result().as_ref().unwrap().fields[1].size, 2);
+}
+
+#[test]
+fn test_shared_structure_parse_result_across_split_editors() {
+    use crate::core::document::Document;
+    use crate::core::editor::Editor;
+    use std::sync::{Arc, RwLock};
+
+    let ksy_yaml = r#"
+meta:
+  id: test_shared
+seq:
+  - id: len
+    type: u1
+  - id: body
+    size: len
+"#;
+    let ksy = Arc::new(parse_ksy_yaml(ksy_yaml));
+    let buffer = crate::core::buffer::Buffer::new(vec![0x02, 0xAA, 0xBB]);
+    let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test_shared.bin"), buffer)));
+    let mut editor1 = Editor::new(doc.clone());
+    let editor2 = Editor::new(doc.clone());
+
+    editor1.set_kaitai_definition(ksy);
+
+    // editor2 immediately sees the parsed structure through the shared lock
+    assert_eq!(editor2.parse_result().as_ref().unwrap().fields.len(), 2);
+    assert_eq!(editor2.parse_result().as_ref().unwrap().fields[1].size, 2);
 }
 
 #[test]

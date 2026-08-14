@@ -137,6 +137,12 @@ impl EditorPanel {
         })
         .detach();
 
+        // Register editor with EditorService for cross-tab notifications
+        let path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+        if let Some(path) = path {
+            AppState::global(cx).editor_service.register_editor(path, editor.downgrade());
+        }
+
         Self {
             editor,
             focus_handle,
@@ -166,18 +172,23 @@ impl EditorPanel {
 
     #[allow(dead_code)]
     pub fn create_split_clone(&self, window: &mut Window, cx: &mut App) -> Entity<EditorPanel> {
-        let ed = self.editor.read(cx);
-        let doc = ed.document.clone();
-        let encoding = ed.encoding;
-        let radix = ed.radix;
-        let group_size = ed.group_size;
-        let is_big_endian = ed.is_big_endian;
-        let ksy_definition = ed.ksy_definition.clone();
-        let parse_result = ed.parse_result.clone();
-        let custom_breaks = ed.custom_breaks.clone();
-        let custom_joins = ed.custom_joins.clone();
-        let empty_lines = ed.empty_lines.clone();
-        let highlights = ed.highlights.clone();
+        let (doc, encoding, radix, group_size, is_big_endian, show_inline_structure_view, collapsed_struct_ids, cursor_offset, selection_start, selection_end) = {
+            let ed = self.editor.read(cx);
+            (
+                ed.document.clone(),
+                ed.encoding,
+                ed.radix,
+                ed.group_size,
+                ed.is_big_endian,
+                ed.show_inline_structure_view,
+                ed.collapsed_struct_ids.clone(),
+                ed.cursor_offset,
+                ed.selection_start,
+                ed.selection_end,
+            )
+        };
+
+        let layout_state = self.hex_view.read(cx).layout_state();
 
         let new_editor = cx.new(|_| {
             let mut editor = Editor::new(doc);
@@ -185,16 +196,23 @@ impl EditorPanel {
             editor.radix = radix;
             editor.group_size = group_size;
             editor.is_big_endian = is_big_endian;
-            editor.ksy_definition = ksy_definition;
-            editor.parse_result = parse_result;
-            editor.custom_breaks = custom_breaks;
-            editor.custom_joins = custom_joins;
-            editor.empty_lines = empty_lines;
-            editor.highlights = highlights;
+            editor.show_inline_structure_view = show_inline_structure_view;
+            editor.collapsed_struct_ids = collapsed_struct_ids;
+            editor.cursor_offset = cursor_offset;
+            editor.selection_start = selection_start;
+            editor.selection_end = selection_end;
             editor
         });
 
-        cx.new(|cx| EditorPanel::new(new_editor, window, cx))
+        let new_editor_panel = cx.new(|cx| {
+            let panel = EditorPanel::new(new_editor, window, cx);
+            panel.hex_view.update(cx, |hv, _| {
+                hv.apply_layout_state(&layout_state);
+            });
+            panel
+        });
+
+        new_editor_panel
     }
 
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {

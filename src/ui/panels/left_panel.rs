@@ -83,10 +83,10 @@ impl Render for LeftPanel {
         div()
             .flex()
             .flex_col()
-            .w_full()
-            .h_full()
+            .size_full()
             .overflow_hidden()
             .min_w_0()
+            .min_h_0()
             .child(match self.active_tab {
                 LeftPanelTab::Files => self.file_tree.clone().into_any_element(),
                 LeftPanelTab::Structure => self.struct_tree.clone().into_any_element(),

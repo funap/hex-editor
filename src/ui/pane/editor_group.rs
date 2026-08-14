@@ -5,7 +5,6 @@ use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
 use crate::core::editor::Editor;
-use crate::ui::panels::editor_panel::EditorPanel;
 
 #[allow(dead_code)]
 pub enum EditorGroupEvent {
@@ -173,39 +172,8 @@ impl EditorGroup {
 
         match active_content {
             TabContent::Editor(editor_panel) => {
-                let (doc, encoding, radix, group_size, is_big_endian, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
-                    let ep = editor_panel.read(cx);
-                    let ed = ep.editor();
-                    let ed_read = ed.read(cx);
-                    (
-                        ed_read.document.clone(),
-                        ed_read.encoding,
-                        ed_read.radix,
-                        ed_read.group_size,
-                        ed_read.is_big_endian,
-                        ed_read.ksy_definition.clone(),
-                        ed_read.parse_result.clone(),
-                        ed_read.custom_breaks.clone(),
-                        ed_read.custom_joins.clone(),
-                        ed_read.empty_lines.clone(),
-                    )
-                };
-
-                let new_editor = cx.new(|_| {
-                    let mut editor = Editor::new(doc);
-                    editor.encoding = encoding;
-                    editor.radix = radix;
-                    editor.group_size = group_size;
-                    editor.is_big_endian = is_big_endian;
-                    editor.ksy_definition = ksy_definition;
-                    editor.parse_result = parse_result;
-                    editor.custom_breaks = custom_breaks;
-                    editor.custom_joins = custom_joins;
-                    editor.empty_lines = empty_lines;
-                    editor
-                });
-
-                let new_editor_panel = cx.new(|cx| EditorPanel::new(new_editor, window, cx));
+                let editor_panel = editor_panel.clone();
+                let new_editor_panel = editor_panel.update(cx, |ep, cx| ep.create_split_clone(window, cx));
                 cx.emit(EditorGroupEvent::Split {
                     direction,
                     new_content: TabContent::Editor(new_editor_panel),

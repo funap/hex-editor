@@ -76,8 +76,7 @@ impl Render for StatusBar {
         let (is_parsing, parse_offset, parse_total, parse_result_info) = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
             let parse_info = editor
-                .parse_result
-                .as_ref()
+                .parse_result()
                 .map(|res| (res.definition_id.clone(), res.total_parsed_bytes, res.errors.len()));
             let total = if editor.parse_total_size > 0 {
                 editor.parse_total_size

@@ -463,6 +463,47 @@ mod highlight_render_tests {
     }
 }
 
+#[cfg(test)]
+mod layout_state_tests {
+    use super::HexViewLayoutState;
+
+    #[test]
+    fn test_layout_state_copy_preserves_dimensions_and_scroll() {
+        let state = HexViewLayoutState {
+            address_col_width: 120.0,
+            hex_col_width: 350.0,
+            desc_col_width: 280.0,
+            comment_col_width: 400.0,
+            ascii_col_width: 180.0,
+            show_offset: false,
+            show_ascii: true,
+            show_header: false,
+            scroll_offset: 42,
+            outer_scroll_x: 15.0,
+            hex_scroll_x: 25.0,
+            ascii_scroll_x: 35.0,
+            desc_scroll_x: 45.0,
+            comment_scroll_x: 55.0,
+        };
+
+        let cloned = state.clone();
+        assert_eq!(cloned.address_col_width, 120.0);
+        assert_eq!(cloned.hex_col_width, 350.0);
+        assert_eq!(cloned.desc_col_width, 280.0);
+        assert_eq!(cloned.comment_col_width, 400.0);
+        assert_eq!(cloned.ascii_col_width, 180.0);
+        assert!(!cloned.show_offset);
+        assert!(cloned.show_ascii);
+        assert!(!cloned.show_header);
+        assert_eq!(cloned.scroll_offset, 42);
+        assert_eq!(cloned.outer_scroll_x, 15.0);
+        assert_eq!(cloned.hex_scroll_x, 25.0);
+        assert_eq!(cloned.ascii_scroll_x, 35.0);
+        assert_eq!(cloned.desc_scroll_x, 45.0);
+        assert_eq!(cloned.comment_scroll_x, 55.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HexGroupInfo {
     chunk_start: usize,
@@ -836,6 +877,24 @@ pub struct HexView {
 
 impl EventEmitter<HexViewEvent> for HexView {}
 
+#[derive(Clone, Debug)]
+pub struct HexViewLayoutState {
+    pub address_col_width: f32,
+    pub hex_col_width: f32,
+    pub desc_col_width: f32,
+    pub comment_col_width: f32,
+    pub ascii_col_width: f32,
+    pub show_offset: bool,
+    pub show_ascii: bool,
+    pub show_header: bool,
+    pub scroll_offset: usize,
+    pub outer_scroll_x: f32,
+    pub hex_scroll_x: f32,
+    pub ascii_scroll_x: f32,
+    pub desc_scroll_x: f32,
+    pub comment_scroll_x: f32,
+}
+
 #[allow(dead_code)]
 impl HexView {
     pub fn new(editor: Entity<Editor>, cx: &mut Context<Self>) -> Self {
@@ -924,6 +983,46 @@ impl HexView {
         }
     }
 
+    pub fn layout_state(&self) -> HexViewLayoutState {
+        HexViewLayoutState {
+            address_col_width: self.address_col_width,
+            hex_col_width: self.hex_col_width,
+            desc_col_width: self.desc_col_width,
+            comment_col_width: self.comment_col_width,
+            ascii_col_width: self.ascii_col_width,
+            show_offset: self.show_offset,
+            show_ascii: self.show_ascii,
+            show_header: self.show_header,
+            scroll_offset: self.scroll_offset,
+            outer_scroll_x: self.outer_scroll_x,
+            hex_scroll_x: self.hex_scroll_x,
+            ascii_scroll_x: self.ascii_scroll_x,
+            desc_scroll_x: self.desc_scroll_x,
+            comment_scroll_x: self.comment_scroll_x,
+        }
+    }
+
+    pub fn apply_layout_state(&mut self, state: &HexViewLayoutState) {
+        self.address_col_width = state.address_col_width;
+        self.hex_col_width = state.hex_col_width;
+        self.desc_col_width = state.desc_col_width;
+        self.comment_col_width = state.comment_col_width;
+        self.ascii_col_width = state.ascii_col_width;
+        self.show_offset = state.show_offset;
+        self.show_ascii = state.show_ascii;
+        self.show_header = state.show_header;
+        self.scroll_offset = state.scroll_offset;
+        self.outer_scroll_x = state.outer_scroll_x;
+        self.hex_scroll_x = state.hex_scroll_x;
+        self.ascii_scroll_x = state.ascii_scroll_x;
+        self.desc_scroll_x = state.desc_scroll_x;
+        self.comment_scroll_x = state.comment_scroll_x;
+    }
+
+    pub fn copy_layout_from(&mut self, source: &HexView) {
+        self.apply_layout_state(&source.layout_state());
+    }
+
     pub fn max_hex_scroll(&self, cx: &App) -> f32 {
         let _ = cx;
         (self.hex_content_width - self.hex_col_width).max(0.0)
@@ -931,7 +1030,7 @@ impl HexView {
 
     pub fn max_desc_scroll(&self, cx: &App) -> f32 {
         let editor = self.editor.read(cx);
-        if let Some(ref parse_res) = editor.parse_result {
+        if let Some(parse_res) = editor.parse_result() {
             let char_w = f32::from(self.font_size_prop) * 0.61;
             let container_width = parse_res.index.max_container_id_chars * char_w + 40.0;
             let leaf_width = parse_res.index.max_leaf_expression_chars * char_w + 50.0;
@@ -977,7 +1076,8 @@ impl HexView {
         }
 
         let line_starts = editor.line_starts();
-        let highlights = &editor.highlights;
+        let highlights_guard = editor.highlights.read().expect("highlights read lock");
+        let highlights = &*highlights_guard;
         let mut start_idx = highlights.partition_point(|highlight| highlight.offset < scan_range.start);
         if start_idx > 0 {
             // Include the item immediately before the range because a comment
@@ -1034,7 +1134,7 @@ impl HexView {
             let line_starts = editor.line_starts();
             (
                 line_starts.max_bytes_per_row(),
-                editor.show_inline_structure_view && editor.parse_result.is_some(),
+                editor.show_inline_structure_view && editor.parse_result().is_some(),
             )
         };
         let bounds_width = self
@@ -1150,7 +1250,6 @@ impl HexView {
                 if self.hex_content_width > 0.0 {
                     self.hex_col_width = self.hex_content_width;
                 }
-                self.hex_scroll_x = 0.0;
             }
             ResizingColumn::Ascii => {
                 let max_bytes_per_row = self.editor.read(cx).line_starts().max_bytes_per_row();
@@ -1160,9 +1259,9 @@ impl HexView {
             ResizingColumn::Description => {
                 let scan_range = self.auto_fit_scan_range(cx);
                 let editor = self.editor.read(cx);
-                if let Some(ref parse_res) = editor.parse_result {
+                if let Some(parse_res) = editor.parse_result() {
                     let char_w = f32::from(self.font_size_prop) * 0.61;
-                    let max_w = Self::description_width_in_range(parse_res, &scan_range, char_w);
+                    let max_w = Self::description_width_in_range(&parse_res, &scan_range, char_w);
                     self.desc_col_width = max_w.max(DESC_WIDTH);
                     self.desc_scroll_x = 0.0;
                 } else {
@@ -1666,6 +1765,14 @@ impl HexView {
         cx.dispatch_action(&ToggleSearch);
     }
 
+    fn notify_document_changed(&self, cx: &mut App) {
+        let path = self.editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+        if let Some(path) = path {
+            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            service.notify_document_changed(&path, cx);
+        }
+    }
+
     fn add_custom_break(&mut self, _: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
@@ -1675,28 +1782,31 @@ impl HexView {
             }
             cx.notify();
         });
+        self.notify_document_changed(cx);
     }
 
     fn remove_custom_break_backward(&mut self, _: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
-            if offset > 0 && editor.custom_breaks.contains(&(offset - 1)) {
+            if offset > 0 && editor.custom_breaks.read().expect("custom_breaks read lock").contains(&(offset - 1)) {
                 editor.remove_custom_break(offset - 1);
             }
             cx.notify();
         });
+        self.notify_document_changed(cx);
     }
 
     fn remove_custom_break_forward(&mut self, _: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
-            if editor.custom_breaks.contains(&offset) {
+            if editor.custom_breaks.read().expect("custom_breaks read lock").contains(&offset) {
                 editor.remove_custom_break(offset);
             }
             cx.notify();
         });
+        self.notify_document_changed(cx);
     }
 
     fn join_line(&mut self, _: &JoinLine, window: &mut Window, cx: &mut Context<Self>) {
@@ -1706,6 +1816,7 @@ impl HexView {
             editor.join_line();
             cx.notify();
         });
+        self.notify_document_changed(cx);
     }
 
     fn clear_all_custom_breaks(&mut self, _: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
@@ -1714,6 +1825,7 @@ impl HexView {
             editor.clear_all_custom_breaks();
             cx.notify();
         });
+        self.notify_document_changed(cx);
     }
 
     fn copy_formatted(&self, format: CopyFormat, cx: &mut Context<Self>) {
@@ -1793,6 +1905,7 @@ impl HexView {
                 cx.notify();
             }
         });
+        self.notify_document_changed(cx);
     }
 
     fn highlight_red(&mut self, _: &HighlightRed, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1832,7 +1945,7 @@ impl HexView {
     }
 
     fn clear_all_highlights(&mut self, _: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.editor.read(cx).highlights.len();
+        let count = self.editor.read(cx).highlights_snapshot().len();
         if count == 0 {
             return;
         }
@@ -1850,6 +1963,7 @@ impl HexView {
         );
 
         let editor = self.editor.clone();
+        let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
         cx.spawn_in(window, async move |_this, window| {
             if let Ok(0) = prompt.await {
                 window
@@ -1858,6 +1972,10 @@ impl HexView {
                             editor.clear_all_custom_highlights();
                             cx.notify();
                         });
+                        if let Some(ref path) = doc_path {
+                            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                            service.notify_document_changed(path, cx);
+                        }
                     })
                     .ok();
             }
@@ -1978,7 +2096,7 @@ impl HexView {
             return Some(line_offset);
         }
 
-        let parse_result = editor.parse_result.as_ref();
+        let parse_result = editor.parse_result();
         let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
         let base_x = f32::from(list_bounds.left()) + 8.0;
         let layout = self.current_layout(cx);
@@ -1989,7 +2107,7 @@ impl HexView {
         let world_x = relative_x + self.outer_scroll_x;
 
         if is_struct_mode && layout.description.map(|column| world_x >= column.start).unwrap_or(false) {
-            if let Some(parse_res) = parse_result {
+            if let Some(ref parse_res) = parse_result {
                 let leaf_fields = parse_res.find_leaf_fields_starting_at(line_offset, chunk_len);
                 if let Some(first) = leaf_fields.first() {
                     return Some(first.offset);
@@ -2766,7 +2884,7 @@ impl Render for HexView {
             (
                 line_starts.len().max(1),
                 line_starts.max_bytes_per_row(),
-                editor.show_inline_structure_view && editor.parse_result.is_some(),
+                editor.show_inline_structure_view && editor.parse_result().is_some(),
             )
         };
         let ascii_col_width = self.effective_ascii_col_width(max_bytes_per_row);
@@ -3557,7 +3675,7 @@ impl Render for HexView {
                 let radix = self.radix;
                 let group_size = self.group_size;
                 let is_big_endian = self.is_big_endian;
-                let max_highlight_len = self.max_highlight_len;
+                let _max_highlight_len = self.max_highlight_len;
                 let highlights = self.highlights.clone();
                 let is_dragging_scrollbar = self.is_dragging_scrollbar;
                 let scrollbar_hovered = self.scrollbar_hovered;
@@ -3610,13 +3728,9 @@ impl Render for HexView {
                                 (usize::MAX, usize::MIN)
                             };
                             (
-                                if editor.show_inline_structure_view {
-                                    editor.parse_result.clone()
-                                } else {
-                                    None
-                                },
+                                if editor.show_inline_structure_view { editor.parse_result() } else { None },
                                 Arc::new(editor.collapsed_struct_ids.clone()),
-                                Arc::new(editor.highlights.clone()),
+                                Arc::new(editor.highlights_snapshot()),
                                 editor.document.clone(),
                                 editor.line_starts(),
                                 editor.cursor_offset,
@@ -3625,6 +3739,16 @@ impl Render for HexView {
                             )
                         };
                         let doc = doc_arc.read().expect("document read lock");
+
+                        // Construct combined highlights from the shared snapshot and search results
+                        let mut effective_highlights: Vec<(Range<usize>, Hsla)> = highlight_items.iter().map(|h| (h.range(), h.hsla_color())).collect();
+                        for (search_range, search_color) in highlights.iter() {
+                            if !effective_highlights.iter().any(|(r, _)| r == search_range) {
+                                effective_highlights.push((search_range.clone(), *search_color));
+                            }
+                        }
+                        effective_highlights.sort_by_key(|(range, _)| range.start);
+                        let effective_max_hl_len = effective_highlights.iter().map(|(r, _)| r.end.saturating_sub(r.start)).max().unwrap_or(0);
 
                         let list_h = f32::from(bounds.size.height);
                         let visible_rows = (list_h / ROW_HEIGHT).ceil() as usize + 1;
@@ -3649,9 +3773,9 @@ impl Render for HexView {
                                 cursor_offset,
                                 min_sel,
                                 max_sel,
-                                highlights.as_slice(),
+                                effective_highlights.as_slice(),
                                 highlight_items.as_slice(),
-                                max_highlight_len,
+                                effective_max_hl_len,
                                 show_offset,
                                 show_ascii,
                                 ascii_col_width,

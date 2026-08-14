@@ -620,6 +620,7 @@ impl Workspace {
                     .update(|_, cx| {
                         view.update(cx, |this, cx| {
                             if let Some(editor) = this.active_editor(cx) {
+                                let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
                                 editor.update(cx, |ed, cx| match ed.import_highlights_from_file(&path) {
                                     Ok(_) => {
                                         cx.notify();
@@ -628,6 +629,10 @@ impl Workspace {
                                         eprintln!("Failed to import highlights: {}", e);
                                     }
                                 });
+                                if let Some(ref p) = doc_path {
+                                    let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                                    service.notify_document_changed(p, cx);
+                                }
                             }
                         });
                     })
@@ -1040,7 +1045,7 @@ impl Render for Workspace {
                     .overflow_hidden()
                     .child(self.activity_bar.clone())
                     .child(
-                        div().flex_1().min_w_0().min_h_0().overflow_hidden().child(
+                        div().flex().flex_col().flex_1().size_full().min_w_0().min_h_0().overflow_hidden().child(
                             h_resizable("workspace-h-resize")
                                 .child(
                                     resizable_panel()
@@ -1071,20 +1076,26 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
     let cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_token_clone = cancel_token.clone();
 
-    let (doc_arc, generation) = editor_entity.update(cx, |editor, cx| {
+    let (doc_arc, doc_path, generation) = editor_entity.update(cx, |editor, cx| {
         editor.cancel_structure_parsing();
         editor.parse_cancel_token = Some(cancel_token.clone());
-        editor.ksy_definition = Some(ksy.clone());
+        *editor.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy.clone());
         editor.is_parsing_structure = true;
         editor.parse_progress_offset = 0;
         let total = editor.document.read().expect("document read lock").buffer.len();
+        let path = editor.document.read().ok().map(|d| d.path().to_path_buf());
         editor.parse_total_size = total;
         editor.parse_generation += 1;
-        editor.parse_result = None;
+        *editor.parse_result.write().expect("parse_result write lock") = None;
         editor.invalidate_line_map();
         cx.notify();
-        (editor.document.clone(), editor.parse_generation)
+        (editor.document.clone(), path, editor.parse_generation)
     });
+
+    if let Some(ref path) = doc_path {
+        let service = crate::app_state::AppState::global(cx).editor_service.clone();
+        service.notify_document_changed(path, cx);
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::core::structure::types::ParseProgress>();
 
@@ -1139,6 +1150,14 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
                 cx.notify();
                 !is_done
             });
+
+            if let Some(ref path) = doc_path {
+                let path = path.clone();
+                let _ = cx.update(|cx| {
+                    let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                    service.notify_document_changed(&path, cx);
+                });
+            }
 
             if should_continue.is_err() || !should_continue.unwrap_or(false) {
                 break;

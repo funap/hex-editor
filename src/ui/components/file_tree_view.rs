@@ -320,7 +320,7 @@ impl Render for FileTreeView {
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
 
-        let container = v_flex().size_full().flex_shrink_0().h_full().bg(theme.sidebar);
+        let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(theme.sidebar);
 
         let container = container.focus_indicator(is_focused, theme);
 
@@ -347,10 +347,10 @@ impl Render for FileTreeView {
                     .text_color(crate::ui::style::header_text_color(is_focused, theme))
                     .child("FILES"),
             )
-            .child(if is_empty {
+            .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_empty {
                 v_flex()
                     .size_full()
-                    .justify_center()
+                    .pt_8()
                     .items_center()
                     .px_4()
                     .gap_4()
@@ -477,7 +477,7 @@ impl Render for FileTreeView {
                     }
                 })
                 .into_any_element()
-            })
+            }))
     }
 }
 

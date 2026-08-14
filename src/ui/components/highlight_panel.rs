@@ -99,7 +99,13 @@ impl HighlightPanel {
             .as_ref()
             .and_then(|ed| {
                 let editor = ed.read(cx);
-                editor.highlights.iter().find(|h| h.id == id).map(|h| h.comment.clone())
+                editor
+                    .highlights
+                    .read()
+                    .expect("highlights read lock")
+                    .iter()
+                    .find(|h| h.id == id)
+                    .map(|h| h.comment.clone())
             })
             .unwrap_or_default();
 
@@ -114,6 +120,17 @@ impl HighlightPanel {
         cx.notify();
     }
 
+    fn notify_document_changed(&self, cx: &mut App) {
+        let path = self
+            .editor
+            .as_ref()
+            .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.path().to_path_buf()));
+        if let Some(path) = path {
+            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            service.notify_document_changed(&path, cx);
+        }
+    }
+
     fn save_editing_comment(&mut self, cx: &mut Context<Self>) {
         let Some(editing_id) = self.editing_id.take() else { return };
         let new_comment = self.comment_input.read(cx).value().to_string();
@@ -123,6 +140,7 @@ impl HighlightPanel {
                 editor.update_highlight_comment(&editing_id, new_comment);
                 cx.notify();
             });
+            self.notify_document_changed(cx);
         }
         cx.notify();
     }
@@ -138,6 +156,7 @@ impl HighlightPanel {
                 editor.update_highlight_color(id, color);
                 cx.notify();
             });
+            self.notify_document_changed(cx);
         }
         self.color_picker_id = None;
         cx.notify();
@@ -149,6 +168,7 @@ impl HighlightPanel {
                 editor.remove_highlight_by_id(id);
                 cx.notify();
             });
+            self.notify_document_changed(cx);
         }
         if self.selected_id.as_deref() == Some(id) {
             self.selected_id = None;
@@ -164,7 +184,7 @@ impl HighlightPanel {
 
     fn clear_all_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor_entity) = &self.editor else { return };
-        let count = editor_entity.read(cx).highlights.len();
+        let count = editor_entity.read(cx).highlights_snapshot().len();
         if count == 0 {
             return;
         }
@@ -182,6 +202,7 @@ impl HighlightPanel {
         );
 
         let editor_entity = editor_entity.clone();
+        let doc_path = editor_entity.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
         cx.spawn_in(window, async move |this, window| {
             if let Ok(0) = prompt.await {
                 window
@@ -190,6 +211,10 @@ impl HighlightPanel {
                             editor.clear_all_custom_highlights();
                             cx.notify();
                         });
+                        if let Some(ref path) = doc_path {
+                            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                            service.notify_document_changed(path, cx);
+                        }
                         let _ = this.update(cx, |panel, cx| {
                             panel.selected_id = None;
                             panel.editing_id = None;
@@ -235,7 +260,7 @@ impl Render for HighlightPanel {
 
         let (highlights, has_editor) = if let Some(ed) = &self.editor {
             let editor = ed.read(cx);
-            (editor.highlights.clone(), true)
+            (editor.highlights_snapshot(), true)
         } else {
             (Vec::new(), false)
         };
@@ -328,7 +353,7 @@ impl Render for HighlightPanel {
             v_flex()
                 .flex_1()
                 .items_center()
-                .justify_center()
+                .pt_8()
                 .p_4()
                 .gap_2()
                 .child(Icon::new(IconName::Palette).size(px(28.0)).text_color(theme.muted_foreground.opacity(0.5)))
@@ -338,7 +363,7 @@ impl Render for HighlightPanel {
             v_flex()
                 .flex_1()
                 .items_center()
-                .justify_center()
+                .pt_8()
                 .p_4()
                 .gap_2()
                 .child(Icon::new(IconName::Palette).size(px(28.0)).text_color(theme.muted_foreground.opacity(0.5)))

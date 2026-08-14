@@ -34,18 +34,18 @@ pub struct Editor {
     pub selection_start: Option<usize>,
     pub selection_end: Option<usize>,
     pub search_state: SearchState,
-    pub custom_breaks: BTreeSet<usize>,
+    pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
     /// 16バイト自然境界のうち、改行を抑制すべき位置を記録する。
     /// join_line() で追加され、行を16バイト超に結合するために使用。
-    pub custom_joins: BTreeSet<usize>,
+    pub custom_joins: Arc<RwLock<BTreeSet<usize>>>,
     /// 特定のオフセットに挿入された空行の数を記録する。
-    pub empty_lines: std::collections::BTreeMap<usize, usize>,
+    pub empty_lines: Arc<RwLock<std::collections::BTreeMap<usize, usize>>>,
     pub encoding: Encoding,
     pub radix: DisplayRadix,
     pub group_size: ByteGroupSize,
     pub is_big_endian: bool,
-    pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
-    pub parse_result: Option<Arc<ParseResult>>,
+    pub ksy_definition: Arc<RwLock<Option<Arc<crate::core::structure::KsyDefinition>>>>,
+    pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
     pub is_parsing_structure: bool,
     pub parse_progress_offset: usize,
     pub parse_total_size: usize,
@@ -53,27 +53,39 @@ pub struct Editor {
     pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
-    pub highlights: Vec<HighlightItem>,
+    pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
 impl Editor {
     pub fn new(document: Arc<RwLock<Document>>) -> Self {
+        let (highlights, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
+            let doc = document.read().expect("document read lock");
+            (
+                doc.highlights.clone(),
+                doc.ksy_definition.clone(),
+                doc.parse_result.clone(),
+                doc.custom_breaks.clone(),
+                doc.custom_joins.clone(),
+                doc.empty_lines.clone(),
+            )
+        };
+
         Self {
             document,
             cursor_offset: 0,
             selection_start: None,
             selection_end: None,
             search_state: SearchState::default(),
-            custom_breaks: BTreeSet::new(),
-            custom_joins: BTreeSet::new(),
-            empty_lines: std::collections::BTreeMap::new(),
+            custom_breaks,
+            custom_joins,
+            empty_lines,
             encoding: Encoding::default(),
             radix: DisplayRadix::default(),
             group_size: ByteGroupSize::default(),
             is_big_endian: false,
-            ksy_definition: None,
-            parse_result: None,
+            ksy_definition,
+            parse_result,
             is_parsing_structure: false,
             parse_progress_offset: 0,
             parse_total_size: 0,
@@ -81,7 +93,7 @@ impl Editor {
             parse_cancel_token: None,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
-            highlights: Vec::new(),
+            highlights,
             cached_line_map: RefCell::new(None),
         }
     }
@@ -209,6 +221,18 @@ impl Editor {
         Some(cur..cur + 1)
     }
 
+    pub fn highlights_snapshot(&self) -> Vec<HighlightItem> {
+        self.highlights.read().expect("highlights read lock").clone()
+    }
+
+    pub fn parse_result(&self) -> Option<Arc<ParseResult>> {
+        self.parse_result.read().expect("parse_result read lock").clone()
+    }
+
+    pub fn ksy_definition(&self) -> Option<Arc<crate::core::structure::KsyDefinition>> {
+        self.ksy_definition.read().expect("ksy_definition read lock").clone()
+    }
+
     pub fn add_highlight(&mut self, item: HighlightItem) -> String {
         if item.size == 0 {
             return String::new();
@@ -224,8 +248,10 @@ impl Editor {
         item.offset = clamped_offset;
         item.size = clamped_size;
 
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+
         // If an existing highlight has the exact same range, update its color and/or comment
-        if let Some(existing) = self.highlights.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
+        if let Some(existing) = highlights.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
             existing.color = item.color;
             if !item.comment.is_empty() {
                 existing.comment = item.comment;
@@ -234,13 +260,13 @@ impl Editor {
         }
 
         // Ensure ID is non-empty and unique within this editor
-        if item.id.is_empty() || self.highlights.iter().any(|h| h.id == item.id) {
+        if item.id.is_empty() || highlights.iter().any(|h| h.id == item.id) {
             item.id = generate_highlight_id();
         }
 
         let id = item.id.clone();
-        self.highlights.push(item);
-        self.highlights.sort_by_key(|h| (h.offset, h.size));
+        highlights.push(item);
+        highlights.sort_by_key(|h| (h.offset, h.size));
         id
     }
 
@@ -257,8 +283,9 @@ impl Editor {
         let new_range = clamped_start..clamped_end;
         let hl_color = HighlightColor::from_hsla(color);
 
+        let mut highlights = self.highlights.write().expect("highlights write lock");
         let mut updated = Vec::new();
-        for h in self.highlights.drain(..) {
+        for h in highlights.drain(..) {
             let h_range = h.range();
             if h_range.end <= new_range.start || h_range.start >= new_range.end {
                 updated.push(h);
@@ -280,11 +307,12 @@ impl Editor {
         }
         updated.push(HighlightItem::new(new_range.start, new_range.len(), hl_color, ""));
         updated.sort_by_key(|h| (h.offset, h.size));
-        self.highlights = updated;
+        *highlights = updated;
     }
 
     pub fn update_highlight_comment(&mut self, id: &str, comment: impl Into<String>) -> bool {
-        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
             item.comment = comment.into();
             true
         } else {
@@ -293,7 +321,8 @@ impl Editor {
     }
 
     pub fn update_highlight_color(&mut self, id: &str, color: HighlightColor) -> bool {
-        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
             item.color = color;
             true
         } else {
@@ -312,10 +341,11 @@ impl Editor {
             return false;
         }
 
-        if let Some(item) = self.highlights.iter_mut().find(|h| h.id == id) {
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
             item.offset = clamped_offset;
             item.size = clamped_size;
-            self.highlights.sort_by_key(|h| (h.offset, h.size));
+            highlights.sort_by_key(|h| (h.offset, h.size));
             true
         } else {
             false
@@ -323,25 +353,24 @@ impl Editor {
     }
 
     pub fn remove_highlight_by_id(&mut self, id: &str) -> bool {
-        let initial_len = self.highlights.len();
-        self.highlights.retain(|h| h.id != id);
-        self.highlights.len() < initial_len
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+        let initial_len = highlights.len();
+        highlights.retain(|h| h.id != id);
+        highlights.len() < initial_len
     }
 
     pub fn remove_highlight_by_index(&mut self, index: usize) -> Option<HighlightItem> {
-        if index < self.highlights.len() {
-            Some(self.highlights.remove(index))
-        } else {
-            None
-        }
+        let mut highlights = self.highlights.write().expect("highlights write lock");
+        if index < highlights.len() { Some(highlights.remove(index)) } else { None }
     }
 
     pub fn clear_custom_highlight(&mut self, range: Range<usize>) {
         if range.is_empty() {
             return;
         }
+        let mut highlights = self.highlights.write().expect("highlights write lock");
         let mut updated = Vec::new();
-        for h in self.highlights.drain(..) {
+        for h in highlights.drain(..) {
             let h_range = h.range();
             if h_range.end <= range.start || h_range.start >= range.end {
                 updated.push(h);
@@ -361,21 +390,26 @@ impl Editor {
                 }
             }
         }
-        self.highlights = updated;
-        self.highlights.sort_by_key(|h| (h.offset, h.size));
+        *highlights = updated;
+        highlights.sort_by_key(|h| (h.offset, h.size));
     }
 
     pub fn clear_all_custom_highlights(&mut self) {
-        self.highlights.clear();
+        self.highlights.write().expect("highlights write lock").clear();
     }
 
     pub fn custom_highlights_for_rendering(&self) -> Vec<(Range<usize>, Hsla)> {
-        self.highlights.iter().map(|h| (h.range(), h.hsla_color())).collect()
+        self.highlights
+            .read()
+            .expect("highlights read lock")
+            .iter()
+            .map(|h| (h.range(), h.hsla_color()))
+            .collect()
     }
 
     pub fn export_highlights_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let doc_path = self.document.read().ok().map(|d| d.path().to_path_buf());
-        HighlightFile::save_to_path(path, &self.highlights, doc_path.as_deref())
+        HighlightFile::save_to_path(path, &self.highlights.read().expect("highlights read lock"), doc_path.as_deref())
     }
 
     pub fn import_highlights_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
@@ -764,12 +798,16 @@ impl Editor {
                 let mut current = 0;
                 let mut current_line = 0;
 
+                let custom_breaks_guard = self.custom_breaks.read().expect("custom_breaks read lock");
+                let custom_joins_guard = self.custom_joins.read().expect("custom_joins read lock");
+                let empty_lines_guard = self.empty_lines.read().expect("empty_lines read lock");
+
                 let mut layout_events: Vec<usize> = Vec::new();
-                layout_events.extend(self.custom_breaks.iter().copied());
-                layout_events.extend(self.custom_joins.iter().copied());
-                layout_events.extend(self.empty_lines.keys().copied());
+                layout_events.extend(custom_breaks_guard.iter().copied());
+                layout_events.extend(custom_joins_guard.iter().copied());
+                layout_events.extend(empty_lines_guard.keys().copied());
                 if self.show_inline_structure_view
-                    && let Some(parse_res) = &self.parse_result
+                    && let Some(parse_res) = self.parse_result()
                 {
                     parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
                 }
@@ -777,10 +815,10 @@ impl Editor {
                 layout_events.dedup();
 
                 let mut break_events: Vec<usize> = Vec::new();
-                break_events.extend(self.custom_breaks.iter().copied());
-                break_events.extend(self.empty_lines.keys().copied());
+                break_events.extend(custom_breaks_guard.iter().copied());
+                break_events.extend(empty_lines_guard.keys().copied());
                 if self.show_inline_structure_view
-                    && let Some(parse_res) = &self.parse_result
+                    && let Some(parse_res) = self.parse_result()
                 {
                     parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
                 }
@@ -858,7 +896,7 @@ impl Editor {
 
                             let can_transition = match next_ev {
                                 Some(ev) => ev - current > BYTES_PER_ROW,
-                                None => true,
+                                None => total_size - current >= BYTES_PER_ROW,
                             };
 
                             if can_transition {
@@ -867,7 +905,7 @@ impl Editor {
                         }
 
                         // Process empty lines at current
-                        if let Some(&count) = self.empty_lines.get(&current) {
+                        if let Some(&count) = empty_lines_guard.get(&current) {
                             for _ in 0..count {
                                 starts.push(current);
                             }
@@ -883,7 +921,7 @@ impl Editor {
 
                         // Advance in BYTES_PER_ROW increments, skipping joined boundaries
                         let mut next_pos = current + BYTES_PER_ROW;
-                        while self.custom_joins.contains(&next_pos) && next_pos < total_size {
+                        while custom_joins_guard.contains(&next_pos) && next_pos < total_size {
                             next_pos += BYTES_PER_ROW;
                         }
 
@@ -962,35 +1000,40 @@ impl Editor {
             };
             let line_length = line_end.saturating_sub(line_start);
 
-            // offset より後ろの custom_joins を削除する。
-            // offset より前の join（例: オフセット18で分割する際の join@16）は
-            // 第1部分 [line_start..offset] を1行に保つために必要なので残す。
-            if offset < line_end {
-                let joins_to_remove: Vec<usize> = self.custom_joins.range((offset + 1)..line_end).copied().collect();
-                for j in joins_to_remove {
-                    self.custom_joins.remove(&j);
-                }
-            }
+            {
+                let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
+                let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
 
-            self.custom_breaks.insert(offset);
-            // Custom break と custom join が同じ位置にある場合、join を解除
-            self.custom_joins.remove(&offset);
-
-            // メガ行（1行が BYTES_PER_ROW を超える）を分割した場合、
-            // 第2部分 [offset..line_end] が1行として維持されるよう再結合する。
-            // offset から BYTES_PER_ROW ずつ進むステップを custom_joins に追加し、
-            // line_end が offset+k*BYTES_PER_ROW と一致しない場合は line_end にも
-            // custom_break を追加して行末を明示する。
-            if line_length > BYTES_PER_ROW && offset != line_start {
-                let mut step = offset + BYTES_PER_ROW;
-                while step < line_end {
-                    self.custom_joins.insert(step);
-                    step += BYTES_PER_ROW;
+                // offset より後ろの custom_joins を削除する。
+                // offset より前の join（例: オフセット18で分割する際の join@16）は
+                // 第1部分 [line_start..offset] を1行に保つために必要なので残す。
+                if offset < line_end {
+                    let joins_to_remove: Vec<usize> = custom_joins.range((offset + 1)..line_end).copied().collect();
+                    for j in joins_to_remove {
+                        custom_joins.remove(&j);
+                    }
                 }
-                // line_end が offset から BYTES_PER_ROW の倍数で到達できない場合、
-                // アルゴリズムが line_end をまたいでしまうため、明示的に break を追加する
-                if line_end < self.total_size() && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !self.custom_breaks.contains(&line_end) {
-                    self.custom_breaks.insert(line_end);
+
+                custom_breaks.insert(offset);
+                // Custom break と custom join が同じ位置にある場合、join を解除
+                custom_joins.remove(&offset);
+
+                // メガ行（1行が BYTES_PER_ROW を超える）を分割した場合、
+                // 第2部分 [offset..line_end] が1行として維持されるよう再結合する。
+                // offset から BYTES_PER_ROW ずつ進むステップを custom_joins に追加し、
+                // line_end が offset+k*BYTES_PER_ROW と一致しない場合は line_end にも
+                // custom_break を追加して行末を明示する。
+                if line_length > BYTES_PER_ROW && offset != line_start {
+                    let mut step = offset + BYTES_PER_ROW;
+                    while step < line_end {
+                        custom_joins.insert(step);
+                        step += BYTES_PER_ROW;
+                    }
+                    // line_end が offset から BYTES_PER_ROW の倍数で到達できない場合、
+                    // アルゴリズムが line_end をまたいでしまうため、明示的に break を追加する
+                    if line_end < self.total_size() && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !custom_breaks.contains(&line_end) {
+                        custom_breaks.insert(line_end);
+                    }
                 }
             }
 
@@ -999,13 +1042,14 @@ impl Editor {
     }
 
     pub fn remove_custom_break(&mut self, offset: usize) {
-        if self.custom_breaks.remove(&offset) {
+        if self.custom_breaks.write().expect("custom_breaks write lock").remove(&offset) {
             self.cached_line_map.replace(None);
         }
     }
 
     pub fn toggle_custom_break(&mut self, offset: usize) {
-        if self.custom_breaks.contains(&offset) {
+        let contains = self.custom_breaks.read().expect("custom_breaks read lock").contains(&offset);
+        if contains {
             self.remove_custom_break(offset);
         } else {
             self.add_custom_break(offset);
@@ -1014,18 +1058,20 @@ impl Editor {
 
     pub fn add_empty_line(&mut self, offset: usize) {
         if offset <= self.total_size() {
-            *self.empty_lines.entry(offset).or_insert(0) += 1;
+            *self.empty_lines.write().expect("empty_lines write lock").entry(offset).or_insert(0) += 1;
             self.cached_line_map.replace(None);
         }
     }
 
     pub fn remove_empty_line(&mut self, offset: usize) -> bool {
-        if let Some(count) = self.empty_lines.get_mut(&offset) {
+        let mut empty_lines = self.empty_lines.write().expect("empty_lines write lock");
+        if let Some(count) = empty_lines.get_mut(&offset) {
             if *count > 1 {
                 *count -= 1;
             } else {
-                self.empty_lines.remove(&offset);
+                empty_lines.remove(&offset);
             }
+            drop(empty_lines);
             self.cached_line_map.replace(None);
             true
         } else {
@@ -1062,14 +1108,21 @@ impl Editor {
 
         let next_line_start = line_starts.get(current_line_idx + 1).expect("valid next line start");
 
-        if self.custom_breaks.contains(&next_line_start) {
+        let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
+        let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
+
+        if custom_breaks.contains(&next_line_start) {
             // Custom Break による改行なら、その break を削除
-            self.custom_breaks.remove(&next_line_start);
+            custom_breaks.remove(&next_line_start);
+            drop(custom_breaks);
+            drop(custom_joins);
             self.cached_line_map.replace(None);
         } else if next_line_start != line_starts.get(current_line_idx).unwrap_or(0) {
             // 自然境界（16バイト境界 or カスタム改行後の次行など）を join として記録
             // next_line_start が現在行と同オフセット（空行の重複）でない場合のみ
-            self.custom_joins.insert(next_line_start);
+            custom_joins.insert(next_line_start);
+            drop(custom_breaks);
+            drop(custom_joins);
             self.cached_line_map.replace(None);
         }
     }
@@ -1088,55 +1141,62 @@ impl Editor {
         let current_line_idx = Self::find_line_index(s, &line_starts);
         let line_start_of_s = line_starts.get(current_line_idx).unwrap_or(0);
 
+        let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
+        let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
+        let mut empty_lines = self.empty_lines.write().expect("empty_lines write lock");
+
         // 1. s が行の先頭でなければ、s に custom_break を追加して s から始まるようにする
         if s > 0 && s != line_start_of_s {
-            self.custom_breaks.insert(s);
+            custom_breaks.insert(s);
         }
-        self.custom_joins.remove(&s);
+        custom_joins.remove(&s);
 
         // 2. e がファイル末尾でなく、e で改行する必要がある場合は e に custom_break を追加する
         if e < total {
-            self.custom_breaks.insert(e);
+            custom_breaks.insert(e);
         }
-        self.custom_joins.remove(&e);
+        custom_joins.remove(&e);
 
         // 3. (s..e) 内の custom_breaks, custom_joins, empty_lines をすべて削除する
-        let breaks_to_remove: Vec<usize> = self.custom_breaks.range((s + 1)..e).copied().collect();
+        let breaks_to_remove: Vec<usize> = custom_breaks.range((s + 1)..e).copied().collect();
         for b in breaks_to_remove {
-            self.custom_breaks.remove(&b);
+            custom_breaks.remove(&b);
         }
-        let joins_to_remove: Vec<usize> = self.custom_joins.range((s + 1)..e).copied().collect();
+        let joins_to_remove: Vec<usize> = custom_joins.range((s + 1)..e).copied().collect();
         for j in joins_to_remove {
-            self.custom_joins.remove(&j);
+            custom_joins.remove(&j);
         }
-        let empty_lines_to_remove: Vec<usize> = self.empty_lines.range((s + 1)..e).map(|(&k, _)| k).collect();
+        let empty_lines_to_remove: Vec<usize> = empty_lines.range((s + 1)..e).map(|(&k, _)| k).collect();
         for el in empty_lines_to_remove {
-            self.empty_lines.remove(&el);
+            empty_lines.remove(&el);
         }
 
         // 4. s から BYTES_PER_ROW ずつ進むステップを custom_joins に追加し、1行に結合する
         let mut step = s + BYTES_PER_ROW;
         while step < e {
-            self.custom_joins.insert(step);
+            custom_joins.insert(step);
             step += BYTES_PER_ROW;
         }
 
+        drop(custom_breaks);
+        drop(custom_joins);
+        drop(empty_lines);
         self.cached_line_map.replace(None);
     }
 
     /// 全ての Custom Break と Join をクリアし、デフォルトの16バイト表示に戻す。
     pub fn clear_all_custom_breaks(&mut self) {
-        self.custom_breaks.clear();
-        self.custom_joins.clear();
-        self.empty_lines.clear();
+        self.custom_breaks.write().expect("custom_breaks write lock").clear();
+        self.custom_joins.write().expect("custom_joins write lock").clear();
+        self.empty_lines.write().expect("empty_lines write lock").clear();
         self.cached_line_map.replace(None);
     }
 
     pub fn has_custom_layout(&self) -> bool {
-        !self.custom_breaks.is_empty()
-            || !self.custom_joins.is_empty()
-            || !self.empty_lines.is_empty()
-            || (self.show_inline_structure_view && self.parse_result.is_some())
+        !self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
+            || !self.custom_joins.read().expect("custom_joins read lock").is_empty()
+            || !self.empty_lines.read().expect("empty_lines read lock").is_empty()
+            || (self.show_inline_structure_view && self.parse_result.read().expect("parse_result read lock").is_some())
     }
 
     pub fn toggle_struct_collapsed(&mut self, struct_id: &str) {
@@ -1154,7 +1214,9 @@ impl Editor {
     }
 
     pub fn custom_layout_count(&self) -> usize {
-        self.custom_breaks.len() + self.custom_joins.len() + self.empty_lines.values().sum::<usize>()
+        self.custom_breaks.read().expect("custom_breaks read lock").len()
+            + self.custom_joins.read().expect("custom_joins read lock").len()
+            + self.empty_lines.read().expect("empty_lines read lock").values().sum::<usize>()
     }
 
     pub fn prev_search_result(&mut self) -> Option<usize> {
@@ -1222,19 +1284,19 @@ impl Editor {
     }
 
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
-        self.ksy_definition = Some(ksy);
+        *self.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy);
         self.reparse_structure();
     }
 
     pub fn set_parse_result(&mut self, result: ParseResult) {
         self.parse_progress_offset = result.total_parsed_bytes;
-        self.parse_result = Some(Arc::new(result));
+        *self.parse_result.write().expect("parse_result write lock") = Some(Arc::new(result));
         self.cached_line_map.replace(None);
     }
 
     pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
         self.parse_progress_offset = result.total_parsed_bytes;
-        let old = self.parse_result.replace(result);
+        let old = self.parse_result.write().expect("parse_result write lock").replace(result);
         if let Some(old_res) = old {
             std::thread::spawn(move || drop(old_res));
         }
@@ -1245,7 +1307,7 @@ impl Editor {
         self.parse_progress_offset = offset;
         self.parse_total_size = total_size;
         if let Some(res) = intermediate_result {
-            self.parse_result = Some(Arc::new(res));
+            *self.parse_result.write().expect("parse_result write lock") = Some(Arc::new(res));
             self.cached_line_map.replace(None);
         }
     }
@@ -1255,10 +1317,10 @@ impl Editor {
     }
 
     pub fn reparse_structure(&mut self) {
-        if let Some(ksy) = &self.ksy_definition {
+        if let Some(ksy) = self.ksy_definition() {
             let (bytes, ksy_clone) = {
                 let buffer_lock = self.document.read().expect("document read lock");
-                (buffer_lock.buffer.data().to_vec(), (**ksy).clone())
+                (buffer_lock.buffer.data().to_vec(), (*ksy).clone())
             };
             let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
             let interpreter = crate::core::structure::KaitaiInterpreter::new(ksy_clone);
@@ -1276,8 +1338,8 @@ impl Editor {
 
     pub fn clear_structure_definition(&mut self) {
         self.cancel_structure_parsing();
-        self.ksy_definition = None;
-        self.parse_result = None;
+        *self.ksy_definition.write().expect("ksy_definition write lock") = None;
+        *self.parse_result.write().expect("parse_result write lock") = None;
         self.is_parsing_structure = false;
         self.parse_progress_offset = 0;
         self.parse_total_size = 0;
@@ -1781,22 +1843,22 @@ mod tests {
         let mut editor = Editor::new(doc);
 
         editor.add_empty_line(10);
-        assert_eq!(editor.empty_lines.get(&10), Some(&1));
+        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&1));
 
         editor.add_empty_line(10);
-        assert_eq!(editor.empty_lines.get(&10), Some(&2));
+        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&2));
 
         assert!(editor.remove_empty_line(10));
-        assert_eq!(editor.empty_lines.get(&10), Some(&1));
+        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&1));
 
         assert!(editor.remove_empty_line(10));
-        assert_eq!(editor.empty_lines.get(&10), None);
+        assert_eq!(editor.empty_lines.read().unwrap().get(&10), None);
 
         editor.toggle_custom_break(20);
-        assert!(editor.custom_breaks.contains(&20));
+        assert!(editor.custom_breaks.read().unwrap().contains(&20));
 
         editor.toggle_custom_break(20);
-        assert!(!editor.custom_breaks.contains(&20));
+        assert!(!editor.custom_breaks.read().unwrap().contains(&20));
     }
 
     #[test]
@@ -1808,31 +1870,31 @@ mod tests {
 
         // Add red highlight on 0..10
         editor.add_custom_highlight(0..10, red);
-        assert_eq!(editor.highlights.len(), 1);
-        assert_eq!(editor.highlights[0].range(), 0..10);
-        assert_eq!(editor.highlights[0].color, HighlightColor::Red);
+        assert_eq!(editor.highlights.read().unwrap().len(), 1);
+        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..10);
+        assert_eq!(editor.highlights.read().unwrap()[0].color, HighlightColor::Red);
 
         // Update comment
-        let id = editor.highlights[0].id.clone();
+        let id = editor.highlights.read().unwrap()[0].id.clone();
         assert!(editor.update_highlight_comment(&id, "Header block"));
-        assert_eq!(editor.highlights[0].comment, "Header block");
+        assert_eq!(editor.highlights.read().unwrap()[0].comment, "Header block");
 
         // Add blue highlight on 5..15
         editor.add_custom_highlight(5..15, blue);
-        assert_eq!(editor.highlights.len(), 2);
-        assert_eq!(editor.highlights[0].range(), 0..5);
-        assert_eq!(editor.highlights[1].range(), 5..15);
-        assert_eq!(editor.highlights[1].color, HighlightColor::Blue);
+        assert_eq!(editor.highlights.read().unwrap().len(), 2);
+        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..5);
+        assert_eq!(editor.highlights.read().unwrap()[1].range(), 5..15);
+        assert_eq!(editor.highlights.read().unwrap()[1].color, HighlightColor::Blue);
 
         // Clear sub-range 3..7
         editor.clear_custom_highlight(3..7);
-        assert_eq!(editor.highlights.len(), 2);
-        assert_eq!(editor.highlights[0].range(), 0..3);
-        assert_eq!(editor.highlights[1].range(), 7..15);
+        assert_eq!(editor.highlights.read().unwrap().len(), 2);
+        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..3);
+        assert_eq!(editor.highlights.read().unwrap()[1].range(), 7..15);
 
         // Clear all
         editor.clear_all_custom_highlights();
-        assert!(editor.highlights.is_empty());
+        assert!(editor.highlights.read().unwrap().is_empty());
     }
 
     #[test]
@@ -1848,20 +1910,20 @@ mod tests {
         let id2 = item2.id.clone();
         editor.add_highlight(item2);
 
-        assert_eq!(editor.highlights.len(), 2);
+        assert_eq!(editor.highlights.read().unwrap().len(), 2);
 
         // Update comment
         assert!(editor.update_highlight_comment(&id1, "ELF Magic"));
-        assert_eq!(editor.highlights[0].comment, "ELF Magic");
+        assert_eq!(editor.highlights.read().unwrap()[0].comment, "ELF Magic");
 
         // Update color
         assert!(editor.update_highlight_color(&id1, HighlightColor::Cyan));
-        assert_eq!(editor.highlights[0].color, HighlightColor::Cyan);
+        assert_eq!(editor.highlights.read().unwrap()[0].color, HighlightColor::Cyan);
 
         // Update range
         assert!(editor.update_highlight_range(&id2, 12, 10));
-        assert_eq!(editor.highlights[1].offset, 12);
-        assert_eq!(editor.highlights[1].size, 10);
+        assert_eq!(editor.highlights.read().unwrap()[1].offset, 12);
+        assert_eq!(editor.highlights.read().unwrap()[1].size, 10);
 
         // Test export and import
         let temp_file = std::env::temp_dir().join("editor_highlights_test.json");
@@ -1872,21 +1934,21 @@ mod tests {
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
         let count = editor2.import_highlights_from_file(&temp_file).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(editor2.highlights.len(), 2);
-        assert_eq!(editor2.highlights[0].comment, "ELF Magic");
-        assert_eq!(editor2.highlights[0].color, HighlightColor::Cyan);
-        assert_eq!(editor2.highlights[1].offset, 12);
-        assert_eq!(editor2.highlights[1].size, 10);
+        assert_eq!(editor2.highlights.read().unwrap().len(), 2);
+        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "ELF Magic");
+        assert_eq!(editor2.highlights.read().unwrap()[0].color, HighlightColor::Cyan);
+        assert_eq!(editor2.highlights.read().unwrap()[1].offset, 12);
+        assert_eq!(editor2.highlights.read().unwrap()[1].size, 10);
 
         // Remove by id
         assert!(editor.remove_highlight_by_id(&id1));
-        assert_eq!(editor.highlights.len(), 1);
-        assert_eq!(editor.highlights[0].id, id2);
+        assert_eq!(editor.highlights.read().unwrap().len(), 1);
+        assert_eq!(editor.highlights.read().unwrap()[0].id, id2);
 
         // Remove by index
         let removed = editor.remove_highlight_by_index(0);
         assert!(removed.is_some());
-        assert!(editor.highlights.is_empty());
+        assert!(editor.highlights.read().unwrap().is_empty());
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -1902,28 +1964,73 @@ mod tests {
 
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
         editor2.import_highlights_from_file(&temp_file).unwrap();
-        assert_eq!(editor2.highlights.len(), 1);
+        assert_eq!(editor2.highlights.read().unwrap().len(), 1);
 
         // Now add a new highlight
         let new_item = HighlightItem::new(10, 4, HighlightColor::Yellow, "New highlight");
         let added_id = editor2.add_highlight(new_item);
 
         // Must have 2 distinct IDs
-        assert_eq!(editor2.highlights.len(), 2);
-        assert_ne!(editor2.highlights[0].id, editor2.highlights[1].id);
-        assert_eq!(editor2.highlights[1].id, added_id);
+        assert_eq!(editor2.highlights.read().unwrap().len(), 2);
+        assert_ne!(editor2.highlights.read().unwrap()[0].id, editor2.highlights.read().unwrap()[1].id);
+        assert_eq!(editor2.highlights.read().unwrap()[1].id, added_id);
 
         // Editing one must not affect the other
         assert!(editor2.update_highlight_comment(&added_id, "Updated new comment"));
-        assert_eq!(editor2.highlights[0].comment, "Magic bytes");
-        assert_eq!(editor2.highlights[1].comment, "Updated new comment");
+        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "Magic bytes");
+        assert_eq!(editor2.highlights.read().unwrap()[1].comment, "Updated new comment");
 
         // Deleting the new one must leave the first intact
         assert!(editor2.remove_highlight_by_id(&added_id));
-        assert_eq!(editor2.highlights.len(), 1);
-        assert_eq!(editor2.highlights[0].comment, "Magic bytes");
+        assert_eq!(editor2.highlights.read().unwrap().len(), 1);
+        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "Magic bytes");
 
         let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_shared_highlights_across_split_editors() {
+        use crate::core::buffer::Buffer;
+        use std::path::PathBuf;
+        let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("shared.bin"), Buffer::new(vec![0xAA; 128]))));
+        let mut editor1 = Editor::new(doc.clone());
+        let editor2 = Editor::new(doc.clone());
+
+        // Both start empty
+        assert_eq!(editor1.highlights_snapshot().len(), 0);
+        assert_eq!(editor2.highlights_snapshot().len(), 0);
+
+        // Add highlight in editor1
+        let hl = HighlightItem::new(0, 16, HighlightColor::Red, "Header");
+        let id = editor1.add_highlight(hl);
+
+        // editor2 immediately sees the highlight from shared instance
+        assert_eq!(editor2.highlights_snapshot().len(), 1);
+        assert_eq!(editor2.highlights_snapshot()[0].comment, "Header");
+        assert_eq!(editor2.highlights_snapshot()[0].color, HighlightColor::Red);
+
+        // Update comment in editor1
+        assert!(editor1.update_highlight_comment(&id, "Updated Header"));
+        assert_eq!(editor2.highlights_snapshot()[0].comment, "Updated Header");
+
+        // Clear in editor1
+        editor1.clear_all_custom_highlights();
+        assert_eq!(editor2.highlights_snapshot().len(), 0);
+    }
+
+    #[test]
+    fn test_shared_custom_breaks_across_split_editors() {
+        use crate::core::buffer::Buffer;
+        use std::path::PathBuf;
+        let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("shared.bin"), Buffer::new(vec![0xBB; 128]))));
+        let mut editor1 = Editor::new(doc.clone());
+        let editor2 = Editor::new(doc.clone());
+
+        editor1.add_custom_break(20);
+        assert!(editor2.custom_breaks.read().unwrap().contains(&20));
+
+        editor1.remove_custom_break(20);
+        assert!(!editor2.custom_breaks.read().unwrap().contains(&20));
     }
 
     #[test]

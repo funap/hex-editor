@@ -89,15 +89,15 @@ impl StructTreeView {
     pub fn set_editor(&mut self, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) {
         self._editor_subscription = None;
         self.editor = editor.clone();
-        self.last_parse_id = None;
-
-        self.set_parse_result(None, cx);
 
         if let Some(ed) = &editor {
             self._editor_subscription = Some(cx.observe(ed, |this, editor, cx| {
                 this.sync_fields(&editor, cx);
             }));
             self.sync_fields(ed, cx);
+        } else {
+            self.last_parse_id = None;
+            self.set_parse_result(None, cx);
         }
         cx.notify();
     }
@@ -107,8 +107,7 @@ impl StructTreeView {
             let editor_lock = editor.read(cx);
             let doc_version = editor_lock.document.read().ok().map(|d| d.history.version()).unwrap_or(0);
             let parse_id = editor_lock
-                .parse_result
-                .as_ref()
+                .parse_result()
                 .map(|r| (r.definition_id.clone(), r.total_parsed_bytes, r.fields.len(), doc_version));
             (parse_id, editor_lock.cursor_offset, editor_lock.is_parsing_structure)
         };
@@ -121,7 +120,7 @@ impl StructTreeView {
         }
 
         if current_parse_id != self.last_parse_id {
-            let parse_res = editor.read(cx).parse_result.clone();
+            let parse_res = editor.read(cx).parse_result();
             self.set_parse_result(parse_res, cx);
             self.last_parse_id = current_parse_id;
         }
@@ -468,7 +467,7 @@ impl Render for StructTreeView {
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
 
-        let container = v_flex().size_full().flex_shrink_0().bg(theme.sidebar);
+        let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(theme.sidebar);
         let container = container.focus_indicator(is_focused, theme);
 
         container
@@ -493,17 +492,17 @@ impl Render for StructTreeView {
                     .text_color(crate::ui::style::header_text_color(is_focused, theme))
                     .child("STRUCTURE"),
             )
-            .child(if is_parsing {
+            .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_parsing {
                 v_flex()
                     .size_full()
-                    .justify_center()
+                    .pt_8()
                     .items_center()
                     .child(div().text_color(theme.muted_foreground).child("Parsing structure..."))
                     .into_any_element()
             } else if is_empty {
                 v_flex()
                     .size_full()
-                    .justify_center()
+                    .pt_8()
                     .items_center()
                     .child(div().text_color(theme.muted_foreground).child("No structure loaded"))
                     .into_any_element()
@@ -525,7 +524,7 @@ impl Render for StructTreeView {
                 .track_scroll(self.scroll_handle.clone())
                 .size_full()
                 .into_any_element()
-            })
+            }))
     }
 }
 

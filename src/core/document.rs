@@ -1,8 +1,12 @@
 #![allow(dead_code)]
 
 use crate::core::buffer::Buffer;
+use crate::core::highlight::HighlightItem;
 use crate::core::history::History;
+use crate::core::structure::{KsyDefinition, ParseResult};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 /// Represents a document processing unit that bundles a file buffer and its edit history.
 pub struct Document {
@@ -10,6 +14,12 @@ pub struct Document {
     pub buffer: Buffer,
     pub history: History,
     pub last_saved_version: usize,
+    pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
+    pub ksy_definition: Arc<RwLock<Option<Arc<KsyDefinition>>>>,
+    pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
+    pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
+    pub custom_joins: Arc<RwLock<BTreeSet<usize>>>,
+    pub empty_lines: Arc<RwLock<BTreeMap<usize, usize>>>,
 }
 
 impl Document {
@@ -19,6 +29,12 @@ impl Document {
             buffer,
             history: History::new(),
             last_saved_version: 0,
+            highlights: Arc::new(RwLock::new(Vec::new())),
+            ksy_definition: Arc::new(RwLock::new(None)),
+            parse_result: Arc::new(RwLock::new(None)),
+            custom_breaks: Arc::new(RwLock::new(BTreeSet::new())),
+            custom_joins: Arc::new(RwLock::new(BTreeSet::new())),
+            empty_lines: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 

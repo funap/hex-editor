@@ -2,10 +2,10 @@ use crate::core::buffer::Buffer;
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::search::{self, SearchOptions};
-use gpui::{App, Entity, Task};
+use gpui::{App, Entity, Task, WeakEntity};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 /// A service for managing file buffers and editor workflows.
@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Clone)]
 pub struct EditorService {
     documents: Arc<RwLock<HashMap<PathBuf, Arc<RwLock<Document>>>>>,
+    editors: Arc<RwLock<HashMap<PathBuf, Vec<WeakEntity<Editor>>>>>,
 }
 
 #[allow(dead_code)]
@@ -22,6 +23,37 @@ impl EditorService {
     pub fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
+            editors: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Registers an editor weak entity for a given document path to receive live change notifications.
+    pub fn register_editor(&self, path: PathBuf, editor: WeakEntity<Editor>) {
+        let path = path.canonicalize().unwrap_or(path);
+        let mut editors = self.editors.write().expect("editors write lock");
+        let list = editors.entry(path).or_default();
+        list.retain(|w| w.upgrade().is_some());
+        list.push(editor);
+    }
+
+    /// Notifies all active editors viewing the document at `path` to invalidate layout and repaint.
+    pub fn notify_document_changed(&self, path: &Path, cx: &mut App) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let editors_to_notify: Vec<Entity<Editor>> = {
+            let mut editors = self.editors.write().expect("editors write lock");
+            if let Some(list) = editors.get_mut(&path) {
+                list.retain(|w| w.upgrade().is_some());
+                list.iter().filter_map(|w| w.upgrade()).collect()
+            } else {
+                Vec::new()
+            }
+        };
+
+        for editor in editors_to_notify {
+            editor.update(cx, |ed, cx| {
+                ed.invalidate_line_map();
+                cx.notify();
+            });
         }
     }
 
@@ -172,5 +204,17 @@ impl EditorService {
 impl Default for EditorService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_editor_service_register_empty() {
+        let service = EditorService::new();
+        let path = PathBuf::from("test_doc.bin");
+        assert!(service.editors.read().unwrap().get(&path).is_none());
     }
 }

@@ -304,7 +304,7 @@ impl Render for VisualMapPanel {
         let editor = match &self.editor {
             Some(ed) => ed,
             None => {
-                let container = v_flex().size_full().bg(bg_color);
+                let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(bg_color);
 
                 let container = container.focus_indicator(is_focused, theme);
 
@@ -319,11 +319,13 @@ impl Render for VisualMapPanel {
                     )
                     .child(header)
                     .child(
-                        v_flex()
-                            .size_full()
-                            .justify_center()
-                            .items_center()
-                            .child(div().text_sm().text_color(muted_color).child("No active editor")),
+                        div().flex_1().min_h_0().w_full().overflow_hidden().child(
+                            v_flex()
+                                .size_full()
+                                .pt_8()
+                                .items_center()
+                                .child(div().text_sm().text_color(muted_color).child("No active editor")),
+                        ),
                     );
             }
         };

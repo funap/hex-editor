@@ -1773,7 +1773,7 @@ impl HexView {
         }
     }
 
-    fn add_custom_break(&mut self, _: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn add_custom_break(&mut self, _: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
@@ -1785,7 +1785,7 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn remove_custom_break_backward(&mut self, _: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn remove_custom_break_backward(&mut self, _: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
@@ -1797,7 +1797,7 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn remove_custom_break_forward(&mut self, _: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn remove_custom_break_forward(&mut self, _: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
@@ -1809,7 +1809,7 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn join_line(&mut self, _: &JoinLine, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn join_line(&mut self, _: &JoinLine, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
@@ -1819,7 +1819,7 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn clear_all_custom_breaks(&mut self, _: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn clear_all_custom_breaks(&mut self, _: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             editor.clear_all_custom_breaks();
@@ -1828,7 +1828,7 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn copy_formatted(&self, format: CopyFormat, cx: &mut Context<Self>) {
+    fn copy_formatted(&self, format: CopyFormat, window: &mut Window, cx: &mut Context<Self>) {
         let formatted = {
             let editor = self.editor.read(cx);
             let selected_range = editor.selected_range_or_cursor();
@@ -1847,54 +1847,56 @@ impl HexView {
             }
         };
 
+        self.focus_handle.focus(window);
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(formatted));
     }
 
-    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::HexStream, cx);
+    pub fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexStream, window, cx);
     }
 
-    fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::HexDump, cx);
+    pub fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexDump, window, cx);
     }
 
-    fn copy_as_cpp_array(&mut self, _: &CopyAsCppArray, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::CppArray, cx);
+    pub fn copy_as_cpp_array(&mut self, _: &CopyAsCppArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::CppArray, window, cx);
     }
 
-    fn copy_as_hex_stream(&mut self, _: &CopyAsHexStream, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::HexStream, cx);
+    pub fn copy_as_hex_stream(&mut self, _: &CopyAsHexStream, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexStream, window, cx);
     }
 
-    fn copy_as_hex_spaces(&mut self, _: &CopyAsHexSpaces, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::HexWithSpaces, cx);
+    pub fn copy_as_hex_spaces(&mut self, _: &CopyAsHexSpaces, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::HexWithSpaces, window, cx);
     }
 
-    fn copy_as_printable_text(&mut self, _: &CopyAsPrintableText, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::PrintableText, cx);
+    pub fn copy_as_printable_text(&mut self, _: &CopyAsPrintableText, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::PrintableText, window, cx);
     }
 
-    fn copy_as_base64(&mut self, _: &CopyAsBase64, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::Base64, cx);
+    pub fn copy_as_base64(&mut self, _: &CopyAsBase64, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::Base64, window, cx);
     }
 
-    fn copy_as_escaped_string(&mut self, _: &CopyAsEscapedString, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::EscapedString, cx);
+    pub fn copy_as_escaped_string(&mut self, _: &CopyAsEscapedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::EscapedString, window, cx);
     }
 
-    fn copy_as_binary(&mut self, _: &CopyAsBinary, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::Binary, cx);
+    pub fn copy_as_binary(&mut self, _: &CopyAsBinary, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::Binary, window, cx);
     }
 
-    fn copy_as_rust_array(&mut self, _: &CopyAsRustArray, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::RustArray, cx);
+    pub fn copy_as_rust_array(&mut self, _: &CopyAsRustArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::RustArray, window, cx);
     }
 
-    fn copy_as_json_array(&mut self, _: &CopyAsJsonArray, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_formatted(CopyFormat::JsonArray, cx);
+    pub fn copy_as_json_array(&mut self, _: &CopyAsJsonArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_formatted(CopyFormat::JsonArray, window, cx);
     }
 
-    fn apply_highlight(&mut self, color: Option<Hsla>, cx: &mut Context<Self>) {
+    fn apply_highlight(&mut self, color: Option<Hsla>, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window);
         self.editor.update(cx, |editor, cx| {
             if let Some(range) = editor.selected_range_or_cursor() {
                 if let Some(color) = color {
@@ -1908,43 +1910,43 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    fn highlight_red(&mut self, _: &HighlightRed, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(0.0, 0.75, 0.55, 0.35)), cx);
+    pub fn highlight_red(&mut self, _: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(0.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    fn highlight_orange(&mut self, _: &HighlightOrange, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(30.0 / 360.0, 0.85, 0.55, 0.35)), cx);
+    pub fn highlight_orange(&mut self, _: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(30.0 / 360.0, 0.85, 0.55, 0.35)), window, cx);
     }
 
-    fn highlight_yellow(&mut self, _: &HighlightYellow, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(50.0 / 360.0, 0.85, 0.50, 0.35)), cx);
+    pub fn highlight_yellow(&mut self, _: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(50.0 / 360.0, 0.85, 0.50, 0.35)), window, cx);
     }
 
-    fn highlight_green(&mut self, _: &HighlightGreen, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(120.0 / 360.0, 0.65, 0.45, 0.35)), cx);
+    pub fn highlight_green(&mut self, _: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(120.0 / 360.0, 0.65, 0.45, 0.35)), window, cx);
     }
 
-    fn highlight_cyan(&mut self, _: &HighlightCyan, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(180.0 / 360.0, 0.70, 0.45, 0.35)), cx);
+    pub fn highlight_cyan(&mut self, _: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(180.0 / 360.0, 0.70, 0.45, 0.35)), window, cx);
     }
 
-    fn highlight_blue(&mut self, _: &HighlightBlue, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(215.0 / 360.0, 0.75, 0.55, 0.35)), cx);
+    pub fn highlight_blue(&mut self, _: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(215.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    fn highlight_purple(&mut self, _: &HighlightPurple, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(280.0 / 360.0, 0.70, 0.55, 0.35)), cx);
+    pub fn highlight_purple(&mut self, _: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(280.0 / 360.0, 0.70, 0.55, 0.35)), window, cx);
     }
 
-    fn highlight_pink(&mut self, _: &HighlightPink, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(330.0 / 360.0, 0.75, 0.55, 0.35)), cx);
+    pub fn highlight_pink(&mut self, _: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(Some(hsla(330.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    fn clear_highlight(&mut self, _: &ClearHighlight, _window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(None, cx);
+    pub fn clear_highlight(&mut self, _: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_highlight(None, window, cx);
     }
 
-    fn clear_all_highlights(&mut self, _: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn clear_all_highlights(&mut self, _: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.editor.read(cx).highlights_snapshot().len();
         if count == 0 {
             return;

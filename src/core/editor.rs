@@ -425,7 +425,7 @@ impl Editor {
         let buffer_len = self.total_size();
         self.selection_start = None;
         self.selection_end = None;
-        self.cursor_offset = offset.min(buffer_len);
+        self.cursor_offset = offset.min(buffer_len.saturating_sub(1));
     }
 
     pub fn move_left(&mut self) {
@@ -438,7 +438,8 @@ impl Editor {
 
     pub fn move_right(&mut self) {
         let buffer_len = self.total_size();
-        if self.cursor_offset < buffer_len {
+        let max_offset = buffer_len.saturating_sub(1);
+        if self.cursor_offset < max_offset {
             self.cursor_offset += 1;
             self.selection_start = None;
             self.selection_end = None;
@@ -486,7 +487,7 @@ impl Editor {
             self.selection_start = None;
             self.selection_end = None;
         } else {
-            self.cursor_offset = total_size;
+            self.cursor_offset = total_size.saturating_sub(1);
             self.selection_start = None;
             self.selection_end = None;
         }
@@ -578,7 +579,7 @@ impl Editor {
     }
 
     pub fn go_to_end(&mut self) {
-        self.cursor_offset = self.total_size();
+        self.cursor_offset = self.total_size().saturating_sub(1);
         self.selection_start = None;
         self.selection_end = None;
     }
@@ -625,7 +626,7 @@ impl Editor {
         let target_line_len = target_line_end - target_line_start;
 
         if target_line_idx == line_starts.len() - 1 && target_line_len == 0 {
-            self.cursor_offset = self.total_size();
+            self.cursor_offset = self.total_size().saturating_sub(1);
         } else {
             self.cursor_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
         }
@@ -641,7 +642,7 @@ impl Editor {
         let buffer_len = self.total_size();
         self.selection_start = None;
         self.selection_end = None;
-        self.cursor_offset = buffer_len;
+        self.cursor_offset = buffer_len.saturating_sub(1);
     }
 
     pub fn select_page_up(&mut self, visible_rows: usize) {
@@ -1384,9 +1385,14 @@ mod tests {
         assert_eq!(editor.cursor_offset, 0);
 
         editor.end();
-        assert_eq!(editor.cursor_offset, 3);
+        assert_eq!(editor.cursor_offset, 2);
         editor.move_right();
-        assert_eq!(editor.cursor_offset, 3);
+        assert_eq!(editor.cursor_offset, 2);
+
+        editor.go_to_beginning();
+        assert_eq!(editor.cursor_offset, 0);
+        editor.go_to_end();
+        assert_eq!(editor.cursor_offset, 2);
     }
 
     #[test]

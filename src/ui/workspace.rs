@@ -340,148 +340,485 @@ impl Workspace {
         cx.quit();
     }
 
-    fn on_action_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
-                editor.select_all();
+    fn on_action_select_all(&mut self, action: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.select_all(action, window, cx);
             });
         }
     }
 
-    fn on_action_go_to_beginning(&mut self, _: &GoToBeginning, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
-                editor.go_to_beginning();
+    fn on_action_go_to_beginning(&mut self, action: &GoToBeginning, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.go_to_beginning(action, window, cx);
             });
         }
     }
 
-    fn on_action_go_to_end(&mut self, _: &GoToEnd, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
-                editor.go_to_end();
+    fn on_action_go_to_end(&mut self, action: &GoToEnd, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.go_to_end(action, window, cx);
             });
         }
     }
 
-    fn on_action_set_encoding_ascii(&mut self, _: &SetEncodingAscii, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_toggle_search(&mut self, action: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.toggle_search(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_search_next(&mut self, action: &SearchNext, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.search_next(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_search_prev(&mut self, action: &SearchPrev, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.search_prev(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy(&mut self, action: &Copy, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_hexdump(&mut self, action: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_hexdump(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_cpp_array(&mut self, action: &CopyAsCppArray, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_cpp_array(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_hex_stream(&mut self, action: &CopyAsHexStream, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_hex_stream(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_hex_spaces(&mut self, action: &CopyAsHexSpaces, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_hex_spaces(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_printable_text(&mut self, action: &CopyAsPrintableText, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_printable_text(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_base64(&mut self, action: &CopyAsBase64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_base64(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_escaped_string(&mut self, action: &CopyAsEscapedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_escaped_string(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_binary(&mut self, action: &CopyAsBinary, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_binary(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_rust_array(&mut self, action: &CopyAsRustArray, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_rust_array(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_copy_as_json_array(&mut self, action: &CopyAsJsonArray, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.copy_as_json_array(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_red(&mut self, action: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_red(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_orange(&mut self, action: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_orange(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_yellow(&mut self, action: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_yellow(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_green(&mut self, action: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_green(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_cyan(&mut self, action: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_cyan(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_blue(&mut self, action: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_blue(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_purple(&mut self, action: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_purple(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_highlight_pink(&mut self, action: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.highlight_pink(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_clear_highlight(&mut self, action: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.clear_highlight(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_clear_all_highlights(&mut self, action: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.clear_all_highlights(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_add_custom_break(&mut self, action: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.add_custom_break(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_remove_custom_break_backward(&mut self, action: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.remove_custom_break_backward(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_remove_custom_break_forward(&mut self, action: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.remove_custom_break_forward(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_join_line(&mut self, action: &JoinLine, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.join_line(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_clear_all_custom_breaks(&mut self, action: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.clear_all_custom_breaks(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_set_encoding_ascii(&mut self, _: &SetEncodingAscii, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_encoding(crate::core::encoding::Encoding::Ascii);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_encoding_utf8(&mut self, _: &SetEncodingUtf8, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_encoding_utf8(&mut self, _: &SetEncodingUtf8, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_encoding(crate::core::encoding::Encoding::Utf8);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_encoding_utf16le(&mut self, _: &SetEncodingUtf16Le, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_encoding_utf16le(&mut self, _: &SetEncodingUtf16Le, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_encoding(crate::core::encoding::Encoding::Utf16Le);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_encoding_utf16be(&mut self, _: &SetEncodingUtf16Be, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_encoding_utf16be(&mut self, _: &SetEncodingUtf16Be, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_encoding(crate::core::encoding::Encoding::Utf16Be);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_radix_hex(&mut self, _: &SetRadixHex, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_radix_hex(&mut self, _: &SetRadixHex, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_radix(crate::core::radix::DisplayRadix::Hexadecimal);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_radix_dec(&mut self, _: &SetRadixDec, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_radix_dec(&mut self, _: &SetRadixDec, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_radix(crate::core::radix::DisplayRadix::Decimal);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_radix_oct(&mut self, _: &SetRadixOct, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_radix_oct(&mut self, _: &SetRadixOct, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_radix(crate::core::radix::DisplayRadix::Octal);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_radix_bin(&mut self, _: &SetRadixBin, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_radix_bin(&mut self, _: &SetRadixBin, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_radix(crate::core::radix::DisplayRadix::Binary);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_group_size_1(&mut self, _: &SetGroupSize1, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_group_size_1(&mut self, _: &SetGroupSize1, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_group_size(crate::core::radix::ByteGroupSize::One);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_group_size_2(&mut self, _: &SetGroupSize2, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_group_size_2(&mut self, _: &SetGroupSize2, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_group_size(crate::core::radix::ByteGroupSize::Two);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_group_size_4(&mut self, _: &SetGroupSize4, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_group_size_4(&mut self, _: &SetGroupSize4, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_group_size(crate::core::radix::ByteGroupSize::Four);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_group_size_8(&mut self, _: &SetGroupSize8, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_group_size_8(&mut self, _: &SetGroupSize8, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_group_size(crate::core::radix::ByteGroupSize::Eight);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_byte_order_le(&mut self, _: &SetByteOrderLittleEndian, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_byte_order_le(&mut self, _: &SetByteOrderLittleEndian, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_is_big_endian(false);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_set_byte_order_be(&mut self, _: &SetByteOrderBigEndian, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_byte_order_be(&mut self, _: &SetByteOrderBigEndian, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.set_is_big_endian(true);
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    fn on_action_toggle_byte_order(&mut self, _: &ToggleByteOrder, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_toggle_byte_order(&mut self, _: &ToggleByteOrder, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, _cx| {
+            editor.update(cx, |editor, cx| {
                 editor.toggle_byte_order();
+                cx.notify();
             });
         }
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.focus_hex_view(&FocusHexView, window, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn on_action_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -996,6 +1333,35 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_select_all))
             .on_action(cx.listener(Self::on_action_go_to_beginning))
             .on_action(cx.listener(Self::on_action_go_to_end))
+            .on_action(cx.listener(Self::on_action_toggle_search))
+            .on_action(cx.listener(Self::on_action_search_next))
+            .on_action(cx.listener(Self::on_action_search_prev))
+            .on_action(cx.listener(Self::on_action_copy))
+            .on_action(cx.listener(Self::on_action_copy_as_hexdump))
+            .on_action(cx.listener(Self::on_action_copy_as_cpp_array))
+            .on_action(cx.listener(Self::on_action_copy_as_hex_stream))
+            .on_action(cx.listener(Self::on_action_copy_as_hex_spaces))
+            .on_action(cx.listener(Self::on_action_copy_as_printable_text))
+            .on_action(cx.listener(Self::on_action_copy_as_base64))
+            .on_action(cx.listener(Self::on_action_copy_as_escaped_string))
+            .on_action(cx.listener(Self::on_action_copy_as_binary))
+            .on_action(cx.listener(Self::on_action_copy_as_rust_array))
+            .on_action(cx.listener(Self::on_action_copy_as_json_array))
+            .on_action(cx.listener(Self::on_action_highlight_red))
+            .on_action(cx.listener(Self::on_action_highlight_orange))
+            .on_action(cx.listener(Self::on_action_highlight_yellow))
+            .on_action(cx.listener(Self::on_action_highlight_green))
+            .on_action(cx.listener(Self::on_action_highlight_cyan))
+            .on_action(cx.listener(Self::on_action_highlight_blue))
+            .on_action(cx.listener(Self::on_action_highlight_purple))
+            .on_action(cx.listener(Self::on_action_highlight_pink))
+            .on_action(cx.listener(Self::on_action_clear_highlight))
+            .on_action(cx.listener(Self::on_action_clear_all_highlights))
+            .on_action(cx.listener(Self::on_action_add_custom_break))
+            .on_action(cx.listener(Self::on_action_remove_custom_break_backward))
+            .on_action(cx.listener(Self::on_action_remove_custom_break_forward))
+            .on_action(cx.listener(Self::on_action_join_line))
+            .on_action(cx.listener(Self::on_action_clear_all_custom_breaks))
             .on_action(cx.listener(Self::on_action_set_encoding_ascii))
             .on_action(cx.listener(Self::on_action_set_encoding_utf8))
             .on_action(cx.listener(Self::on_action_set_encoding_utf16le))

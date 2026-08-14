@@ -7,7 +7,13 @@ use gpui_component::dock::{Panel, PanelEvent, TabPanel};
 use gpui_component::menu::PopupMenu;
 use gpui_component::{ActiveTheme, Sizable};
 
-use crate::actions::{FocusHexView, GoToBeginning, GoToEnd, SearchNext, SearchPrev, SelectAll, ToggleSearch};
+use crate::actions::{
+    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary,
+    CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray,
+    CopyAsPrintableText, CopyAsRustArray, FocusHexView, GoToBeginning, GoToEnd, HighlightBlue, HighlightCyan,
+    HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine,
+    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch,
+};
 use crate::app_state::AppState;
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
@@ -161,6 +167,11 @@ impl EditorPanel {
         self.editor.clone()
     }
 
+    #[allow(dead_code)]
+    pub fn hex_view(&self) -> Entity<HexView> {
+        self.hex_view.clone()
+    }
+
     pub fn scroll_to_byte(&mut self, byte_offset: usize, cx: &mut Context<Self>) {
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(byte_offset, cx);
@@ -221,7 +232,7 @@ impl EditorPanel {
         new_editor_panel
     }
 
-    fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.is_search_visible = !self.is_search_visible;
         if self.is_search_visible {
             self.search_bar.update(cx, |bar, cx| {
@@ -350,8 +361,9 @@ impl EditorPanel {
         }
     }
 
-    fn search_next(&mut self, _: &SearchNext, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn search_next(&mut self, _: &SearchNext, window: &mut Window, cx: &mut Context<Self>) {
         self.perform_search_next(cx);
+        self.hex_view.read(cx).focus_handle(cx).focus(window);
     }
 
     fn perform_search_next(&mut self, cx: &mut Context<Self>) {
@@ -362,8 +374,9 @@ impl EditorPanel {
         cx.notify();
     }
 
-    fn search_prev(&mut self, _: &SearchPrev, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn search_prev(&mut self, _: &SearchPrev, window: &mut Window, cx: &mut Context<Self>) {
         self.perform_search_prev(cx);
+        self.hex_view.read(cx).focus_handle(cx).focus(window);
     }
 
     fn perform_search_prev(&mut self, cx: &mut Context<Self>) {
@@ -374,29 +387,144 @@ impl EditorPanel {
         cx.notify();
     }
 
-    fn focus_hex_view(&mut self, _: &FocusHexView, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus_hex_view(&mut self, _: &FocusHexView, window: &mut Window, cx: &mut Context<Self>) {
         self.hex_view.read(cx).focus_handle(cx).focus(window);
     }
 
-    fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor: &mut Editor, _| {
             editor.select_all();
         });
+        self.hex_view.read(cx).focus_handle(cx).focus(window);
         cx.notify();
     }
 
-    fn go_to_beginning(&mut self, _: &GoToBeginning, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn go_to_beginning(&mut self, _: &GoToBeginning, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor: &mut Editor, _| {
             editor.go_to_beginning();
         });
+        let cursor_offset = self.editor.read(cx).cursor_offset;
+        self.hex_view.update(cx, |view, cx| {
+            view.scroll_to_byte(cursor_offset, cx);
+            view.focus_handle(cx).focus(window);
+        });
         cx.notify();
     }
 
-    fn go_to_end(&mut self, _: &GoToEnd, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn go_to_end(&mut self, _: &GoToEnd, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor: &mut Editor, _| {
             editor.go_to_end();
         });
+        let cursor_offset = self.editor.read(cx).cursor_offset;
+        self.hex_view.update(cx, |view, cx| {
+            view.scroll_to_byte(cursor_offset, cx);
+            view.focus_handle(cx).focus(window);
+        });
         cx.notify();
+    }
+
+    pub fn copy(&mut self, action: &Copy, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy(action, window, cx));
+    }
+
+    pub fn copy_as_hexdump(&mut self, action: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_hexdump(action, window, cx));
+    }
+
+    pub fn copy_as_cpp_array(&mut self, action: &CopyAsCppArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_cpp_array(action, window, cx));
+    }
+
+    pub fn copy_as_hex_stream(&mut self, action: &CopyAsHexStream, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_hex_stream(action, window, cx));
+    }
+
+    pub fn copy_as_hex_spaces(&mut self, action: &CopyAsHexSpaces, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_hex_spaces(action, window, cx));
+    }
+
+    pub fn copy_as_printable_text(&mut self, action: &CopyAsPrintableText, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_printable_text(action, window, cx));
+    }
+
+    pub fn copy_as_base64(&mut self, action: &CopyAsBase64, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_base64(action, window, cx));
+    }
+
+    pub fn copy_as_escaped_string(&mut self, action: &CopyAsEscapedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_escaped_string(action, window, cx));
+    }
+
+    pub fn copy_as_binary(&mut self, action: &CopyAsBinary, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_binary(action, window, cx));
+    }
+
+    pub fn copy_as_rust_array(&mut self, action: &CopyAsRustArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_rust_array(action, window, cx));
+    }
+
+    pub fn copy_as_json_array(&mut self, action: &CopyAsJsonArray, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.copy_as_json_array(action, window, cx));
+    }
+
+    pub fn highlight_red(&mut self, action: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_red(action, window, cx));
+    }
+
+    pub fn highlight_orange(&mut self, action: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_orange(action, window, cx));
+    }
+
+    pub fn highlight_yellow(&mut self, action: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_yellow(action, window, cx));
+    }
+
+    pub fn highlight_green(&mut self, action: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_green(action, window, cx));
+    }
+
+    pub fn highlight_cyan(&mut self, action: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_cyan(action, window, cx));
+    }
+
+    pub fn highlight_blue(&mut self, action: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_blue(action, window, cx));
+    }
+
+    pub fn highlight_purple(&mut self, action: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_purple(action, window, cx));
+    }
+
+    pub fn highlight_pink(&mut self, action: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.highlight_pink(action, window, cx));
+    }
+
+    pub fn clear_highlight(&mut self, action: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.clear_highlight(action, window, cx));
+    }
+
+    pub fn clear_all_highlights(&mut self, action: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.clear_all_highlights(action, window, cx));
+    }
+
+    pub fn add_custom_break(&mut self, action: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.add_custom_break(action, window, cx));
+    }
+
+    pub fn remove_custom_break_backward(&mut self, action: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.remove_custom_break_backward(action, window, cx));
+    }
+
+    pub fn remove_custom_break_forward(&mut self, action: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.remove_custom_break_forward(action, window, cx));
+    }
+
+    pub fn join_line(&mut self, action: &JoinLine, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.join_line(action, window, cx));
+    }
+
+    pub fn clear_all_custom_breaks(&mut self, action: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.clear_all_custom_breaks(action, window, cx));
     }
 }
 
@@ -527,6 +655,32 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::go_to_beginning))
             .on_action(cx.listener(Self::go_to_end))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::copy_as_hexdump))
+            .on_action(cx.listener(Self::copy_as_cpp_array))
+            .on_action(cx.listener(Self::copy_as_hex_stream))
+            .on_action(cx.listener(Self::copy_as_hex_spaces))
+            .on_action(cx.listener(Self::copy_as_printable_text))
+            .on_action(cx.listener(Self::copy_as_base64))
+            .on_action(cx.listener(Self::copy_as_escaped_string))
+            .on_action(cx.listener(Self::copy_as_binary))
+            .on_action(cx.listener(Self::copy_as_rust_array))
+            .on_action(cx.listener(Self::copy_as_json_array))
+            .on_action(cx.listener(Self::highlight_red))
+            .on_action(cx.listener(Self::highlight_orange))
+            .on_action(cx.listener(Self::highlight_yellow))
+            .on_action(cx.listener(Self::highlight_green))
+            .on_action(cx.listener(Self::highlight_cyan))
+            .on_action(cx.listener(Self::highlight_blue))
+            .on_action(cx.listener(Self::highlight_purple))
+            .on_action(cx.listener(Self::highlight_pink))
+            .on_action(cx.listener(Self::clear_highlight))
+            .on_action(cx.listener(Self::clear_all_highlights))
+            .on_action(cx.listener(Self::add_custom_break))
+            .on_action(cx.listener(Self::remove_custom_break_backward))
+            .on_action(cx.listener(Self::remove_custom_break_forward))
+            .on_action(cx.listener(Self::join_line))
+            .on_action(cx.listener(Self::clear_all_custom_breaks))
             .when(self.is_search_visible, |el| el.child(self.search_bar.clone()))
             .child(div().flex_1().w_full().min_h_0().child(self.hex_view.clone()))
     }

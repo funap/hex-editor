@@ -129,7 +129,7 @@ pub fn digit_count(radix: DisplayRadix, group_size: ByteGroupSize) -> usize {
 
 /// Formats a group slice of bytes based on the selected Radix, Group Size, Endianness, and starting slot within the group.
 ///
-/// If `start_slot == 0 && bytes.len() == group_size.byte_count()`, the integer value is formatted with exact zero-padding.
+/// If `start_slot == 0 && bytes.len() == group_size.byte_count()`, the integer value is formatted with exact padding (space padding for decimal, zero padding for hex/octal/binary).
 /// If `bytes.len() < group_size.byte_count()` or `start_slot > 0` (e.g. midway line break), each byte slot `k` (0..group_size)
 /// is formatted at its exact positional offset, with missing slots padded with '.' so byte position can be identified.
 pub fn format_group(bytes: &[u8], start_slot: usize, radix: DisplayRadix, group_size: ByteGroupSize, is_big_endian: bool) -> String {
@@ -140,27 +140,65 @@ pub fn format_group(bytes: &[u8], start_slot: usize, radix: DisplayRadix, group_
         return ".".repeat(total_digits);
     }
 
+    if radix == DisplayRadix::Decimal {
+        let copy_len = bytes.len().min(expected.saturating_sub(start_slot));
+        return match group_size {
+            ByteGroupSize::One => format!("{:3}", bytes[0]),
+            ByteGroupSize::Two => {
+                let mut arr = [0u8; 2];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
+                format!("{:5}", val)
+            }
+            ByteGroupSize::Four => {
+                let mut arr = [0u8; 4];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
+                format!("{:10}", val)
+            }
+            ByteGroupSize::Eight => {
+                let mut arr = [0u8; 8];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
+                format!("{:20}", val)
+            }
+        };
+    }
+
+    if radix == DisplayRadix::Octal {
+        let copy_len = bytes.len().min(expected.saturating_sub(start_slot));
+        return match group_size {
+            ByteGroupSize::One => format!("{:03o}", bytes[0]),
+            ByteGroupSize::Two => {
+                let mut arr = [0u8; 2];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
+                format!("{:06o}", val)
+            }
+            ByteGroupSize::Four => {
+                let mut arr = [0u8; 4];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
+                format!("{:011o}", val)
+            }
+            ByteGroupSize::Eight => {
+                let mut arr = [0u8; 8];
+                arr[start_slot..start_slot + copy_len].copy_from_slice(&bytes[..copy_len]);
+                let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
+                format!("{:022o}", val)
+            }
+        };
+    }
+
     if start_slot == 0 && bytes.len() >= expected {
         match (group_size, radix) {
             (ByteGroupSize::One, DisplayRadix::Hexadecimal) => format!("{:02x}", bytes[0]),
-            (ByteGroupSize::One, DisplayRadix::Decimal) => format!("{:03}", bytes[0]),
-            (ByteGroupSize::One, DisplayRadix::Octal) => format!("{:03o}", bytes[0]),
             (ByteGroupSize::One, DisplayRadix::Binary) => format!("{:08b}", bytes[0]),
 
             (ByteGroupSize::Two, DisplayRadix::Hexadecimal) => {
                 let arr: [u8; 2] = [bytes[0], bytes[1]];
                 let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
                 format!("{:04x}", val)
-            }
-            (ByteGroupSize::Two, DisplayRadix::Decimal) => {
-                let arr: [u8; 2] = [bytes[0], bytes[1]];
-                let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
-                format!("{:05}", val)
-            }
-            (ByteGroupSize::Two, DisplayRadix::Octal) => {
-                let arr: [u8; 2] = [bytes[0], bytes[1]];
-                let val = if is_big_endian { u16::from_be_bytes(arr) } else { u16::from_le_bytes(arr) };
-                format!("{:06o}", val)
             }
             (ByteGroupSize::Two, DisplayRadix::Binary) => {
                 let arr: [u8; 2] = [bytes[0], bytes[1]];
@@ -173,16 +211,6 @@ pub fn format_group(bytes: &[u8], start_slot: usize, radix: DisplayRadix, group_
                 let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
                 format!("{:08x}", val)
             }
-            (ByteGroupSize::Four, DisplayRadix::Decimal) => {
-                let arr: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
-                let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
-                format!("{:010}", val)
-            }
-            (ByteGroupSize::Four, DisplayRadix::Octal) => {
-                let arr: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
-                let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
-                format!("{:011o}", val)
-            }
             (ByteGroupSize::Four, DisplayRadix::Binary) => {
                 let arr: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
                 let val = if is_big_endian { u32::from_be_bytes(arr) } else { u32::from_le_bytes(arr) };
@@ -194,40 +222,29 @@ pub fn format_group(bytes: &[u8], start_slot: usize, radix: DisplayRadix, group_
                 let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
                 format!("{:016x}", val)
             }
-            (ByteGroupSize::Eight, DisplayRadix::Decimal) => {
-                let arr: [u8; 8] = [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]];
-                let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
-                format!("{:020}", val)
-            }
-            (ByteGroupSize::Eight, DisplayRadix::Octal) => {
-                let arr: [u8; 8] = [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]];
-                let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
-                format!("{:022o}", val)
-            }
             (ByteGroupSize::Eight, DisplayRadix::Binary) => {
                 let arr: [u8; 8] = [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]];
                 let val = if is_big_endian { u64::from_be_bytes(arr) } else { u64::from_le_bytes(arr) };
                 format!("{:064b}", val)
             }
+            _ => unreachable!(),
         }
     } else {
-        // Partial group: format each slot k in 0..expected
+        // Partial group for Hexadecimal and Binary: format each slot k in 0..expected
         let mut formatted = String::with_capacity(total_digits);
         for k in 0..expected {
             if k >= start_slot && (k - start_slot) < bytes.len() {
                 let b = bytes[k - start_slot];
                 match radix {
                     DisplayRadix::Hexadecimal => formatted.push_str(&format!("{:02x}", b)),
-                    DisplayRadix::Decimal => formatted.push_str(&format!("{:03}", b)),
-                    DisplayRadix::Octal => formatted.push_str(&format!("{:03o}", b)),
                     DisplayRadix::Binary => formatted.push_str(&format!("{:08b}", b)),
+                    _ => unreachable!(),
                 }
             } else {
                 let slot_dots = match radix {
                     DisplayRadix::Hexadecimal => 2,
-                    DisplayRadix::Decimal => 3,
-                    DisplayRadix::Octal => 3,
                     DisplayRadix::Binary => 8,
+                    _ => unreachable!(),
                 };
                 formatted.push_str(&".".repeat(slot_dots));
             }
@@ -277,7 +294,7 @@ mod tests {
     fn test_format_group_one_byte() {
         let b = &[0x2a]; // 42 decimal, 052 octal, 00101010 binary
         assert_eq!(format_group(b, 0, DisplayRadix::Hexadecimal, ByteGroupSize::One, false), "2a");
-        assert_eq!(format_group(b, 0, DisplayRadix::Decimal, ByteGroupSize::One, false), "042");
+        assert_eq!(format_group(b, 0, DisplayRadix::Decimal, ByteGroupSize::One, false), " 42");
         assert_eq!(format_group(b, 0, DisplayRadix::Octal, ByteGroupSize::One, false), "052");
         assert_eq!(format_group(b, 0, DisplayRadix::Binary, ByteGroupSize::One, false), "00101010");
     }
@@ -292,7 +309,7 @@ mod tests {
         assert_eq!(format_group(bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Two, true), "1234");
 
         assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Two, false), "13330");
-        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Two, true), "04660");
+        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Two, true), " 4660");
 
         assert_eq!(format_group(bytes, 0, DisplayRadix::Octal, ByteGroupSize::Two, false), "032022");
         assert_eq!(format_group(bytes, 0, DisplayRadix::Octal, ByteGroupSize::Two, true), "011064");
@@ -309,8 +326,8 @@ mod tests {
         assert_eq!(format_group(bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Four, false), "04030201");
         assert_eq!(format_group(bytes, 0, DisplayRadix::Hexadecimal, ByteGroupSize::Four, true), "01020304");
 
-        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Four, false), "0067305985");
-        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Four, true), "0016909060");
+        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Four, false), "  67305985");
+        assert_eq!(format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Four, true), "  16909060");
     }
 
     #[test]
@@ -340,6 +357,38 @@ mod tests {
 
         // Slot 1 in 2B -> "..12"
         assert_eq!(format_group(b, 1, DisplayRadix::Hexadecimal, ByteGroupSize::Two, false), "..12");
+    }
+
+    #[test]
+    fn test_format_group_eight_bytes() {
+        let bytes = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        // LE: 0x0807060504030201 = 578437695752307201
+        assert_eq!(
+            format_group(bytes, 0, DisplayRadix::Decimal, ByteGroupSize::Eight, false),
+            "  578437695752307201"
+        );
+    }
+
+    #[test]
+    fn test_format_group_partial_decimal() {
+        // 3 bytes in 8-byte group: 0x0000000000563412 = 5649426
+        let b = &[0x12, 0x34, 0x56];
+        assert_eq!(format_group(b, 0, DisplayRadix::Decimal, ByteGroupSize::Eight, false), "             5649426");
+        assert_eq!(format_group(b, 0, DisplayRadix::Decimal, ByteGroupSize::Eight, false).len(), 20);
+
+        // 1 byte in 8-byte group: 99
+        let b1 = &[99];
+        assert_eq!(format_group(b1, 0, DisplayRadix::Decimal, ByteGroupSize::Eight, false), "                  99");
+        assert_eq!(format_group(b1, 0, DisplayRadix::Decimal, ByteGroupSize::Eight, false).len(), 20);
+
+        // 2 bytes in 4-byte group: 0x00003412 = 13330
+        let b2 = &[0x12, 0x34];
+        assert_eq!(format_group(b2, 0, DisplayRadix::Decimal, ByteGroupSize::Four, false), "     13330");
+        assert_eq!(format_group(b2, 0, DisplayRadix::Decimal, ByteGroupSize::Four, false).len(), 10);
+
+        // 1 byte in 2-byte group: 99
+        assert_eq!(format_group(b1, 0, DisplayRadix::Decimal, ByteGroupSize::Two, false), "   99");
+        assert_eq!(format_group(b1, 0, DisplayRadix::Decimal, ByteGroupSize::Two, false).len(), 5);
     }
 
     #[test]

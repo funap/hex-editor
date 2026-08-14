@@ -1024,6 +1024,8 @@ impl Workspace {
                 p.set_tab(tab, cx);
             });
             self.set_left_panel_visible(true, window, cx);
+            let focus_handle = self.left_panel.read(cx).focus_handle(cx);
+            focus_handle.focus(window);
         }
     }
 

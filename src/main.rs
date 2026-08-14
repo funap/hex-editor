@@ -40,6 +40,7 @@ fn main() {
         ui::components::file_tree_view::init(cx);
         ui::components::search_bar::init(cx);
         ui::components::struct_tree_view::init(cx);
+        ui::components::highlight_panel::init(cx);
         ui::panels::editor_panel::init(cx);
         ui::panels::diff_panel::init(cx);
 

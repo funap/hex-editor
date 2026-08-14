@@ -7,6 +7,25 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{self, Input, InputState};
 use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
 
+actions!(highlight_panel, [MoveUp, MoveDown, SelectCurrent, EditComment, CancelEdit, SaveEdit, DeleteSelected]);
+
+const CONTEXT: &str = "HighlightPanel";
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
+        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
+        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
+        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
+        KeyBinding::new("f2", EditComment, Some(CONTEXT)),
+        KeyBinding::new("enter", SelectCurrent, Some(CONTEXT)),
+        KeyBinding::new("backspace", DeleteSelected, Some(CONTEXT)),
+        KeyBinding::new("delete", DeleteSelected, Some(CONTEXT)),
+        KeyBinding::new("escape", CancelEdit, Some("CommentEdit")),
+        KeyBinding::new("enter", SaveEdit, Some("CommentEdit")),
+    ]);
+}
+
 #[allow(dead_code)]
 pub enum HighlightPanelEvent {
     NavigateTo { offset: usize, size: usize },
@@ -32,9 +51,9 @@ impl HighlightPanel {
         let focus_handle = cx.focus_handle();
         let comment_input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a comment..."));
 
-        let input_sub = cx.subscribe(&comment_input, |this, _, event: &input::InputEvent, cx| {
+        let input_sub = cx.subscribe_in(&comment_input, window, |this, _, event: &input::InputEvent, window, cx| {
             if let input::InputEvent::PressEnter { .. } = event {
-                this.save_editing_comment(cx);
+                this.save_editing_comment(window, cx);
             }
         });
 
@@ -61,11 +80,44 @@ impl HighlightPanel {
         self.color_picker_id = None;
 
         if let Some(ed) = &editor {
-            self._editor_subscription = Some(cx.observe(ed, |_, _, cx| {
+            self._editor_subscription = Some(cx.observe(ed, |this, editor, cx| {
+                this.sync_selected_from_cursor(&editor, cx);
                 cx.notify();
             }));
+            self.sync_selected_from_cursor(ed, cx);
         }
         cx.notify();
+    }
+
+    fn sync_selected_from_cursor(&mut self, editor: &Entity<Editor>, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let (cursor_offset, highlights) = {
+            let ed = editor.read(cx);
+            (ed.cursor_offset, ed.highlights_snapshot())
+        };
+
+        if highlights.is_empty() {
+            self.selected_id = None;
+            return;
+        }
+
+        if let Some(ref sel_id) = self.selected_id
+            && let Some(item) = highlights.iter().find(|h| &h.id == sel_id)
+        {
+            let range = item.offset..item.offset + item.size;
+            if (item.size > 0 && range.contains(&cursor_offset)) || (item.size == 0 && item.offset == cursor_offset) {
+                return;
+            }
+        }
+
+        if let Some(item) = highlights.iter().find(|h| {
+            let range = h.offset..h.offset + h.size;
+            (h.size > 0 && range.contains(&cursor_offset)) || (h.size == 0 && h.offset == cursor_offset)
+        }) {
+            self.selected_id = Some(item.id.clone());
+        }
     }
 
     fn add_highlight_from_selection(&mut self, cx: &mut Context<Self>) {
@@ -131,7 +183,7 @@ impl HighlightPanel {
         }
     }
 
-    fn save_editing_comment(&mut self, cx: &mut Context<Self>) {
+    fn save_editing_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing_id) = self.editing_id.take() else { return };
         let new_comment = self.comment_input.read(cx).value().to_string();
 
@@ -142,11 +194,13 @@ impl HighlightPanel {
             });
             self.notify_document_changed(cx);
         }
+        self.focus_handle.focus(window);
         cx.notify();
     }
 
-    fn cancel_editing_comment(&mut self, cx: &mut Context<Self>) {
+    fn cancel_editing_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_id = None;
+        self.focus_handle.focus(window);
         cx.notify();
     }
 
@@ -244,6 +298,91 @@ impl HighlightPanel {
         }
         cx.emit(HighlightPanelEvent::NavigateTo { offset, size });
         cx.notify();
+    }
+
+    fn move_up(&mut self, _: &MoveUp, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let highlights = ed.read(cx).highlights_snapshot();
+        if highlights.is_empty() {
+            return;
+        }
+
+        let curr_idx = self
+            .selected_id
+            .as_ref()
+            .and_then(|id| highlights.iter().position(|h| &h.id == id));
+
+        let next_idx = match curr_idx {
+            Some(idx) => idx.saturating_sub(1),
+            None => 0,
+        };
+
+        let target_item = &highlights[next_idx];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_highlight(target_item.offset, target_item.size, cx);
+    }
+
+    fn move_down(&mut self, _: &MoveDown, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let highlights = ed.read(cx).highlights_snapshot();
+        if highlights.is_empty() {
+            return;
+        }
+
+        let max_idx = highlights.len() - 1;
+        let curr_idx = self
+            .selected_id
+            .as_ref()
+            .and_then(|id| highlights.iter().position(|h| &h.id == id));
+
+        let next_idx = match curr_idx {
+            Some(idx) => (idx + 1).min(max_idx),
+            None => 0,
+        };
+
+        let target_item = &highlights[next_idx];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_highlight(target_item.offset, target_item.size, cx);
+    }
+
+    fn select_current(&mut self, _: &SelectCurrent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let highlights = ed.read(cx).highlights_snapshot();
+        if let Some(item) = self.selected_id.as_ref().and_then(|id| highlights.iter().find(|h| &h.id == id)) {
+            self.navigate_to_highlight(item.offset, item.size, cx);
+        } else if let Some(first) = highlights.first() {
+            self.selected_id = Some(first.id.clone());
+            self.navigate_to_highlight(first.offset, first.size, cx);
+        }
+    }
+
+    fn edit_comment(&mut self, _: &EditComment, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        if let Some(id) = self.selected_id.clone() {
+            self.start_editing_comment(id, window, cx);
+        }
+    }
+
+    fn delete_selected(&mut self, _: &DeleteSelected, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        if let Some(id) = self.selected_id.clone() {
+            self.delete_highlight(&id, cx);
+        }
     }
 }
 
@@ -355,7 +494,16 @@ impl Render for HighlightPanel {
 
         let container = crate::ui::style::panel_container(is_focused, &theme);
 
-        container.track_focus(&self.focus_handle).child(header).child(body)
+        container
+            .key_context(CONTEXT)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::move_up))
+            .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::select_current))
+            .on_action(cx.listener(Self::edit_comment))
+            .on_action(cx.listener(Self::delete_selected))
+            .child(header)
+            .child(body)
     }
 }
 
@@ -421,7 +569,8 @@ impl HighlightPanel {
                             .cursor_pointer()
                             .on_click(cx.listener({
                                 let item_id = item_id_select.clone();
-                                move |this, _, _window, cx| {
+                                move |this, _, window, cx| {
+                                    this.focus_handle.focus(window);
                                     this.selected_id = Some(item_id.clone());
                                     this.navigate_to_highlight(offset, size, cx);
                                 }
@@ -462,7 +611,8 @@ impl HighlightPanel {
                             .icon(IconName::Search)
                             .with_size(Size::XSmall)
                             .tooltip("Go to offset")
-                            .on_click(cx.listener(move |this, _, _window, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.focus_handle.focus(window);
                                 this.navigate_to_highlight(offset, size, cx);
                             })),
                     )
@@ -529,6 +679,13 @@ impl HighlightPanel {
         // 3. Comment Display or Edit Mode
         if is_editing {
             let edit_box = v_flex()
+                .key_context("CommentEdit")
+                .on_action(cx.listener(|this, _: &CancelEdit, window, cx| {
+                    this.cancel_editing_comment(window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &SaveEdit, window, cx| {
+                    this.save_editing_comment(window, cx);
+                }))
                 .gap_1p5()
                 .p_1()
                 .bg(theme.background)
@@ -543,8 +700,8 @@ impl HighlightPanel {
                                 .ghost()
                                 .with_size(Size::XSmall)
                                 .label("Cancel")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.cancel_editing_comment(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_editing_comment(window, cx);
                                 })),
                         )
                         .child(
@@ -552,8 +709,8 @@ impl HighlightPanel {
                                 .primary()
                                 .with_size(Size::XSmall)
                                 .label("Save")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.save_editing_comment(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_editing_comment(window, cx);
                                 })),
                         ),
                 );

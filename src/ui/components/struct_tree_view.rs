@@ -1,9 +1,9 @@
 use crate::core::editor::Editor;
 use crate::core::structure::ParsedField;
-use crate::ui::style::StyleExt as _;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, v_flex};
+use gpui_component::{ActiveTheme as _, Sizable as _, button::ButtonVariants as _};
 use std::collections::HashSet;
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
@@ -467,8 +467,43 @@ impl Render for StructTreeView {
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
 
-        let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(theme.sidebar);
-        let container = container.focus_indicator(is_focused, theme);
+        let badge = if !self.flattened_fields.is_empty() {
+            Some(crate::ui::style::panel_badge(format!("{}", self.flattened_fields.len()), theme).into_any_element())
+        } else {
+            None
+        };
+
+        let has_structure = self.parse_result.is_some() || !self.flattened_fields.is_empty();
+
+        let header_actions = if has_structure {
+            Some(
+                gpui_component::button::Button::new("clear-structure-btn")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Clear Structure Definition")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::ClearStructureDefinition), cx);
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            Some(
+                gpui_component::button::Button::new("load-structure-header-btn")
+                    .ghost()
+                    .icon(IconName::FolderOpen)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Load Structure Definition (cmd-shift-s)")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
+                    }))
+                    .into_any_element(),
+            )
+        };
+
+        let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, badge, header_actions);
+
+        let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("struct-tree-view")
@@ -485,27 +520,34 @@ impl Render for StructTreeView {
                     this.focus_handle.focus(window);
                 }),
             )
-            .child(
-                div()
-                    .p_2()
-                    .text_sm()
-                    .text_color(crate::ui::style::header_text_color(is_focused, theme))
-                    .child("STRUCTURE"),
-            )
+            .child(header)
             .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_parsing {
-                v_flex()
-                    .size_full()
-                    .pt_8()
-                    .items_center()
-                    .child(div().text_color(theme.muted_foreground).child("Parsing structure..."))
-                    .into_any_element()
+                crate::ui::style::panel_empty_state(
+                    IconName::LoaderCircle,
+                    "Parsing Structure...",
+                    Some("Analyzing binary data with Kaitai Struct..."),
+                    None,
+                    theme,
+                )
+                .into_any_element()
             } else if is_empty {
-                v_flex()
-                    .size_full()
-                    .pt_8()
-                    .items_center()
-                    .child(div().text_color(theme.muted_foreground).child("No structure loaded"))
-                    .into_any_element()
+                let load_btn = gpui_component::button::Button::new("load-ksy-btn")
+                    .label("Load Structure (.ksy)")
+                    .primary()
+                    .with_size(gpui_component::Size::Small)
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
+                    }))
+                    .into_any_element();
+
+                crate::ui::style::panel_empty_state(
+                    IconName::ListTree,
+                    "No Structure Loaded",
+                    Some("Open a Kaitai Struct (.ksy) YAML file to inspect binary fields"),
+                    Some(load_btn),
+                    theme,
+                )
+                .into_any_element()
             } else {
                 let focus_handle = self.focus_handle.clone();
                 uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {

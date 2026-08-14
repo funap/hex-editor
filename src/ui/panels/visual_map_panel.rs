@@ -1,10 +1,10 @@
 use crate::core::editor::Editor;
-use crate::ui::style::StyleExt as _;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::scroll::*;
-use gpui_component::{ActiveTheme, Icon, IconName, PixelsExt, button::Button, button::ButtonVariants, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, PixelsExt, button::Button, button::ButtonVariants, h_flex};
 use std::cell::RefCell;
 use std::cmp;
 use std::sync::Arc;
@@ -292,21 +292,15 @@ pub struct VisualMapPanelState {
 impl Render for VisualMapPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (bg_color, border_color, muted_color) = (theme.sidebar, theme.border, theme.muted_foreground);
+        let (border_color, muted_color) = (theme.border, theme.muted_foreground);
         let is_focused = self.focus_handle.is_focused(window);
 
-        let header = div()
-            .p_2()
-            .text_sm()
-            .text_color(crate::ui::style::header_text_color(is_focused, theme))
-            .child("2D VISUAL MAP");
+        let header = crate::ui::style::panel_header("2D VISUAL MAP", is_focused, theme, None, None);
 
         let editor = match &self.editor {
             Some(ed) => ed,
             None => {
-                let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(bg_color);
-
-                let container = container.focus_indicator(is_focused, theme);
+                let container = crate::ui::style::panel_container(is_focused, theme);
 
                 return container
                     .id("visual-map-panel")
@@ -318,15 +312,13 @@ impl Render for VisualMapPanel {
                         }),
                     )
                     .child(header)
-                    .child(
-                        div().flex_1().min_h_0().w_full().overflow_hidden().child(
-                            v_flex()
-                                .size_full()
-                                .pt_8()
-                                .items_center()
-                                .child(div().text_sm().text_color(muted_color).child("No active editor")),
-                        ),
-                    );
+                    .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(crate::ui::style::panel_empty_state(
+                        IconName::Map,
+                        "No Active File",
+                        Some("Open a binary file to visualize byte distribution"),
+                        None,
+                        theme,
+                    )));
             }
         };
 
@@ -414,9 +406,7 @@ impl Render for VisualMapPanel {
             "Hover over pixels to view details".to_string()
         };
 
-        let container = v_flex().size_full().bg(bg_color);
-
-        let container = container.focus_indicator(is_focused, theme);
+        let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("visual-map-panel")

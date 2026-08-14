@@ -1,10 +1,10 @@
 use crate::core::checksum;
 use crate::core::editor::Editor;
-use crate::ui::style::StyleExt as _;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme as _, IconName, button::Button, button::ButtonVariants, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, button::Button, button::ButtonVariants, h_flex, v_flex};
 use gpui_component::{Disableable, Selectable, Sizable, Size};
 use std::ops::Range;
 
@@ -205,8 +205,8 @@ impl ChecksumPanel {
             .justify_between()
             .items_center()
             .py_1()
-            .px_2()
-            .hover(|style| style.bg(theme.accent.opacity(0.1)))
+            .px_3()
+            .hover(|style| style.bg(theme.muted.opacity(0.4)))
             .child(div().flex_shrink_0().w(px(110.0)).text_xs().text_color(theme.muted_foreground).child(label))
             .child(
                 h_flex()
@@ -247,12 +247,7 @@ impl Render for ChecksumPanel {
         let is_focused = self.focus_handle.is_focused(window);
 
         // Header
-        let header = h_flex().justify_between().items_center().p_2().border_b_1().border_color(theme.border).child(
-            div()
-                .text_sm()
-                .text_color(crate::ui::style::header_text_color(is_focused, theme))
-                .child("CHECKSUM & SUM"),
-        );
+        let header = crate::ui::style::panel_header("CHECKSUM & SUM", is_focused, theme, None, None);
 
         // Context info
         let mut info_text = "No Active File".to_string();
@@ -393,27 +388,20 @@ impl Render for ChecksumPanel {
                 .overflow_y_scrollbar()
                 .into_any_element()
         } else {
-            let msg = if self.editor.is_none() {
-                "No active editor"
+            let (title, msg) = if self.editor.is_none() {
+                ("No Active File", "Open a binary file to compute checksums")
             } else if data_len == 0 {
-                "Selection is empty"
+                ("Selection Empty", "Select bytes in hex view or switch to Entire File")
             } else if self.auto_calculate && data_len > 1_000_000 {
-                "Range too large for Auto-Calc.\nClick Calculate."
+                ("Large Data Range", "Range exceeds 1MB. Click Calculate to compute.")
             } else {
-                "Click Calculate to compute"
+                ("Ready to Compute", "Click Calculate to compute checksums")
             };
 
-            v_flex()
-                .flex_1()
-                .items_center()
-                .pt_8()
-                .p_4()
-                .child(div().text_sm().text_color(theme.muted_foreground).child(msg))
-                .into_any_element()
+            crate::ui::style::panel_empty_state(IconName::Hash, title, Some(msg), None, theme).into_any_element()
         };
 
-        let container = v_flex().size_full().min_w_0().overflow_hidden().bg(theme.sidebar);
-        let container = container.focus_indicator(is_focused, theme);
+        let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("checksum-panel")

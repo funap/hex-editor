@@ -464,7 +464,7 @@ impl Panel for EditorPanel {
     fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
         Some(vec![
             Button::new("split-right")
-                .icon(gpui_component::IconName::PanelRight)
+                .icon(crate::ui::icon::IconName::PanelRight)
                 .xsmall()
                 .ghost()
                 .tab_stop(false)
@@ -473,7 +473,7 @@ impl Panel for EditorPanel {
                     window.dispatch_action(Box::new(crate::actions::SplitRight), cx);
                 })),
             Button::new("split-down")
-                .icon(gpui_component::IconName::PanelBottom)
+                .icon(crate::ui::icon::IconName::PanelBottom)
                 .xsmall()
                 .ghost()
                 .tab_stop(false)

@@ -1,7 +1,8 @@
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
+use gpui_component::{ActiveTheme, Icon, Sizable};
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
 use crate::core::editor::Editor;

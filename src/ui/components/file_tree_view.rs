@@ -2,18 +2,19 @@ use crate::actions::{LoadChildren, OpenDiff, OpenFile, Rename, SelectItem};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::ui::style::StyleExt as _;
+use crate::ui::icon::IconName;
 use autocorrect::ignorer::Ignorer;
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
     SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, h_flex,
+    ActiveTheme as _, Sizable as _,
+    button::ButtonVariants as _,
+    h_flex,
     list::ListItem,
     menu::ContextMenuExt,
     tree::{TreeItem, TreeState, tree},
-    v_flex,
 };
 
 actions!(file_tree, [MoveUp, MoveDown]);
@@ -320,9 +321,35 @@ impl Render for FileTreeView {
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
 
-        let container = v_flex().size_full().min_w_0().min_h_0().overflow_hidden().bg(theme.sidebar);
+        let header_actions = if !is_empty {
+            Some(
+                gpui_component::button::Button::new("close-folder")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Close Folder")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_folder(cx);
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            Some(
+                gpui_component::button::Button::new("open-folder-header")
+                    .ghost()
+                    .icon(IconName::FolderOpen)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Open Folder")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.prompt_open_folder(window, cx);
+                    }))
+                    .into_any_element(),
+            )
+        };
 
-        let container = container.focus_indicator(is_focused, theme);
+        let header = crate::ui::style::panel_header("FILES", is_focused, theme, None, header_actions);
+
+        let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("file-tree-view")
@@ -340,45 +367,25 @@ impl Render for FileTreeView {
             .on_action(cx.listener(Self::on_action_select_item))
             .on_action(cx.listener(Self::on_action_set_file_tree_folder))
             .on_action(cx.listener(Self::on_action_load_children))
-            .child(
-                div()
-                    .p_2()
-                    .text_sm()
-                    .text_color(crate::ui::style::header_text_color(is_focused, theme))
-                    .child("FILES"),
-            )
+            .child(header)
             .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_empty {
-                v_flex()
-                    .size_full()
-                    .pt_8()
-                    .items_center()
-                    .px_4()
-                    .gap_4()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("You have not yet opened a folder."),
-                    )
-                    .child(
-                        div()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.prompt_open_folder(window, cx);
-                                }),
-                            )
-                            .id("open-folder-btn")
-                            .px_4()
-                            .py_2()
-                            .bg(cx.theme().accent)
-                            .text_color(cx.theme().accent_foreground)
-                            .text_sm()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .child("Open Folder"),
-                    )
-                    .into_any_element()
+                let open_btn = gpui_component::button::Button::new("open-folder-btn")
+                    .label("Open Folder")
+                    .primary()
+                    .with_size(gpui_component::Size::Small)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.prompt_open_folder(window, cx);
+                    }))
+                    .into_any_element();
+
+                crate::ui::style::panel_empty_state(
+                    IconName::FolderOpen,
+                    "No Folder Opened",
+                    Some("Open a directory to explore files"),
+                    Some(open_btn),
+                    theme,
+                )
+                .into_any_element()
             } else {
                 tree(&self.tree_state, {
                     let selected_ids: HashSet<_> = self.selected_items.iter().map(|i| i.id.clone()).collect();
@@ -431,7 +438,7 @@ impl Render for FileTreeView {
                                     if can_compare {
                                         menu = menu.menu_with_icon(
                                             "Compare Files",
-                                            IconName::Search,
+                                            IconName::GitCompare,
                                             Box::new(OpenDiff {
                                                 left_path: left_path.unwrap_or_default(),
                                                 right_path: right_path.unwrap_or_default(),
@@ -440,7 +447,7 @@ impl Render for FileTreeView {
                                     } else {
                                         menu = menu.menu_with_icon_and_disabled(
                                             "Compare Files",
-                                            IconName::Search,
+                                            IconName::GitCompare,
                                             Box::new(OpenDiff {
                                                 left_path: String::new(),
                                                 right_path: String::new(),

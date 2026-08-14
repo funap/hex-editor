@@ -1,6 +1,7 @@
+use crate::ui::icon::IconName;
 use gpui::{Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div};
 use gpui_component::button::ButtonVariants;
-use gpui_component::{IconName, TitleBar, button::Button, menu::AppMenuBar};
+use gpui_component::{TitleBar, button::Button, menu::AppMenuBar};
 
 pub enum AppTitleBarEvent {
     OpenSettings,

@@ -1,6 +1,7 @@
+use crate::ui::icon::IconName;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{ActiveTheme, Icon, IconName};
+use gpui_component::{ActiveTheme, Icon};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Activity {
@@ -40,12 +41,11 @@ impl ActivityBar {
 
 impl Render for ActivityBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (bg_color, border_color, muted_color, foreground_color) = {
-            let theme = cx.theme();
-            (theme.background, theme.border, theme.muted_foreground, theme.foreground)
-        };
+        let theme = cx.theme();
+        let (bg_color, border_color, foreground_color, muted_color) = (theme.sidebar, theme.border, theme.foreground, theme.muted_foreground);
 
         div()
+            .id("activity-bar")
             .flex()
             .flex_col()
             .w(px(42.0))
@@ -62,12 +62,12 @@ impl Render for ActivityBar {
                     .flex_col()
                     .gap_2()
                     .items_center()
-                    .child(self.render_icon(Activity::Files, IconName::File, "Files", cx))
-                    .child(self.render_icon(Activity::Structure, IconName::Search, "Structure", cx))
-                    .child(self.render_icon(Activity::Inspector, IconName::Inspector, "Inspector", cx))
+                    .child(self.render_icon(Activity::Files, IconName::Files, "Files", cx))
+                    .child(self.render_icon(Activity::Structure, IconName::ListTree, "Structure", cx))
+                    .child(self.render_icon(Activity::Inspector, IconName::SquareMousePointer, "Inspector", cx))
                     .child(self.render_icon(Activity::Map, IconName::Map, "Map", cx))
-                    .child(self.render_icon(Activity::Checksum, IconName::ChartPie, "Checksum", cx))
-                    .child(self.render_icon(Activity::Highlights, IconName::Palette, "Highlights", cx)),
+                    .child(self.render_icon(Activity::Checksum, IconName::Hash, "Checksum", cx))
+                    .child(self.render_icon(Activity::Highlights, IconName::Highlighter, "Highlights", cx)),
             )
             .child(
                 div()

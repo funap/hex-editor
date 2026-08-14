@@ -2,14 +2,16 @@
 #![recursion_limit = "1024"]
 
 use gpui::Application;
-use gpui_component_assets::Assets;
 
 mod actions;
 mod app_state;
+mod assets;
 mod core;
 mod service;
 mod theme;
 mod ui;
+
+use crate::assets::Assets;
 
 use crate::core::appearance::Appearance;
 use ui::workspace::Workspace;

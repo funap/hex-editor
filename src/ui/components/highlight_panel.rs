@@ -1,11 +1,11 @@
 use crate::core::editor::Editor;
 use crate::core::highlight::{HighlightColor, HighlightItem};
-use crate::ui::style::StyleExt as _;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{self, Input, InputState};
-use gpui_component::{ActiveTheme as _, Disableable, Icon, IconName, Sizable, Size, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
 
 #[allow(dead_code)]
 pub enum HighlightPanelEvent {
@@ -268,114 +268,77 @@ impl Render for HighlightPanel {
         let count = highlights.len();
 
         // Header toolbar
-        let header = h_flex()
-            .justify_between()
+        let badge = Some(crate::ui::style::panel_badge(count.to_string(), &theme).into_any_element());
+
+        let actions = h_flex()
             .items_center()
-            .px_2()
-            .py_1p5()
-            .border_b_1()
-            .border_color(theme.border)
+            .gap_1()
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_1p5()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(crate::ui::style::header_text_color(is_focused, &theme))
-                            .child("HIGHLIGHTS"),
-                    )
-                    .child(
-                        div()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded_sm()
-                            .bg(theme.muted.opacity(0.6))
-                            .text_xs()
-                            .font_family("Courier New")
-                            .text_color(theme.muted_foreground)
-                            .child(count.to_string()),
-                    ),
+                Button::new("add-hl")
+                    .ghost()
+                    .icon(IconName::Plus)
+                    .with_size(Size::XSmall)
+                    .tooltip("Add highlight at current selection / cursor")
+                    .disabled(!has_editor)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.add_highlight_from_selection(cx);
+                    })),
             )
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new("add-hl")
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .with_size(Size::XSmall)
-                            .tooltip("Add highlight at current selection / cursor")
-                            .disabled(!has_editor)
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.add_highlight_from_selection(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("import-hl")
-                            .ghost()
-                            .icon(IconName::FolderOpen)
-                            .with_size(Size::XSmall)
-                            .tooltip("Import highlights from JSON file")
-                            .disabled(!has_editor)
-                            .on_click(cx.listener(|_, _, _window, cx| {
-                                cx.emit(HighlightPanelEvent::Import);
-                            })),
-                    )
-                    .child(
-                        Button::new("export-hl")
-                            .ghost()
-                            .icon(IconName::ExternalLink)
-                            .with_size(Size::XSmall)
-                            .tooltip("Export highlights to JSON file")
-                            .disabled(!has_editor || count == 0)
-                            .on_click(cx.listener(|_, _, _window, cx| {
-                                cx.emit(HighlightPanelEvent::Export);
-                            })),
-                    )
-                    .child(
-                        Button::new("clear-hl")
-                            .ghost()
-                            .icon(IconName::Delete)
-                            .with_size(Size::XSmall)
-                            .tooltip("Clear all highlights")
-                            .disabled(!has_editor || count == 0)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.clear_all_highlights(window, cx);
-                            })),
-                    ),
+                Button::new("import-hl")
+                    .ghost()
+                    .icon(IconName::FolderOpen)
+                    .with_size(Size::XSmall)
+                    .tooltip("Import highlights from JSON file")
+                    .disabled(!has_editor)
+                    .on_click(cx.listener(|_, _, _window, cx| {
+                        cx.emit(HighlightPanelEvent::Import);
+                    })),
+            )
+            .child(
+                Button::new("export-hl")
+                    .ghost()
+                    .icon(IconName::ExternalLink)
+                    .with_size(Size::XSmall)
+                    .tooltip("Export highlights to JSON file")
+                    .disabled(!has_editor || count == 0)
+                    .on_click(cx.listener(|_, _, _window, cx| {
+                        cx.emit(HighlightPanelEvent::Export);
+                    })),
+            )
+            .child(
+                Button::new("clear-hl")
+                    .ghost()
+                    .icon(IconName::Delete)
+                    .with_size(Size::XSmall)
+                    .tooltip("Clear all highlights")
+                    .disabled(!has_editor || count == 0)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.clear_all_highlights(window, cx);
+                    })),
             );
+
+        let header = crate::ui::style::panel_header("HIGHLIGHTS", is_focused, &theme, badge, Some(actions.into_any_element()));
 
         // Content body
         let body = if !has_editor {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .pt_8()
-                .p_4()
-                .gap_2()
-                .child(Icon::new(IconName::Palette).size(px(28.0)).text_color(theme.muted_foreground.opacity(0.5)))
-                .child(div().text_xs().text_color(theme.muted_foreground).child("No Active File"))
-                .into_any_element()
+            crate::ui::style::panel_empty_state(
+                IconName::Highlighter,
+                "No Active File",
+                Some("Open a binary file to view and manage highlights"),
+                None,
+                &theme,
+            )
+            .into_any_element()
         } else if highlights.is_empty() {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .pt_8()
-                .p_4()
-                .gap_2()
-                .child(Icon::new(IconName::Palette).size(px(28.0)).text_color(theme.muted_foreground.opacity(0.5)))
-                .child(div().text_xs().font_medium().text_color(theme.foreground).child("No Highlights"))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_center()
-                        .text_color(theme.muted_foreground)
-                        .child("Select bytes in hex view and choose a color, or click '+' above to add."),
-                )
-                .into_any_element()
+            crate::ui::style::panel_empty_state(
+                IconName::Highlighter,
+                "No Highlights",
+                Some("Select bytes in hex view and choose a color, or click '+' above to add"),
+                None,
+                &theme,
+            )
+            .into_any_element()
         } else {
             let mut list = v_flex().flex_1().gap_1().p_1();
 
@@ -390,15 +353,9 @@ impl Render for HighlightPanel {
                 .into_any_element()
         };
 
-        v_flex()
-            .track_focus(&self.focus_handle)
-            .focus_indicator(is_focused, &theme)
-            .w_full()
-            .h_full()
-            .bg(theme.sidebar)
-            .overflow_hidden()
-            .child(header)
-            .child(body)
+        let container = crate::ui::style::panel_container(is_focused, &theme);
+
+        container.track_focus(&self.focus_handle).child(header).child(body)
     }
 }
 

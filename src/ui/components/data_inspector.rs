@@ -1,9 +1,8 @@
 use crate::core::editor::Editor;
-use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme as _, button::Button, button::ButtonVariants, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Selectable as _, Sizable as _, button::Button, button::ButtonVariants, h_flex, v_flex};
 pub struct DataInspector {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
@@ -43,10 +42,11 @@ impl DataInspector {
         h_flex()
             .w_full()
             .justify_between()
+            .items_center()
             .py_1()
-            .px_2()
-            .hover(|style| style.bg(theme.accent.opacity(0.1)))
-            .child(div().flex_shrink_0().w(px(110.0)).text_color(theme.muted_foreground).child(label))
+            .px_3()
+            .hover(|style| style.bg(theme.muted.opacity(0.4)))
+            .child(div().flex_shrink_0().w(px(110.0)).text_xs().text_color(theme.muted_foreground).child(label))
             .child(
                 div()
                     .flex_1()
@@ -54,6 +54,7 @@ impl DataInspector {
                     .justify_end()
                     .overflow_hidden()
                     .min_w_0()
+                    .text_xs()
                     .font_family("Courier New")
                     .text_color(theme.foreground)
                     .child(value),
@@ -61,14 +62,7 @@ impl DataInspector {
     }
 
     fn render_section_header(&self, label: &'static str, theme: &gpui_component::Theme) -> impl IntoElement {
-        div()
-            .mt_3()
-            .mb_1()
-            .px_2()
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
-            .text_color(theme.accent)
-            .child(label)
+        crate::ui::style::panel_section_header(label, theme)
     }
 
     fn format_unix_time(&self, timestamp: i64) -> String {
@@ -268,9 +262,40 @@ impl Render for DataInspector {
 
         let is_focused = self.focus_handle.is_focused(window);
 
-        let container = v_flex().size_full().min_w_0().overflow_hidden().bg(theme.sidebar);
+        let endian_controls = h_flex()
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new("endian_little")
+                    .label("LE")
+                    .ghost()
+                    .selected(!is_big_endian)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Little Endian")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.is_big_endian {
+                            this.is_big_endian = false;
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                Button::new("endian_big")
+                    .label("BE")
+                    .ghost()
+                    .selected(is_big_endian)
+                    .with_size(gpui_component::Size::XSmall)
+                    .tooltip("Big Endian")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if !this.is_big_endian {
+                            this.is_big_endian = true;
+                            cx.notify();
+                        }
+                    })),
+            );
 
-        let container = container.focus_indicator(is_focused, theme);
+        let header = crate::ui::style::panel_header("DATA INSPECTOR", is_focused, theme, None, Some(endian_controls.into_any_element()));
+        let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("data-inspector")
@@ -281,50 +306,7 @@ impl Render for DataInspector {
                     this.focus_handle.focus(window);
                 }),
             )
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(crate::ui::style::header_text_color(is_focused, theme))
-                            .child("DATA INSPECTOR"),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .child(
-                                if !is_big_endian {
-                                    Button::new("endian_little").label("Little").primary()
-                                } else {
-                                    Button::new("endian_little").label("Little").ghost()
-                                }
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if this.is_big_endian {
-                                        this.is_big_endian = false;
-                                        cx.notify();
-                                    }
-                                })),
-                            )
-                            .child(
-                                if is_big_endian {
-                                    Button::new("endian_big").label("Big").primary()
-                                } else {
-                                    Button::new("endian_big").label("Big").ghost()
-                                }
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if !this.is_big_endian {
-                                        this.is_big_endian = true;
-                                        cx.notify();
-                                    }
-                                })),
-                            ),
-                    ),
-            )
+            .child(header)
             .child(
                 v_flex()
                     .size_full()

@@ -31,10 +31,17 @@ pub struct Workspace {
 }
 
 pub fn init(cx: &mut App) {
+    #[cfg(target_os = "macos")]
     cx.bind_keys(vec![
         KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, None),
         KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
         KeyBinding::new("cmd-w", crate::actions::CloseActivePanel, None),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys(vec![
+        KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, None),
+        KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
+        KeyBinding::new("ctrl-f4", crate::actions::CloseActivePanel, None),
     ]);
 
     cx.on_action::<OpenFileDialog>(|_, cx| {

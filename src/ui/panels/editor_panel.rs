@@ -25,6 +25,7 @@ const CONTEXT: &str = "EditorPanel";
 pub(crate) fn init(cx: &mut App) {
     // Initialize HexView actions and keybindings
     hex_view::init(cx);
+    #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
         KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),
@@ -34,6 +35,14 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
+        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
+        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
+        KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
     ]);
 }
 
@@ -601,7 +610,11 @@ impl Panel for EditorPanel {
                 .xsmall()
                 .ghost()
                 .tab_stop(false)
-                .tooltip("Split Right (cmd-\\)")
+                .tooltip(if cfg!(target_os = "macos") {
+                    "Split Right (cmd-\\)"
+                } else {
+                    "Split Right (ctrl-\\)"
+                })
                 .on_click(cx.listener(|_, _, window, cx| {
                     window.dispatch_action(Box::new(crate::actions::SplitRight), cx);
                 })),
@@ -610,7 +623,11 @@ impl Panel for EditorPanel {
                 .xsmall()
                 .ghost()
                 .tab_stop(false)
-                .tooltip("Split Down (cmd-shift-d)")
+                .tooltip(if cfg!(target_os = "macos") {
+                    "Split Down (cmd-shift-d)"
+                } else {
+                    "Split Down (ctrl-shift-d)"
+                })
                 .on_click(cx.listener(|_, _, window, cx| {
                     window.dispatch_action(Box::new(crate::actions::SplitDown), cx);
                 })),

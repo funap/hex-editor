@@ -196,6 +196,7 @@ fn main() {
             },
         ]);
 
+        #[cfg(target_os = "macos")]
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-o", crate::actions::OpenFileDialog, None),
             gpui::KeyBinding::new("cmd-shift-o", crate::actions::OpenFolder, None),
@@ -231,6 +232,46 @@ fn main() {
             gpui::KeyBinding::new("cmd-\\", crate::actions::SplitRight, None),
             gpui::KeyBinding::new("cmd-shift-d", crate::actions::SplitDown, None),
             gpui::KeyBinding::new("cmd-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
+        ]);
+
+        #[cfg(not(target_os = "macos"))]
+        cx.bind_keys([
+            gpui::KeyBinding::new("ctrl-o", crate::actions::OpenFileDialog, None),
+            gpui::KeyBinding::new("ctrl-shift-o", crate::actions::OpenFolder, None),
+            gpui::KeyBinding::new("ctrl-b", crate::actions::ToggleLeftPanel, None),
+            gpui::KeyBinding::new("ctrl-tab", crate::actions::ActivateNextTab, None),
+            gpui::KeyBinding::new("ctrl-shift-tab", crate::actions::ActivatePreviousTab, None),
+            gpui::KeyBinding::new("alt-ctrl-right", crate::actions::ActivateNextTab, None),
+            gpui::KeyBinding::new("alt-ctrl-left", crate::actions::ActivatePreviousTab, None),
+            gpui::KeyBinding::new("ctrl-1", crate::actions::ActivateTab { index: 1 }, None),
+            gpui::KeyBinding::new("ctrl-2", crate::actions::ActivateTab { index: 2 }, None),
+            gpui::KeyBinding::new("ctrl-3", crate::actions::ActivateTab { index: 3 }, None),
+            gpui::KeyBinding::new("ctrl-4", crate::actions::ActivateTab { index: 4 }, None),
+            gpui::KeyBinding::new("ctrl-5", crate::actions::ActivateTab { index: 5 }, None),
+            gpui::KeyBinding::new("ctrl-6", crate::actions::ActivateTab { index: 6 }, None),
+            gpui::KeyBinding::new("ctrl-7", crate::actions::ActivateTab { index: 7 }, None),
+            gpui::KeyBinding::new("ctrl-8", crate::actions::ActivateTab { index: 8 }, None),
+            gpui::KeyBinding::new("ctrl-9", crate::actions::ActivateTab { index: 9 }, None),
+            gpui::KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
+            gpui::KeyBinding::new("ctrl-f4", crate::actions::CloseActivePanel, None),
+            gpui::KeyBinding::new("alt-f4", crate::actions::Quit, None),
+            gpui::KeyBinding::new("ctrl-q", crate::actions::Quit, None),
+            gpui::KeyBinding::new("ctrl-f", crate::actions::ToggleSearch, None),
+            gpui::KeyBinding::new("f3", crate::actions::SearchNext, None),
+            gpui::KeyBinding::new("ctrl-g", crate::actions::SearchNext, None),
+            gpui::KeyBinding::new("shift-f3", crate::actions::SearchPrev, None),
+            gpui::KeyBinding::new("ctrl-shift-g", crate::actions::SearchPrev, None),
+            gpui::KeyBinding::new("ctrl-a", crate::actions::SelectAll, None),
+            gpui::KeyBinding::new("ctrl-c", crate::actions::Copy, None),
+            gpui::KeyBinding::new("ctrl-shift-c", crate::actions::CopyAsHexDump, None),
+            gpui::KeyBinding::new("ctrl-home", crate::actions::GoToBeginning, None),
+            gpui::KeyBinding::new("ctrl-end", crate::actions::GoToEnd, None),
+            gpui::KeyBinding::new("ctrl-,", crate::actions::OpenSettings, None),
+            gpui::KeyBinding::new("ctrl-shift-s", crate::actions::LoadStructureDefinition, None),
+            gpui::KeyBinding::new("ctrl-shift-v", crate::actions::ToggleInlineStructureView, None),
+            gpui::KeyBinding::new("ctrl-\\", crate::actions::SplitRight, None),
+            gpui::KeyBinding::new("ctrl-shift-d", crate::actions::SplitDown, None),
+            gpui::KeyBinding::new("ctrl-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
         ]);
 
         // Parse command line arguments (skip the first one which is the program name)

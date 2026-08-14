@@ -508,7 +508,11 @@ impl Render for StructTreeView {
                     .ghost()
                     .icon(IconName::FolderOpen)
                     .with_size(gpui_component::Size::XSmall)
-                    .tooltip("Load Structure Definition (cmd-shift-s)")
+                    .tooltip(if cfg!(target_os = "macos") {
+                        "Load Structure Definition (cmd-shift-s)"
+                    } else {
+                        "Load Structure Definition (ctrl-shift-s)"
+                    })
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
                     }))

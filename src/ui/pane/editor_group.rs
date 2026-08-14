@@ -374,7 +374,11 @@ impl Render for EditorGroup {
                                     .icon(IconName::PanelRight)
                                     .xsmall()
                                     .ghost()
-                                    .tooltip("Split Right (cmd-\\)")
+                                    .tooltip(if cfg!(target_os = "macos") {
+                                        "Split Right (cmd-\\)"
+                                    } else {
+                                        "Split Right (ctrl-\\)"
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.split_active_tab(SplitDirection::Horizontal, window, cx);
                                     })),
@@ -384,7 +388,11 @@ impl Render for EditorGroup {
                                     .icon(IconName::PanelBottom)
                                     .xsmall()
                                     .ghost()
-                                    .tooltip("Split Down (cmd-shift-d)")
+                                    .tooltip(if cfg!(target_os = "macos") {
+                                        "Split Down (cmd-shift-d)"
+                                    } else {
+                                        "Split Down (ctrl-shift-d)"
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.split_active_tab(SplitDirection::Vertical, window, cx);
                                     })),

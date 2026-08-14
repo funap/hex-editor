@@ -16,14 +16,14 @@ const CONTEXT: &str = "HighlightPanel";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("f2", EditComment, Some(CONTEXT)),
-        KeyBinding::new("enter", SelectCurrent, Some(CONTEXT)),
-        KeyBinding::new("backspace", DeleteSelected, Some(CONTEXT)),
-        KeyBinding::new("delete", DeleteSelected, Some(CONTEXT)),
+        KeyBinding::new("up", MoveUp, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("down", MoveDown, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("k", MoveUp, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("j", MoveDown, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("f2", EditComment, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("enter", SelectCurrent, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("backspace", DeleteSelected, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("delete", DeleteSelected, Some("HighlightPanel && !CommentEdit")),
         KeyBinding::new("escape", CancelEdit, Some("CommentEdit")),
         KeyBinding::new("enter", SaveEdit, Some("CommentEdit")),
     ]);

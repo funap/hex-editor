@@ -22,7 +22,7 @@ use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
 
 const CONTEXT: &str = "EditorPanel";
 
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     // Initialize HexView actions and keybindings
     hex_view::init(cx);
     #[cfg(target_os = "macos")]

@@ -438,24 +438,7 @@ seq:
 
 #[test]
 fn test_parse_zip_ksy() {
-    let zip_ksy_content = r#"
-meta:
-  id: zip
-  endian: le
-seq:
-  - id: sections
-    type: pk_section
-    repeat: eos
-types:
-  pk_section:
-    seq:
-      - id: magic
-        size: 2
-      - id: section_type
-        type: u2
-      - id: body
-        size: 26
-"#;
+    let zip_ksy_content = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/structure/simple_zip.ksy"));
 
     let ksy: KsyDefinition = serde_yaml::from_str(zip_ksy_content).expect("zip.ksy YAML deserialization failed");
 
@@ -688,74 +671,6 @@ types:
     assert_eq!(last_p.0, total_size);
     assert_eq!(last_p.1, total_size);
     assert!(last_p.2, "Final progress should have is_done = true");
-}
-
-#[test]
-fn test_parse_full_zip_ksy_without_errors() {
-    let zip_ksy_path = std::path::Path::new("/Users/af/Downloads/zip.ksy");
-    if !zip_ksy_path.exists() {
-        return;
-    }
-    let zip_ksy_content = std::fs::read_to_string(zip_ksy_path).expect("Failed to read /Users/af/Downloads/zip.ksy");
-    let ksy = parse_ksy_yaml(&zip_ksy_content);
-
-    let mut sample = Vec::new();
-    // 1. Local File: PK\x03\x04
-    sample.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
-    sample.extend_from_slice(&[20, 0]); // version
-    sample.extend_from_slice(&[0, 0]); // flags (gp_flags: 2 bytes)
-    sample.extend_from_slice(&[0, 0]); // comp method (0: none)
-    sample.extend_from_slice(&[0, 0, 0, 0]); // time + date (dos_datetime: 4 bytes)
-    sample.extend_from_slice(&[0, 0, 0, 0]); // crc
-    sample.extend_from_slice(&[5, 0, 0, 0]); // compressed
-    sample.extend_from_slice(&[5, 0, 0, 0]); // uncompressed
-    sample.extend_from_slice(&[8, 0]); // name len
-    sample.extend_from_slice(&[0, 0]); // extra len
-    sample.extend_from_slice(b"test.txt");
-    sample.extend_from_slice(b"hello");
-
-    // 2. Central Dir: PK\x01\x02
-    let cd_ofs = sample.len();
-    sample.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
-    sample.extend_from_slice(&[20, 0]); // version made by
-    sample.extend_from_slice(&[20, 0]); // version needed
-    sample.extend_from_slice(&[0, 0]); // flags
-    sample.extend_from_slice(&[0, 0]); // comp method
-    sample.extend_from_slice(&[0, 0, 0, 0]); // time + date
-    sample.extend_from_slice(&[0, 0, 0, 0]); // crc
-    sample.extend_from_slice(&[5, 0, 0, 0]); // comp len
-    sample.extend_from_slice(&[5, 0, 0, 0]); // uncomp len
-    sample.extend_from_slice(&[8, 0]); // name len
-    sample.extend_from_slice(&[0, 0]); // extra len
-    sample.extend_from_slice(&[0, 0]); // comment len
-    sample.extend_from_slice(&[0, 0]); // disk
-    sample.extend_from_slice(&[0, 0]); // int attr
-    sample.extend_from_slice(&[0, 0, 0, 0]); // ext attr
-    sample.extend_from_slice(&[0, 0, 0, 0]); // local header ofs
-    sample.extend_from_slice(b"test.txt");
-
-    // 3. End of Central Dir: PK\x05\x06
-    let cd_len = sample.len() - cd_ofs;
-    sample.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
-    sample.extend_from_slice(&[0, 0]); // disk
-    sample.extend_from_slice(&[0, 0]); // cd disk
-    sample.extend_from_slice(&[1, 0]); // num entries disk
-    sample.extend_from_slice(&[1, 0]); // num entries total
-    sample.extend_from_slice(&(cd_len as u32).to_le_bytes()); // len cd
-    sample.extend_from_slice(&(cd_ofs as u32).to_le_bytes()); // ofs cd
-    sample.extend_from_slice(&[0, 0]); // comment len
-
-    let mut stream = KaitaiStream::new(&sample);
-    let interpreter = KaitaiInterpreter::new(ksy);
-    let result = interpreter.parse(&mut stream);
-
-    assert_eq!(
-        result.errors.len(),
-        0,
-        "No errors expected when parsing zip with zip.ksy, got: {:?}",
-        result.errors
-    );
-    assert_eq!(result.fields.len(), 3, "3 sections expected");
 }
 
 #[test]
@@ -1083,11 +998,12 @@ fn test_deduplicate_leaf_fields_sharing_offset() {
 }
 
 #[test]
-fn test_large_scale_binary_search_and_performance() {
+fn test_binary_search_index_for_many_fields() {
     use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
 
-    // Simulate 10,000 fields in a large ZIP archive
-    let count = 10_000;
+    // Keep this as a deterministic index correctness test.  Wall-clock
+    // assertions belong in a benchmark, not in the default test suite.
+    let count = 1_000;
     let mut fields = Vec::with_capacity(count);
 
     for i in 0..count {
@@ -1124,7 +1040,7 @@ fn test_large_scale_binary_search_and_performance() {
     let parse_result = ParseResult::new("large_zip".into(), fields, count * 32, Vec::new());
 
     // Verify O(log N) binary search correctness at various offsets
-    let test_offsets = [0, 32 * 500, 32 * 5000, 32 * 9999];
+    let test_offsets = [0, 32 * 50, 32 * 500, 32 * 999];
     for &off in &test_offsets {
         let target_idx = off / 32;
         let containers = parse_result.find_container_structs_starting_at(off, 32);
@@ -1136,21 +1052,13 @@ fn test_large_scale_binary_search_and_performance() {
         assert_eq!(leaves[0].id, format!("field_{}", target_idx));
     }
 
-    // Simulate rendering 1000 visible rows during fast scrolling (benchmarking response)
-    let start_time = std::time::Instant::now();
+    // Exercise lookups at many positions, including positions between fields.
     for row in 0..1000 {
         let row_offset = (row * 16) % (count * 32);
         let _ = parse_result.find_container_structs_starting_at(row_offset, 16);
         let _ = parse_result.find_leaf_fields_starting_at(row_offset, 16);
         let _ = parse_result.find_active_struct_ranges(row_offset, 16);
     }
-    let elapsed = start_time.elapsed();
-    // 1000 row searches on 10,000 elements should take under 250ms in debug builds (typically < 2ms in release)
-    assert!(
-        elapsed.as_millis() < 250,
-        "1000 visible row lookups must complete in under 250ms, took {:?}",
-        elapsed
-    );
 }
 
 #[test]
@@ -1389,8 +1297,9 @@ fn test_editor_parse_progress_tracking() {
 }
 
 #[test]
-fn test_large_scale_struct_parsing_speed() {
-    // Test parsing 50,000 array elements with nested custom types and expressions
+fn test_struct_parsing_preserves_nested_record_shape() {
+    // Test parsing a representative array of nested custom types.  Timing
+    // assertions are intentionally excluded from the correctness suite.
     let ksy_yaml = r#"
 meta:
   id: test_perf
@@ -1424,7 +1333,7 @@ types:
 
     let ksy = parse_ksy_yaml(ksy_yaml);
 
-    let count = 50_000u32;
+    let count = 1_024u32;
     let mut data = Vec::with_capacity(4 + count as usize * 14);
     data.extend_from_slice(&count.to_le_bytes());
     for i in 0..count {
@@ -1434,13 +1343,11 @@ types:
         data.extend_from_slice(&(i * 2).to_le_bytes()); // val: u4
     }
 
-    let start = std::time::Instant::now();
     let mut stream = KaitaiStream::new(&data);
     let interpreter = KaitaiInterpreter::new(ksy);
     let result = interpreter.parse(&mut stream);
-    let elapsed = start.elapsed();
 
-    assert_eq!(result.fields.len(), 50_001);
+    assert_eq!(result.fields.len(), 1_025);
     if let FieldValue::U32(c) = result.fields[0].value {
         assert_eq!(c, count);
     } else {
@@ -1449,8 +1356,4 @@ types:
 
     assert_eq!(result.fields[1].id, "records[0]");
     assert_eq!(result.fields[1].children.len(), 4);
-
-    println!("Parsed 50,000 nested records in {:?}", elapsed);
-    let threshold = if cfg!(debug_assertions) { 5.0 } else { 2.0 };
-    assert!(elapsed.as_secs_f64() < threshold, "Parsing 50,000 records took too long: {:?}", elapsed);
 }

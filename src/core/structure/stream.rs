@@ -338,3 +338,96 @@ pub fn byte_array_compare(a: &[u8], b: &[u8]) -> i32 {
         std::cmp::Ordering::Greater => 1,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bit_readers_use_the_expected_bit_order() {
+        let mut big_endian = KaitaiStream::new(&[0b1011_0010, 0b0110_0001]);
+        assert_eq!(big_endian.read_bits_int_be(3), Some(0b101));
+        assert_eq!(big_endian.read_bits_int_be(5), Some(0b1_0010));
+        assert_eq!(big_endian.read_bits_int_be(8), Some(0b0110_0001));
+        assert!(big_endian.is_eof());
+
+        let mut little_endian = KaitaiStream::new(&[0b1011_0010, 0b0110_0001]);
+        assert_eq!(little_endian.read_bits_int_le(3), Some(0b010));
+        assert_eq!(little_endian.read_bits_int_le(5), Some(0b1_0110));
+        assert_eq!(little_endian.read_bits_int_le(8), Some(0b0110_0001));
+        assert!(little_endian.is_eof());
+
+        assert_eq!(KaitaiStream::new(&[]).read_bits_int_be(0), Some(0));
+        assert_eq!(KaitaiStream::new(&[]).read_bits_int_le(65), None);
+    }
+
+    #[test]
+    fn scalar_reads_align_and_set_position_is_clamped() {
+        let mut stream = KaitaiStream::new(&[0b0000_0001, 0x34, 0x12, 0x56, 0x78]);
+        assert_eq!(stream.read_bits_int_be(1), Some(0));
+        assert_eq!(stream.read_u2le(), Some(0x1234));
+        assert_eq!(stream.read_u2be(), Some(0x5678));
+        assert!(stream.is_eof());
+
+        stream.set_pos(100);
+        assert_eq!(stream.pos(), stream.size());
+        assert_eq!(stream.read_u1(), None);
+    }
+
+    #[test]
+    fn terminated_reads_respect_include_consume_and_eos_error() {
+        let mut stream = KaitaiStream::new(b"abc,def");
+        assert_eq!(stream.read_bytes_term(b',', false, false, true), Some(b"abc".to_vec()));
+        assert_eq!(stream.pos(), 3);
+        assert_eq!(stream.read_u1(), Some(b','));
+        assert_eq!(stream.read_bytes_remaining(), Some(b"def".to_vec()));
+
+        let mut multi = KaitaiStream::new(b"prefix::suffix");
+        assert_eq!(multi.read_bytes_term_multi(b"::", true, true, true), Some(b"prefix::".to_vec()));
+        assert_eq!(multi.read_bytes_remaining(), Some(b"suffix".to_vec()));
+
+        let mut missing = KaitaiStream::new(b"unterminated");
+        assert_eq!(missing.read_bytes_term(b'!', false, true, true), None);
+        assert_eq!(missing.pos(), 0);
+        assert_eq!(missing.read_bytes_term(b'!', false, true, false), Some(b"unterminated".to_vec()));
+        assert!(missing.is_eof());
+    }
+
+    #[test]
+    fn fixed_contents_and_processing_helpers_cover_success_and_failure() {
+        let mut stream = KaitaiStream::new(b"MAGICpayload");
+        assert_eq!(stream.ensure_fixed_contents(b"MAGIC"), Some(b"MAGIC".to_vec()));
+        assert_eq!(stream.read_bytes_remaining(), Some(b"payload".to_vec()));
+
+        let mut mismatch = KaitaiStream::new(b"other");
+        assert_eq!(mismatch.ensure_fixed_contents(b"MAGIC"), None);
+        assert_eq!(mismatch.pos(), 0);
+
+        assert_eq!(process::xor_one(&[0x00, 0xFF], 0xAA), vec![0xAA, 0x55]);
+        assert_eq!(process::xor_many(&[1, 2, 3, 4], &[0x10, 0x20]), vec![0x11, 0x22, 0x13, 0x24]);
+        assert_eq!(process::xor_many(&[1, 2], &[]), vec![1, 2]);
+        assert_eq!(process::rotate_left(&[0b1000_0001], 1, 1), Ok(vec![0b0000_0011]));
+        assert!(process::rotate_left(&[1], 1, 2).is_err());
+
+        use flate2::{Compression, write::ZlibEncoder};
+        use std::io::Write;
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"compressed").expect("compress test data");
+        let compressed = encoder.finish().expect("finish compression");
+        assert_eq!(process::zlib_decompress(&compressed), Some(b"compressed".to_vec()));
+        assert_eq!(process::zlib_decompress(b"not zlib"), None);
+    }
+
+    #[test]
+    fn byte_helpers_have_stable_boundary_behavior() {
+        assert_eq!(bytes_strip_right(b"abc\0\0", 0), b"abc".to_vec());
+        assert_eq!(bytes_strip_right(b"\0\0", 0), Vec::<u8>::new());
+        assert_eq!(bytes_terminate(b"abc,def", b',', false), b"abc".to_vec());
+        assert_eq!(bytes_terminate(b"abc,def", b',', true), b"abc,".to_vec());
+        assert_eq!(bytes_terminate(b"abcdef", b',', false), b"abcdef".to_vec());
+
+        assert_eq!(byte_array_compare(b"a", b"b"), -1);
+        assert_eq!(byte_array_compare(b"a", b"a"), 0);
+        assert_eq!(byte_array_compare(b"b", b"a"), 1);
+    }
+}

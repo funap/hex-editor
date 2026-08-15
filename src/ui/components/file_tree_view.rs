@@ -20,7 +20,7 @@ use gpui_component::{
 actions!(file_tree, [MoveUp, MoveDown]);
 
 const CONTEXT: &str = "TreeStory";
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("up", MoveUp, Some(CONTEXT)),
         gpui::KeyBinding::new("down", MoveDown, Some(CONTEXT)),

@@ -12,7 +12,6 @@ mod theme;
 mod ui;
 
 use crate::assets::Assets;
-
 use crate::core::appearance::Appearance;
 use ui::workspace::Workspace;
 

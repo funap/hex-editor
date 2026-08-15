@@ -210,11 +210,66 @@ impl Default for EditorService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestFile(PathBuf);
+
+    impl TestFile {
+        fn create(label: &str, contents: &[u8]) -> Self {
+            let path = temporary_path(label);
+            std::fs::write(&path, contents).expect("write test file");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn temporary_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("xvw-editor-service-{label}-{}-{nonce}.bin", std::process::id()))
+    }
 
     #[test]
     fn test_editor_service_register_empty() {
         let service = EditorService::new();
         let path = PathBuf::from("test_doc.bin");
         assert!(service.editors.read().unwrap().get(&path).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_file_caches_and_reopens_documents() {
+        let file = TestFile::create("cache", &[0x10, 0x20, 0x30]);
+
+        let service = EditorService::new();
+        let first = service.open_file(file.path().to_path_buf()).await.expect("open test file");
+        assert_eq!(first.read().unwrap().buffer.data(), &[0x10, 0x20, 0x30]);
+
+        let second = service.open_file(file.path().to_path_buf()).await.expect("open cached file");
+        assert!(Arc::ptr_eq(&first, &second), "opening a cached path must reuse its document");
+
+        service.close_file(file.path());
+        let reopened = service.open_file(file.path().to_path_buf()).await.expect("reopen test file");
+        assert!(!Arc::ptr_eq(&first, &reopened), "closing a file must evict its cached document");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_file_returns_an_error_for_missing_path() {
+        let path = temporary_path("missing");
+        let service = EditorService::new();
+
+        let result = service.open_file(path).await;
+
+        assert!(result.is_err());
     }
 }

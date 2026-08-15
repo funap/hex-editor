@@ -1,15 +1,30 @@
+pub mod actions;
+pub mod layout;
+pub mod paint;
+pub mod types;
+
+#[cfg(test)]
+mod layout_tests;
+
+pub use actions::*;
+pub use layout::{
+    ascii_byte_index_from_world_x, bounded_auto_fit_range, build_hex_text_source, can_chain_to_outer, hex_grid_width, hex_grid_x, hex_group_x,
+    make_hex_view_layout, measure_hex_cell_width, weighted_text_width,
+};
+pub use paint::{RowPaintParams, paint_hex_row, paint_scrollbar};
+pub use types::*;
+
 use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
     CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, ExportHighlights, HighlightBlue, HighlightCyan,
     HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine, RemoveCustomBreakBackward,
-    RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2,
-    SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ToggleByteOrder, ToggleSearch,
+    RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2, SetGroupSize4,
+    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ToggleByteOrder, ToggleSearch,
 };
-use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::format::{CopyFormat, format_bytes};
-use crate::core::radix::{ByteGroupSize, DisplayRadix, format_group, is_group_zero};
+use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::ParseResult;
 use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
@@ -19,1002 +34,6 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, StyledExt, h_flex};
 use std::ops::Range;
 use std::sync::Arc;
-
-#[allow(dead_code)]
-pub enum HexViewEvent {
-    Scrolled(usize),
-    HorizontalScrolled { target: HorizontalScrollTarget, progress: f32 },
-    SelectionChanged { start: Option<usize>, end: Option<usize> },
-    CursorMoved(usize),
-}
-
-actions!(
-    hex_view,
-    [
-        MoveLeft,
-        MoveRight,
-        MoveUp,
-        MoveDown,
-        SelectLeft,
-        SelectRight,
-        SelectUp,
-        SelectDown,
-        SelectAll,
-        PageUp,
-        PageDown,
-        Home,
-        End,
-        SelectPageUp,
-        SelectPageDown,
-        SelectHome,
-        SelectEnd,
-        TriggerSearch,
-        TriggerSearchNext,
-        TriggerSearchPrev
-    ]
-);
-
-const CONTEXT: &str = "HexView";
-
-// HexView layout constants
-pub const HEADER_HEIGHT: f32 = 28.0;
-pub const ROW_HEIGHT: f32 = 22.0;
-pub const OFFSET_WIDTH: f32 = 80.0;
-pub const SECTION_GAP: f32 = 16.0;
-
-pub const ADDRESS_WIDTH: f32 = 80.0;
-pub const DESC_WIDTH: f32 = 240.0;
-pub const COMMENT_WIDTH: f32 = 300.0;
-const VERTICAL_SCROLLBAR_WIDTH: f32 = 12.0;
-const HORIZONTAL_SCROLLBAR_HEIGHT: f32 = 12.0;
-const ASCII_CELL_WIDTH: f32 = 10.0;
-const CURSOR_BORDER_WIDTH: f32 = 1.0;
-const CURSOR_PADDING_X: f32 = 0.0;
-const CURSOR_PADDING_Y: f32 = 0.0;
-const MIN_ASCII_COLUMN_WIDTH: f32 = 80.0;
-const AUTO_FIT_SCAN_BYTES: usize = 64 * 1024;
-const AUTO_FIT_MAX_ITEMS: usize = 16 * 1024;
-const AUTO_FIT_MAX_TEXT_CHARS: usize = 4096;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollColumn {
-    Hex,
-    Ascii,
-    Description,
-    Comment,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HorizontalScrollTarget {
-    View,
-    Column(ScrollColumn),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct ColumnLayout {
-    start: f32,
-    width: f32,
-    inner_max: f32,
-}
-
-impl ColumnLayout {
-    fn end(self) -> f32 {
-        self.start + self.width
-    }
-}
-
-fn ascii_byte_index_from_world_x(world_x: f32, column: ColumnLayout, scroll_x: f32) -> usize {
-    let content_x = (world_x - column.start + scroll_x).max(0.0);
-    (content_x / ASCII_CELL_WIDTH) as usize
-}
-
-fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize, row_len: usize) -> Vec<Option<(char, usize)>> {
-    let mut map = vec![None; row_len];
-    let row_end = row_offset + row_len;
-    let mut local_offset = 0;
-
-    while local_offset < row_len {
-        let absolute_offset = row_offset + local_offset;
-        if let Some((character, byte_len)) = encoding.decode_char_at(buffer, absolute_offset) {
-            let byte_len = byte_len.max(1);
-            let display_offset = if encoding == Encoding::Utf8 && absolute_offset.saturating_add(byte_len) > row_end {
-                row_len - 1
-            } else {
-                local_offset
-            };
-            map[display_offset] = Some((character, byte_len));
-            local_offset += byte_len;
-        } else {
-            local_offset += 1;
-        }
-    }
-
-    map
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct HexViewLayout {
-    fixed_width: f32,
-    content_width: f32,
-    viewport_width: f32,
-    outer_max: f32,
-    hex: ColumnLayout,
-    ascii: Option<ColumnLayout>,
-    description: Option<ColumnLayout>,
-    comment: ColumnLayout,
-}
-
-impl HexViewLayout {
-    fn column(self, target: ScrollColumn) -> Option<ColumnLayout> {
-        match target {
-            ScrollColumn::Hex => Some(self.hex),
-            ScrollColumn::Ascii => self.ascii,
-            ScrollColumn::Description => self.description,
-            ScrollColumn::Comment => Some(self.comment),
-        }
-    }
-
-    fn max_offset(self, target: HorizontalScrollTarget) -> f32 {
-        match target {
-            HorizontalScrollTarget::View => self.outer_max,
-            HorizontalScrollTarget::Column(column) => self.column(column).map(|column| column.inner_max).unwrap_or(0.0),
-        }
-    }
-
-    fn progress(self, target: HorizontalScrollTarget, offset: f32) -> f32 {
-        let max_offset = self.max_offset(target);
-        if max_offset > 0.0 { (offset / max_offset).clamp(0.0, 1.0) } else { 0.0 }
-    }
-
-    fn column_at(self, relative_x: f32, outer_scroll_x: f32) -> Option<ScrollColumn> {
-        if relative_x < self.fixed_width {
-            return None;
-        }
-        let world_x = relative_x + outer_scroll_x;
-
-        if world_x >= self.hex.start && world_x <= self.hex.end() {
-            return Some(ScrollColumn::Hex);
-        }
-        if let Some(column) = self.ascii
-            && world_x >= column.start
-            && world_x <= column.end()
-        {
-            return Some(ScrollColumn::Ascii);
-        }
-        if let Some(column) = self.description
-            && world_x >= column.start
-            && world_x <= column.end()
-        {
-            return Some(ScrollColumn::Description);
-        }
-        if world_x >= self.comment.start && world_x <= self.comment.end() {
-            return Some(ScrollColumn::Comment);
-        }
-        None
-    }
-}
-
-#[inline]
-fn can_chain_to_outer(target: HorizontalScrollTarget, residual_delta: f32) -> bool {
-    !matches!(target, HorizontalScrollTarget::View) && residual_delta.abs() > 0.01
-}
-
-fn make_hex_view_layout(
-    bounds_width: f32,
-    is_struct_mode: bool,
-    show_ascii: bool,
-    ascii_col_width: f32,
-    ascii_inner_max: f32,
-    fixed_column_width: f32,
-    hex_col_width: f32,
-    desc_col_width: f32,
-    comment_col_width: f32,
-    hex_inner_max: f32,
-    desc_inner_max: f32,
-    comment_inner_max: f32,
-    section_gap: f32,
-    content_padding: f32,
-    scrollbar_width: f32,
-) -> HexViewLayout {
-    let fixed_width = fixed_column_width + section_gap;
-
-    let hex = ColumnLayout {
-        start: fixed_width,
-        width: hex_col_width,
-        inner_max: hex_inner_max.max(0.0),
-    };
-
-    let (ascii, description, comment_start) = if is_struct_mode {
-        let description_start = hex.end() + section_gap;
-        let description = ColumnLayout {
-            start: description_start,
-            width: desc_col_width,
-            inner_max: desc_inner_max.max(0.0),
-        };
-        (None, Some(description), description.end() + section_gap)
-    } else {
-        let ascii = if show_ascii {
-            let ascii_start = hex.end() + section_gap;
-            Some(ColumnLayout {
-                start: ascii_start,
-                width: ascii_col_width,
-                inner_max: ascii_inner_max.max(0.0),
-            })
-        } else {
-            None
-        };
-        let comment_start = ascii.map(|column| column.end() + section_gap).unwrap_or_else(|| hex.end() + section_gap);
-        (ascii, None, comment_start)
-    };
-
-    let comment = ColumnLayout {
-        start: comment_start,
-        width: comment_col_width,
-        inner_max: comment_inner_max.max(0.0),
-    };
-    let content_width = (comment.end() - fixed_width).max(0.0);
-    let viewport_width = (bounds_width - content_padding - scrollbar_width - fixed_width).max(0.0);
-
-    HexViewLayout {
-        fixed_width,
-        content_width,
-        viewport_width,
-        outer_max: (content_width - viewport_width).max(0.0),
-        hex,
-        ascii,
-        description,
-        comment,
-    }
-}
-
-#[cfg(test)]
-mod horizontal_scroll_tests {
-    use super::{
-        AUTO_FIT_SCAN_BYTES, Encoding, HexViewLayout, HorizontalScrollTarget, ScrollColumn, ascii_byte_index_from_world_x, bounded_auto_fit_range,
-        build_ascii_char_map, can_chain_to_outer, make_hex_view_layout,
-    };
-
-    fn layout(width: f32, is_struct_mode: bool, show_offset: bool, show_ascii: bool) -> HexViewLayout {
-        make_hex_view_layout(
-            width,
-            is_struct_mode,
-            show_ascii,
-            160.0,
-            0.0,
-            if is_struct_mode || show_offset { 80.0 } else { 0.0 },
-            200.0,
-            240.0,
-            300.0,
-            120.0,
-            80.0,
-            60.0,
-            16.0,
-            8.0,
-            12.0,
-        )
-    }
-
-    #[test]
-    fn outer_scroll_keeps_inner_hex_overflow_independent() {
-        let layout = layout(600.0, false, true, true);
-
-        assert_eq!(layout.fixed_width, 96.0);
-        assert_eq!(layout.hex.start, layout.fixed_width);
-        assert_eq!(layout.hex.inner_max, 120.0);
-        assert!(layout.outer_max > 0.0);
-        assert!(layout.outer_max < layout.content_width);
-    }
-
-    #[test]
-    fn no_offset_mode_keeps_the_content_gap() {
-        let layout = layout(800.0, false, false, true);
-
-        assert_eq!(layout.fixed_width, 16.0);
-        assert_eq!(layout.hex.start, 16.0);
-    }
-
-    #[test]
-    fn column_hit_testing_accounts_for_outer_scroll() {
-        let layout = layout(600.0, false, true, true);
-        let outer_scroll_x = 40.0;
-
-        let hex_x = layout.fixed_width + 10.0;
-        assert_eq!(layout.column_at(hex_x, outer_scroll_x), Some(ScrollColumn::Hex));
-
-        let ascii_x = layout.ascii.expect("ASCII column").start - outer_scroll_x + 10.0;
-        assert_eq!(layout.column_at(ascii_x, outer_scroll_x), Some(ScrollColumn::Ascii));
-
-        let fixed_x = layout.fixed_width - 2.0;
-        assert_eq!(layout.column_at(fixed_x, outer_scroll_x), None);
-    }
-
-    #[test]
-    fn structure_layout_exposes_description_as_inner_scroll_target() {
-        let layout = layout(600.0, true, true, false);
-        let description = layout.description.expect("description column");
-
-        assert!(layout.ascii.is_none());
-        assert_eq!(layout.max_offset(HorizontalScrollTarget::Column(ScrollColumn::Description)), 80.0);
-        assert_eq!(layout.progress(HorizontalScrollTarget::Column(ScrollColumn::Description), 40.0), 0.5);
-        assert_eq!(layout.column_at(description.start + 10.0, 0.0), Some(ScrollColumn::Description));
-    }
-
-    #[test]
-    fn zero_max_scroll_has_zero_progress() {
-        let layout = make_hex_view_layout(1200.0, false, false, 160.0, 0.0, 80.0, 200.0, 240.0, 300.0, 0.0, 0.0, 0.0, 16.0, 8.0, 12.0);
-
-        assert_eq!(layout.progress(HorizontalScrollTarget::Column(ScrollColumn::Hex), 10.0), 0.0);
-    }
-
-    #[test]
-    fn ascii_width_is_taken_from_the_layout_input() {
-        let layout = make_hex_view_layout(600.0, false, true, 320.0, 0.0, 80.0, 200.0, 240.0, 300.0, 0.0, 0.0, 0.0, 16.0, 8.0, 12.0);
-
-        assert_eq!(layout.ascii.expect("ASCII column").width, 320.0);
-    }
-
-    #[test]
-    fn ascii_column_exposes_an_inner_scroll_range() {
-        let layout = make_hex_view_layout(600.0, false, true, 80.0, 80.0, 80.0, 200.0, 240.0, 300.0, 0.0, 0.0, 0.0, 16.0, 8.0, 12.0);
-
-        assert_eq!(layout.max_offset(HorizontalScrollTarget::Column(ScrollColumn::Ascii)), 80.0);
-        assert_eq!(layout.progress(HorizontalScrollTarget::Column(ScrollColumn::Ascii), 40.0), 0.5);
-    }
-
-    #[test]
-    fn ascii_hit_testing_includes_inner_scroll_offset() {
-        let layout = make_hex_view_layout(600.0, false, true, 80.0, 80.0, 80.0, 200.0, 240.0, 300.0, 0.0, 0.0, 0.0, 16.0, 8.0, 12.0);
-        let ascii = layout.ascii.expect("ASCII column");
-
-        assert_eq!(ascii_byte_index_from_world_x(ascii.start + 5.0, ascii, 0.0), 0);
-        assert_eq!(ascii_byte_index_from_world_x(ascii.start + 5.0, ascii, 20.0), 2);
-    }
-
-    #[test]
-    fn outer_scroll_chains_after_any_column_reaches_its_inner_limit() {
-        for column in [ScrollColumn::Hex, ScrollColumn::Ascii, ScrollColumn::Description, ScrollColumn::Comment] {
-            assert!(can_chain_to_outer(HorizontalScrollTarget::Column(column), 1.0));
-        }
-        assert!(!can_chain_to_outer(HorizontalScrollTarget::View, 1.0));
-        assert!(!can_chain_to_outer(HorizontalScrollTarget::Column(ScrollColumn::Hex), 0.0));
-    }
-
-    #[test]
-    fn utf8_character_crossing_row_is_shown_at_previous_row_end() {
-        let buffer = "€".as_bytes();
-        let map = build_ascii_char_map(Encoding::Utf8, buffer, 0, 2);
-
-        assert_eq!(map, vec![None, Some(('€', 3))]);
-    }
-
-    #[test]
-    fn utf8_continuation_bytes_on_next_row_are_not_rendered_again() {
-        let buffer = "€".as_bytes();
-        let map = build_ascii_char_map(Encoding::Utf8, buffer, 1, 2);
-
-        assert_eq!(map, vec![None, None]);
-    }
-
-    #[test]
-    fn auto_fit_scan_is_bounded_around_the_viewport() {
-        let range = bounded_auto_fit_range(1024 * 1024, 500_000, 500_512);
-
-        assert_eq!(range.len(), AUTO_FIT_SCAN_BYTES);
-        assert!(range.start <= 500_000);
-        assert!(range.end >= 500_512);
-    }
-
-    #[test]
-    fn auto_fit_scan_stays_inside_small_files_and_end_of_file() {
-        assert_eq!(bounded_auto_fit_range(1024, 100, 200), 0..1024);
-
-        let range = bounded_auto_fit_range(1024 * 1024, 1_020_000, 1_020_512);
-        assert_eq!(range.end, 1024 * 1024);
-        assert!(range.start <= 1_020_000);
-        assert_eq!(range.len(), AUTO_FIT_SCAN_BYTES);
-    }
-
-    #[test]
-    fn description_content_width_aggregates_multiple_fields_in_row() {
-        use super::HexView;
-        use crate::core::buffer::Buffer;
-        use crate::core::document::Document;
-        use crate::core::editor::Editor;
-        use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
-        use std::path::PathBuf;
-        use std::sync::{Arc, RwLock};
-
-        let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 32]))));
-        let editor = Editor::new(doc);
-
-        let field1 = ParsedField {
-            id: "magic".into(),
-            field_type: "u4".into(),
-            offset: 0,
-            size: 4,
-            value: FieldValue::U32(0x12345678),
-            color: gpui::Hsla::default(),
-            description: None,
-            children: vec![],
-            enum_label: None,
-            is_instance: false,
-        };
-        let field2 = ParsedField {
-            id: "flags".into(),
-            field_type: "u4".into(),
-            offset: 4,
-            size: 4,
-            value: FieldValue::U32(0x00000001),
-            color: gpui::Hsla::default(),
-            description: None,
-            children: vec![],
-            enum_label: None,
-            is_instance: false,
-        };
-        let field3 = ParsedField {
-            id: "version".into(),
-            field_type: "u4".into(),
-            offset: 8,
-            size: 4,
-            value: FieldValue::U32(2),
-            color: gpui::Hsla::default(),
-            description: None,
-            children: vec![],
-            enum_label: None,
-            is_instance: false,
-        };
-
-        let container = ParsedField {
-            id: "header".into(),
-            field_type: "Header".into(),
-            offset: 0,
-            size: 12,
-            value: FieldValue::Struct,
-            color: gpui::Hsla::default(),
-            description: None,
-            children: vec![field1.clone(), field2.clone(), field3.clone()],
-            enum_label: None,
-            is_instance: false,
-        };
-
-        let parse_result = ParseResult::new("test_struct".into(), vec![container], 12, vec![]);
-        let char_w = 8.0;
-
-        // When expanded, width should combine container ID + all 3 leaf expressions + spacing
-        let width_expanded = HexView::description_content_width_in_range(&editor, &parse_result, &(0..16), char_w);
-
-        // Single field expression width
-        let single_field_width = super::weighted_text_width(&field1.format_expression(), char_w);
-        assert!(
-            width_expanded > single_field_width * 2.5,
-            "Expanded row width ({width_expanded}) must aggregate all fields, strictly greater than a single field ({single_field_width})"
-        );
-
-        // When collapsed, only the container id and size are displayed
-        let mut editor_collapsed = Editor::new(Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 32])))));
-        editor_collapsed.collapsed_struct_ids.insert("header".into());
-        let width_collapsed = HexView::description_content_width_in_range(&editor_collapsed, &parse_result, &(0..16), char_w);
-
-        assert!(
-            width_collapsed < width_expanded,
-            "Collapsed width ({width_collapsed}) should be smaller than expanded width ({width_expanded})"
-        );
-    }
-}
-
-#[cfg(test)]
-mod hex_grid_tests {
-    use super::{ByteGroupSize, DisplayRadix, build_hex_text_source, centered_glyph_offset, hex_grid_width, hex_grid_x, px};
-
-    #[test]
-    fn group_boundaries_use_the_same_fixed_grid_as_the_header() {
-        let source = build_hex_text_source(&[0x12, 0x34, 0x56], 0, DisplayRadix::Hexadecimal, ByteGroupSize::One, false);
-        let cell_width = px(8.0);
-
-        assert_eq!(source.text.as_ref(), "12 34 56");
-        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_start, cell_width)), 0.0);
-        assert_eq!(f32::from(hex_grid_x(source.groups[1].text_start, cell_width)), 24.0);
-        assert_eq!(f32::from(hex_grid_x(source.groups[2].text_start, cell_width)), 48.0);
-        assert_eq!(f32::from(hex_grid_width(source.text.len(), cell_width)), 64.0);
-    }
-
-    #[test]
-    fn group_grid_keeps_partial_group_slots_aligned() {
-        let source = build_hex_text_source(&[0x12], 1, DisplayRadix::Hexadecimal, ByteGroupSize::Four, false);
-        let cell_width = px(8.0);
-
-        assert_eq!(source.text.as_ref(), "..12....");
-        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_start, cell_width)), 0.0);
-        assert_eq!(f32::from(hex_grid_x(source.groups[0].text_end, cell_width)), 64.0);
-        assert_eq!(f32::from(hex_grid_width(source.text.len(), cell_width)), 64.0);
-    }
-
-    #[test]
-    fn glyphs_are_centered_in_fixed_cells() {
-        assert_eq!(centered_glyph_offset(10.0, 6.0), 2.0);
-        assert_eq!(centered_glyph_offset(10.0, 12.0), 0.0);
-    }
-}
-
-#[cfg(test)]
-mod highlight_render_tests {
-    use super::{highlight_color_for_range, hsla};
-
-    #[test]
-    fn selection_takes_precedence_over_an_overlapping_highlight() {
-        let highlight_color = hsla(0.1, 0.8, 0.5, 0.35);
-        let highlights = [(0..16, highlight_color)];
-
-        assert_eq!(highlight_color_for_range(4, 8, true, &highlights), None);
-        assert_eq!(highlight_color_for_range(4, 8, false, &highlights), Some(highlight_color));
-    }
-}
-
-#[cfg(test)]
-mod layout_state_tests {
-    use super::HexViewLayoutState;
-
-    #[test]
-    fn test_layout_state_copy_preserves_dimensions_and_scroll() {
-        let state = HexViewLayoutState {
-            address_col_width: 120.0,
-            hex_col_width: 350.0,
-            desc_col_width: 280.0,
-            comment_col_width: 400.0,
-            ascii_col_width: 180.0,
-            show_offset: false,
-            show_ascii: true,
-            show_header: false,
-            scroll_offset: 42,
-            outer_scroll_x: 15.0,
-            hex_scroll_x: 25.0,
-            ascii_scroll_x: 35.0,
-            desc_scroll_x: 45.0,
-            comment_scroll_x: 55.0,
-        };
-
-        let cloned = state.clone();
-        assert_eq!(cloned.address_col_width, 120.0);
-        assert_eq!(cloned.hex_col_width, 350.0);
-        assert_eq!(cloned.desc_col_width, 280.0);
-        assert_eq!(cloned.comment_col_width, 400.0);
-        assert_eq!(cloned.ascii_col_width, 180.0);
-        assert!(!cloned.show_offset);
-        assert!(cloned.show_ascii);
-        assert!(!cloned.show_header);
-        assert_eq!(cloned.scroll_offset, 42);
-        assert_eq!(cloned.outer_scroll_x, 15.0);
-        assert_eq!(cloned.hex_scroll_x, 25.0);
-        assert_eq!(cloned.ascii_scroll_x, 35.0);
-        assert_eq!(cloned.desc_scroll_x, 45.0);
-        assert_eq!(cloned.comment_scroll_x, 55.0);
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct HexGroupInfo {
-    chunk_start: usize,
-    chunk_end: usize,
-    #[allow(dead_code)]
-    start_slot: usize,
-    text_start: usize,
-    text_end: usize,
-}
-
-#[derive(Clone, Debug)]
-struct HexTextSource {
-    text: SharedString,
-    groups: Vec<HexGroupInfo>,
-}
-
-const HEX_METRIC_CHARS: &str = "0123456789abcdef.";
-
-/// Build the exact text stream used by the batched Hex renderer and retain the
-/// byte/text ranges needed to translate shaped coordinates back to bytes.
-fn build_hex_text_source(chunk: &[u8], line_offset: usize, radix: DisplayRadix, group_size: ByteGroupSize, is_big_endian: bool) -> HexTextSource {
-    let group_bytes = group_size.byte_count();
-    let mut text = String::with_capacity(chunk.len().saturating_mul(3));
-    let mut groups = Vec::with_capacity(chunk.len().div_ceil(group_bytes));
-    let mut chunk_idx = 0;
-
-    while chunk_idx < chunk.len() {
-        let item_start_offset = line_offset + chunk_idx;
-        let start_slot = item_start_offset % group_bytes;
-        let item_slice_len = (chunk.len() - chunk_idx).min(group_bytes - start_slot);
-
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        let text_start = text.len();
-        text.push_str(&format_group(
-            &chunk[chunk_idx..chunk_idx + item_slice_len],
-            start_slot,
-            radix,
-            group_size,
-            is_big_endian,
-        ));
-        let text_end = text.len();
-
-        groups.push(HexGroupInfo {
-            chunk_start: chunk_idx,
-            chunk_end: chunk_idx + item_slice_len,
-            start_slot,
-            text_start,
-            text_end,
-        });
-        chunk_idx += item_slice_len;
-    }
-
-    HexTextSource {
-        text: SharedString::from(text),
-        groups,
-    }
-}
-
-/// Measure the widest glyph used by the formatted Hex stream.
-///
-/// This is intentionally a small, cached probe rather than a per-row
-/// measurement. The extra pixel gives centered glyphs a little breathing
-/// room for rounding and side bearings in proportional fonts.
-fn measure_hex_cell_width(window: &Window, font: Font, font_size: Pixels) -> Pixels {
-    let mut max_advance: f32 = 0.0;
-
-    for character in HEX_METRIC_CHARS.chars() {
-        let text = SharedString::from(character.to_string());
-        let run = gpui::TextRun {
-            len: text.len(),
-            font: font.clone(),
-            color: hsla(0.0, 0.0, 0.0, 0.0),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let shaped = window.text_system().shape_line(text, font_size, &[run], None);
-        max_advance = max_advance.max(f32::from(shaped.width));
-    }
-
-    px((max_advance + 1.01).max(1.0))
-}
-
-#[inline]
-fn hex_grid_x(text_index: usize, cell_width: Pixels) -> Pixels {
-    px(text_index as f32 * f32::from(cell_width))
-}
-
-#[inline]
-fn hex_grid_width(text_len: usize, cell_width: Pixels) -> Pixels {
-    hex_grid_x(text_len, cell_width)
-}
-
-#[inline]
-fn centered_glyph_offset(cell_width: f32, glyph_width: f32) -> f32 {
-    ((cell_width - glyph_width) / 2.0).max(0.0)
-}
-
-fn bounded_auto_fit_range(total_size: usize, visible_start: usize, visible_end: usize) -> Range<usize> {
-    let visible_start = visible_start.min(total_size);
-    let visible_end = visible_end.clamp(visible_start, total_size);
-    if total_size <= AUTO_FIT_SCAN_BYTES {
-        return 0..total_size;
-    }
-
-    let visible_len = visible_end - visible_start;
-    if visible_len >= AUTO_FIT_SCAN_BYTES {
-        let start = visible_start.min(total_size - AUTO_FIT_SCAN_BYTES);
-        return start..start + AUTO_FIT_SCAN_BYTES;
-    }
-
-    let extra = AUTO_FIT_SCAN_BYTES - visible_len;
-    let centered_start = visible_start.saturating_sub(extra / 2);
-    let start = centered_start.min(total_size - AUTO_FIT_SCAN_BYTES);
-    start..start + AUTO_FIT_SCAN_BYTES
-}
-
-fn weighted_text_width(text: &str, char_w: f32) -> f32 {
-    text.chars()
-        .take(AUTO_FIT_MAX_TEXT_CHARS)
-        .map(|character| if character.is_ascii() { char_w } else { char_w * 1.8 })
-        .sum()
-}
-
-fn hex_group_x(group: HexGroupInfo, origin_x: Pixels, cell_width: Pixels) -> (Pixels, Pixels) {
-    (
-        origin_x + hex_grid_x(group.text_start, cell_width),
-        origin_x + hex_grid_x(group.text_end, cell_width),
-    )
-}
-
-#[inline]
-fn pixel_midpoint(left: Pixels, right: Pixels) -> Pixels {
-    px((f32::from(left) + f32::from(right)) * 0.5)
-}
-
-#[inline]
-fn darken_cursor_color(color: Hsla) -> Hsla {
-    Hsla {
-        l: (color.l * 0.72).clamp(0.0, 1.0),
-        a: color.a.max(0.9),
-        ..color
-    }
-}
-
-/// Paint every glyph centered in its fixed Hex cell while reusing the line
-/// shaped for the row. This keeps shaping batched and avoids a per-row glyph
-/// position allocation.
-fn paint_centered_hex_glyphs(
-    shaped: &gpui::ShapedLine,
-    groups: &[HexGroupInfo],
-    group_colors: &[Hsla],
-    cell_width: Pixels,
-    origin: Point<Pixels>,
-    line_height: Pixels,
-    window: &mut Window,
-) {
-    let natural_width = shaped.width;
-    let cell_width_f = f32::from(cell_width);
-
-    let text_width = hex_grid_width(shaped.text.len(), cell_width);
-    let line_bounds = Bounds::new(origin, size(text_width, line_height));
-    window.paint_layer(line_bounds, |window| {
-        let baseline_offset = point(px(0.0), (line_height - shaped.ascent - shaped.descent) / 2.0 + shaped.ascent);
-        let mut group_idx = 0;
-        let mut glyphs = shaped
-            .runs
-            .iter()
-            .flat_map(|run| run.glyphs.iter().map(move |glyph| (run.font_id, glyph)))
-            .peekable();
-
-        while let Some((font_id, glyph)) = glyphs.next() {
-            let natural_end = glyphs.peek().map(|(_, next)| next.position.x).unwrap_or(natural_width);
-            let glyph_width = f32::from(natural_end - glyph.position.x).max(0.0);
-            let centered_offset = centered_glyph_offset(cell_width_f, glyph_width);
-            let glyph_origin = point(origin.x + hex_grid_x(glyph.index, cell_width) + px(centered_offset), origin.y) + baseline_offset;
-
-            while group_idx < groups.len() && glyph.index >= groups[group_idx].text_end {
-                group_idx += 1;
-            }
-            if group_idx < groups.len()
-                && groups[group_idx].text_start <= glyph.index
-                && glyph.index < groups[group_idx].text_end
-                && let Some(&color) = group_colors.get(group_idx)
-            {
-                if glyph.is_emoji {
-                    let _ = window.paint_emoji(glyph_origin, font_id, glyph.id, shaped.font_size);
-                } else {
-                    let _ = window.paint_glyph(glyph_origin, font_id, glyph.id, shaped.font_size, color);
-                }
-            }
-        }
-    });
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AsciiCellEntry {
-    cell_idx: usize,
-    text_byte_start: usize,
-    text_byte_end: usize,
-    color: Hsla,
-}
-
-/// Paint every glyph centered in its fixed ASCII cell while reusing the line
-/// shaped for the row. This keeps shaping batched and avoids per-character
-/// string allocations and shaping passes.
-fn paint_centered_ascii_glyphs(
-    shaped: &gpui::ShapedLine,
-    entries: &[AsciiCellEntry],
-    origin: Point<Pixels>,
-    line_height: Pixels,
-    window: &mut Window,
-) {
-    let natural_width = shaped.width;
-    let baseline_offset = point(px(0.0), (line_height - shaped.ascent - shaped.descent) / 2.0 + shaped.ascent);
-    let mut entry_idx = 0;
-    let mut glyphs = shaped
-        .runs
-        .iter()
-        .flat_map(|run| run.glyphs.iter().map(move |glyph| (run.font_id, glyph)))
-        .peekable();
-
-    while let Some((font_id, glyph)) = glyphs.next() {
-        let natural_end = glyphs.peek().map(|(_, next)| next.position.x).unwrap_or(natural_width);
-        let glyph_width = f32::from(natural_end - glyph.position.x).max(0.0);
-        let centered_offset = centered_glyph_offset(ASCII_CELL_WIDTH, glyph_width);
-
-        while entry_idx < entries.len() && glyph.index >= entries[entry_idx].text_byte_end {
-            entry_idx += 1;
-        }
-
-        if entry_idx < entries.len()
-            && entries[entry_idx].text_byte_start <= glyph.index
-            && glyph.index < entries[entry_idx].text_byte_end
-        {
-            let cell_idx = entries[entry_idx].cell_idx;
-            let glyph_origin = point(origin.x + px(cell_idx as f32 * ASCII_CELL_WIDTH + centered_offset), origin.y) + baseline_offset;
-            let color = entries[entry_idx].color;
-            if glyph.is_emoji {
-                let _ = window.paint_emoji(glyph_origin, font_id, glyph.id, shaped.font_size);
-            } else {
-                let _ = window.paint_glyph(glyph_origin, font_id, glyph.id, shaped.font_size, color);
-            }
-        }
-    }
-}
-
-#[inline]
-fn format_offset_08(offset: usize) -> SharedString {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [b'0'; 8];
-    let mut val = offset;
-    for i in (0..8).rev() {
-        buf[i] = DIGITS[val & 0xf];
-        val >>= 4;
-    }
-    SharedString::from(std::str::from_utf8(&buf).expect("valid ascii utf8").to_string())
-}
-
-#[inline]
-fn paint_border_box(window: &mut Window, bounds: Bounds<Pixels>, border_width: Pixels, color: Hsla) {
-    let outline = gpui::outline(bounds, color, gpui::BorderStyle::Solid).border_widths(border_width);
-    window.paint_quad(outline);
-}
-
-#[inline]
-fn paint_cursor_border(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
-    let padding_x = px(CURSOR_PADDING_X);
-    let padding_y = px(CURSOR_PADDING_Y);
-    let padded_bounds = Bounds::new(
-        point(bounds.origin.x - padding_x, bounds.origin.y - padding_y),
-        size(bounds.size.width + padding_x + padding_x, bounds.size.height + padding_y + padding_y),
-    );
-    paint_border_box(window, padded_bounds, px(CURSOR_BORDER_WIDTH), color);
-}
-
-fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
-    if highlights.is_empty() {
-        return &[];
-    }
-    let start_search = offset.saturating_sub(max_len);
-    let search_start = highlights.partition_point(|(r, _)| r.start < start_search);
-    let search_end = highlights.partition_point(|(r, _)| r.start < next_offset);
-    &highlights[search_start..search_end]
-}
-
-/// Return the smallest matching highlight, unless the item is selected.
-///
-/// Selection is transient UI state and must remain visible while a persistent
-/// highlight is underneath it, so it takes precedence over highlight colors.
-#[inline]
-fn highlight_color_for_range(item_start: usize, item_end: usize, is_selected: bool, active_highlights: &[(Range<usize>, Hsla)]) -> Option<Hsla> {
-    if is_selected {
-        return None;
-    }
-
-    let mut smallest_len = usize::MAX;
-    let mut color = None;
-    for (range, highlight_color) in active_highlights {
-        if range.start < item_end && range.end > item_start {
-            let len = range.end.saturating_sub(range.start);
-            if len <= smallest_len {
-                smallest_len = len;
-                color = Some(*highlight_color);
-            }
-        }
-    }
-    color
-}
-
-pub fn init(cx: &mut App) {
-    #[cfg(target_os = "macos")]
-    cx.bind_keys([
-        KeyBinding::new("left", MoveLeft, Some(CONTEXT)),
-        KeyBinding::new("right", MoveRight, Some(CONTEXT)),
-        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("shift-left", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
-        KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-c", CopyAsHexDump, Some(CONTEXT)),
-        KeyBinding::new("pageup", PageUp, Some(CONTEXT)),
-        KeyBinding::new("pagedown", PageDown, Some(CONTEXT)),
-        KeyBinding::new("home", Home, Some(CONTEXT)),
-        KeyBinding::new("end", End, Some(CONTEXT)),
-        KeyBinding::new("shift-pageup", SelectPageUp, Some(CONTEXT)),
-        KeyBinding::new("shift-pagedown", SelectPageDown, Some(CONTEXT)),
-        KeyBinding::new("shift-home", SelectHome, Some(CONTEXT)),
-        KeyBinding::new("shift-end", SelectEnd, Some(CONTEXT)),
-        // Vi-like navigation
-        KeyBinding::new("h", MoveLeft, Some(CONTEXT)),
-        KeyBinding::new("l", MoveRight, Some(CONTEXT)),
-        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("shift-h", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-l", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("shift-k", SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-j", SelectDown, Some(CONTEXT)),
-        // Vi-like search commands
-        KeyBinding::new("/", TriggerSearch, Some(CONTEXT)),
-        KeyBinding::new("n", TriggerSearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-n", TriggerSearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
-        KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),
-        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
-        KeyBinding::new("shift-j", JoinLine, Some(CONTEXT)),
-        KeyBinding::new("backspace", RemoveCustomBreakBackward, Some(CONTEXT)),
-        KeyBinding::new("delete", RemoveCustomBreakForward, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
-    ]);
-
-    #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([
-        KeyBinding::new("left", MoveLeft, Some(CONTEXT)),
-        KeyBinding::new("right", MoveRight, Some(CONTEXT)),
-        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("shift-left", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
-        KeyBinding::new("ctrl-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-c", CopyAsHexDump, Some(CONTEXT)),
-        KeyBinding::new("pageup", PageUp, Some(CONTEXT)),
-        KeyBinding::new("pagedown", PageDown, Some(CONTEXT)),
-        KeyBinding::new("home", Home, Some(CONTEXT)),
-        KeyBinding::new("end", End, Some(CONTEXT)),
-        KeyBinding::new("shift-pageup", SelectPageUp, Some(CONTEXT)),
-        KeyBinding::new("shift-pagedown", SelectPageDown, Some(CONTEXT)),
-        KeyBinding::new("shift-home", SelectHome, Some(CONTEXT)),
-        KeyBinding::new("shift-end", SelectEnd, Some(CONTEXT)),
-        // Vi-like navigation
-        KeyBinding::new("h", MoveLeft, Some(CONTEXT)),
-        KeyBinding::new("l", MoveRight, Some(CONTEXT)),
-        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("shift-h", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-l", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("shift-k", SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-j", SelectDown, Some(CONTEXT)),
-        // Vi-like search commands
-        KeyBinding::new("/", TriggerSearch, Some(CONTEXT)),
-        KeyBinding::new("n", TriggerSearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-n", TriggerSearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
-        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
-        KeyBinding::new("shift-j", JoinLine, Some(CONTEXT)),
-        KeyBinding::new("backspace", RemoveCustomBreakBackward, Some(CONTEXT)),
-        KeyBinding::new("delete", RemoveCustomBreakForward, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
-    ]);
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResizingColumn {
-    Address,
-    Hex,
-    Ascii,
-    Description,
-    Comment,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollAxisLock {
-    Horizontal,
-    Vertical,
-}
 
 pub struct HexView {
     editor: Entity<Editor>,
@@ -1065,24 +84,6 @@ pub struct HexView {
 
 impl EventEmitter<HexViewEvent> for HexView {}
 
-#[derive(Clone, Debug)]
-pub struct HexViewLayoutState {
-    pub address_col_width: f32,
-    pub hex_col_width: f32,
-    pub desc_col_width: f32,
-    pub comment_col_width: f32,
-    pub ascii_col_width: f32,
-    pub show_offset: bool,
-    pub show_ascii: bool,
-    pub show_header: bool,
-    pub scroll_offset: usize,
-    pub outer_scroll_x: f32,
-    pub hex_scroll_x: f32,
-    pub ascii_scroll_x: f32,
-    pub desc_scroll_x: f32,
-    pub comment_scroll_x: f32,
-}
-
 #[allow(dead_code)]
 impl HexView {
     pub fn new(editor: Entity<Editor>, cx: &mut Context<Self>) -> Self {
@@ -1091,8 +92,6 @@ impl HexView {
             (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
         };
         let font_size_prop = px(14.0);
-        // The actual grid width is populated from measured glyph metrics
-        // during the first render. This value only controls the initial viewport.
         let hex_col_width = 0.0;
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
@@ -1245,7 +244,7 @@ impl HexView {
         bounded_auto_fit_range(total_size, visible_start, visible_end)
     }
 
-    fn description_content_width_in_range(editor: &Editor, parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
+    pub fn description_content_width_in_range(editor: &Editor, parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
         let scan_len = scan_range.end.saturating_sub(scan_range.start);
         if scan_len == 0 {
             return 0.0;
@@ -1331,7 +330,7 @@ impl HexView {
         max_width
     }
 
-    fn comment_content_width_in_range(editor: &Editor, scan_range: &Range<usize>, char_w: f32) -> f32 {
+    pub fn comment_content_width_in_range(editor: &Editor, scan_range: &Range<usize>, char_w: f32) -> f32 {
         if scan_range.is_empty() {
             return 0.0;
         }
@@ -1401,33 +400,33 @@ impl HexView {
             .map(|bounds| f32::from(bounds.size.width))
             .unwrap_or(800.0);
 
-        make_hex_view_layout(
+        make_hex_view_layout(LayoutInput {
             bounds_width,
             is_struct_mode,
-            self.show_ascii,
-            self.effective_ascii_col_width(max_bytes_per_row),
-            if !is_struct_mode && self.show_ascii {
+            show_ascii: self.show_ascii,
+            ascii_col_width: self.effective_ascii_col_width(max_bytes_per_row),
+            ascii_inner_max: if !is_struct_mode && self.show_ascii {
                 (Self::default_ascii_col_width(max_bytes_per_row) - self.effective_ascii_col_width(max_bytes_per_row)).max(0.0)
             } else {
                 0.0
             },
-            if is_struct_mode {
+            fixed_column_width: if is_struct_mode {
                 self.address_col_width
             } else if self.show_offset {
                 OFFSET_WIDTH
             } else {
                 0.0
             },
-            self.hex_col_width,
-            self.desc_col_width,
-            self.comment_col_width,
-            self.max_hex_scroll(cx),
-            if is_struct_mode { self.max_desc_scroll(cx) } else { 0.0 },
-            self.max_comment_scroll(cx),
-            SECTION_GAP,
-            8.0,
-            VERTICAL_SCROLLBAR_WIDTH,
-        )
+            hex_col_width: self.hex_col_width,
+            desc_col_width: self.desc_col_width,
+            comment_col_width: self.comment_col_width,
+            hex_inner_max: self.max_hex_scroll(cx),
+            desc_inner_max: if is_struct_mode { self.max_desc_scroll(cx) } else { 0.0 },
+            comment_inner_max: self.max_comment_scroll(cx),
+            section_gap: SECTION_GAP,
+            content_padding: 8.0,
+            scrollbar_width: VERTICAL_SCROLLBAR_WIDTH,
+        })
     }
 
     fn horizontal_offset(&self, target: HorizontalScrollTarget) -> f32 {
@@ -1561,7 +560,6 @@ impl HexView {
             delta_x = delta_y;
         }
 
-        // 120ms 以上イベント間隔が空いたらジェスチャー終了と判定してリセット
         if let Some(last_time) = self.last_scroll_time
             && now.duration_since(last_time).as_millis() > 120
         {
@@ -1572,8 +570,6 @@ impl HexView {
         let abs_x = delta_x.abs();
         let abs_y = delta_y.abs();
 
-        // Shift explicitly selects column-only horizontal scrolling, even if
-        // the previous wheel gesture left the axis lock in vertical mode.
         if column_only_horizontal {
             self.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
             self.scroll_lock_top_row = self.current_scroll_top_row();
@@ -1586,9 +582,7 @@ impl HexView {
             }
         }
 
-        // 縦スクロールロック中の場合は横スクロールを行わずスルー
         if self.scroll_lock_axis == Some(ScrollAxisLock::Vertical) {
-            // 縦スクロール処理を実行
             let total_rows = self.editor.read(cx).line_starts().len().max(1);
             let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
             let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
@@ -1613,7 +607,6 @@ impl HexView {
         let is_horizontal = self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) || column_only_horizontal || abs_x > abs_y;
 
         if is_horizontal && abs_x > 0.01 {
-            // 横スクロールロック中は縦スクロール位置を固定して縦揺れを防止
             if self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) {
                 let lock_row = self.scroll_lock_top_row;
                 self.scroll_to_row(lock_row, cx);
@@ -1640,9 +633,6 @@ impl HexView {
             let residual_delta = delta_x - consumed_delta;
             let _ = self.set_horizontal_offset(target, new_offset, layout, true, cx);
 
-            // Once the selected column reaches its own limit, let the
-            // remaining gesture move the outer viewport, regardless of which
-            // column is under the pointer.
             if can_chain_to_outer(target, residual_delta) {
                 let current_outer = self.outer_scroll_x;
                 let new_outer = (current_outer - residual_delta).clamp(0.0, layout.outer_max);
@@ -1876,9 +866,6 @@ impl HexView {
         } else if cursor_row > bottom_row {
             self.scroll_to_bottom_row(cursor_row, cx);
         }
-
-        // Horizontal visibility is adjusted from the row's shaped layout in
-        // `render`, where GPUI's actual glyph positions are available.
     }
 
     fn exec_move(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Editor)) {
@@ -2398,7 +1385,7 @@ impl HexView {
         let world_x = relative_x + self.outer_scroll_x;
 
         if is_struct_mode && layout.description.map(|column| world_x >= column.start).unwrap_or(false) {
-            if let Some(ref parse_res) = parse_result {
+            if let Some(parse_res) = parse_result {
                 let leaf_fields = parse_res.find_leaf_fields_starting_at(line_offset, chunk_len);
                 if let Some(first) = leaf_fields.first() {
                     return Some(first.offset);
@@ -2451,730 +1438,6 @@ impl HexView {
 
         let byte_idx = byte_offset_in_row.min(chunk_len.saturating_sub(1));
         Some(line_offset + byte_idx)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_hex_row(
-        row_idx: usize,
-        bounds: Bounds<Pixels>,
-        top_visible_row: usize,
-        doc: &Document,
-        line_starts: &crate::core::editor::LineMap,
-        parse_result: Option<&ParseResult>,
-        collapsed_structs: &std::collections::HashSet<String>,
-        encoding: Encoding,
-        radix: DisplayRadix,
-        group_size: ByteGroupSize,
-        is_big_endian: bool,
-        cursor_offset: usize,
-        min_sel: usize,
-        max_sel: usize,
-        highlights: &[(Range<usize>, Hsla)],
-        highlight_items: &[crate::core::highlight::HighlightItem],
-        max_highlight_len: usize,
-        show_offset: bool,
-        show_ascii: bool,
-        ascii_col_width: f32,
-        ascii_scroll_x: f32,
-        is_focused: bool,
-        outer_scroll_x: f32,
-        hex_scroll_x: f32,
-        desc_scroll_x: f32,
-        comment_scroll_x: f32,
-        address_col_width: f32,
-        hex_col_width: f32,
-        hex_cell_width: Pixels,
-        desc_col_width: f32,
-        comment_col_width: f32,
-        font_family: SharedString,
-        font_size: Pixels,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let offset = match line_starts.get(row_idx) {
-            Some(o) => o,
-            None => return,
-        };
-        let next_offset = if row_idx + 1 < line_starts.len() {
-            line_starts.get(row_idx + 1).unwrap_or(doc.buffer.len())
-        } else {
-            doc.buffer.len()
-        };
-
-        let chunk_len = next_offset - offset;
-        let chunk = doc.buffer.get_range(offset, chunk_len);
-
-        let is_struct_mode = parse_result.is_some();
-
-        let active_row_highlights = row_highlights(highlights, max_highlight_len, offset, next_offset);
-        let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
-            let theme = cx.theme();
-            (
-                if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) },
-                darken_cursor_color(theme.accent),
-                theme.muted_foreground,
-                theme.foreground,
-                theme.accent_foreground,
-                theme.border,
-                theme.sidebar,
-                theme.background,
-            )
-        };
-        let line_height = px(ROW_HEIGHT);
-        let font = gpui::font(font_family);
-
-        // 1. Draw Left Columns (Address OR Offset)
-        let (offset_w, gap) = if is_struct_mode {
-            let addr_str = format_offset_08(offset);
-            let run = gpui::TextRun {
-                len: addr_str.len(),
-                font: font.clone(),
-                color: muted_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window.text_system().shape_line(addr_str, font_size, &[run], None);
-            let addr_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
-            let _ = shaped.paint(addr_pos, line_height, window, cx);
-            (address_col_width, SECTION_GAP)
-        } else {
-            if show_offset {
-                let offset_str = format_offset_08(offset);
-                let run = gpui::TextRun {
-                    len: offset_str.len(),
-                    font: font.clone(),
-                    color: muted_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped = window.text_system().shape_line(offset_str, font_size, &[run], None);
-                let offset_pos = point(bounds.left() + px(8.0), bounds.top() + px(2.0));
-                let _ = shaped.paint(offset_pos, line_height, window, cx);
-            }
-            (if show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
-        };
-
-        let base_x = bounds.left() + px(8.0);
-        let hex_start_x = base_x + px(offset_w + gap) - px(outer_scroll_x);
-        let hex_end_x = hex_start_x + px(hex_col_width);
-        let (comment_start_x, ascii_width) = if is_struct_mode {
-            let desc_start_x = hex_end_x + px(gap);
-            let comment_start_x = desc_start_x + px(desc_col_width + gap);
-            (comment_start_x, 0.0)
-        } else {
-            let ascii_w = if show_ascii { ascii_col_width } else { 0.0 };
-            let comment_start_x = if show_ascii {
-                hex_end_x + px(gap + ascii_w + gap)
-            } else {
-                hex_end_x + px(gap)
-            };
-            (comment_start_x, ascii_w)
-        };
-
-        // Vertical Column Divider Borders (matching header splitters exactly)
-        let border_line_color = border_color.opacity(0.4);
-        if is_struct_mode || show_offset {
-            let div1_x = base_x + px(offset_w + (gap / 2.0));
-            window.paint_quad(gpui::fill(
-                Bounds::new(point(div1_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                border_line_color,
-            ));
-        }
-        let scrollable_mask_bounds = {
-            let left = base_x + px(offset_w + gap);
-            let right = bounds.right() - px(VERTICAL_SCROLLBAR_WIDTH);
-            Bounds::new(point(left, bounds.top()), size((right - left).max(px(0.0)), px(ROW_HEIGHT)))
-        };
-        window.with_content_mask(
-            Some(gpui::ContentMask {
-                bounds: scrollable_mask_bounds,
-            }),
-            |window| {
-                let div2_x = hex_start_x + px(hex_col_width + (gap / 2.0));
-                window.paint_quad(gpui::fill(
-                    Bounds::new(point(div2_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                    border_line_color,
-                ));
-                if is_struct_mode {
-                    let desc_start_x = hex_end_x + px(gap);
-                    let div3_x = desc_start_x + px(desc_col_width + (gap / 2.0));
-                    let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                        border_line_color,
-                    ));
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                        border_line_color,
-                    ));
-                } else {
-                    if show_ascii {
-                        let div3_x = hex_end_x + px(gap + ascii_width + (gap / 2.0));
-                        window.paint_quad(gpui::fill(
-                            Bounds::new(point(div3_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                            border_line_color,
-                        ));
-                    }
-                    let div4_x = comment_start_x + px(comment_col_width + (gap / 2.0));
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(point(div4_x, bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
-                        border_line_color,
-                    ));
-                }
-            },
-        );
-
-        // Build and shape the exact text stream before painting any geometry.
-        // Group geometry uses the fixed cell grid; glyphs are centered in that
-        // grid during the text pass.
-        let hex_source = build_hex_text_source(chunk, offset, radix, group_size, is_big_endian);
-        let mut hex_runs: Vec<gpui::TextRun> = Vec::with_capacity(hex_source.groups.len() * 2);
-        let mut group_visuals: Vec<(Hsla, bool)> = Vec::with_capacity(hex_source.groups.len());
-        let mut group_text_colors: Vec<Hsla> = Vec::with_capacity(hex_source.groups.len());
-
-        for (group_idx, group) in hex_source.groups.iter().enumerate() {
-            let item_start_offset = offset + group.chunk_start;
-            let item_end_offset = offset + group.chunk_end;
-            let item_slice = &chunk[group.chunk_start..group.chunk_end];
-            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-            let is_zero = is_group_zero(item_slice);
-            let text_color = if is_cursor && is_focused {
-                fg_color
-            } else if is_zero {
-                muted_color.opacity(0.5)
-            } else {
-                fg_color
-            };
-
-            let is_selected = if min_sel <= max_sel {
-                item_start_offset <= max_sel && item_end_offset > min_sel
-            } else {
-                false
-            };
-
-            let current_hl_color = highlight_color_for_range(item_start_offset, item_end_offset, is_selected, active_row_highlights);
-            let bg_color = if is_selected {
-                selection_bg
-            } else {
-                current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
-            };
-            group_visuals.push((bg_color, is_cursor));
-            group_text_colors.push(text_color);
-
-            if group_idx > 0 {
-                hex_runs.push(gpui::TextRun {
-                    len: 1,
-                    font: font.clone(),
-                    color: hsla(0.0, 0.0, 0.0, 0.0),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            hex_runs.push(gpui::TextRun {
-                len: group.text_end - group.text_start,
-                font: font.clone(),
-                color: text_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            });
-        }
-
-        let shaped_hex = window.text_system().shape_line(hex_source.text.clone(), font_size, &hex_runs, None);
-        let text_origin_x = hex_start_x - px(hex_scroll_x);
-        let total_data_width = f32::from(hex_grid_width(hex_source.text.len(), hex_cell_width));
-
-        // 2. Background Quads Pass for Data Items (with clipping mask)
-        let hex_mask_bounds = Bounds::new(point(hex_start_x, bounds.top()), size(px(hex_col_width), px(ROW_HEIGHT)));
-
-        window.with_content_mask(
-            Some(gpui::ContentMask {
-                bounds: scrollable_mask_bounds,
-            }),
-            |window| {
-                window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
-                    for (item_idx, group) in hex_source.groups.iter().enumerate() {
-                        let (bg_color, is_cursor) = group_visuals[item_idx];
-                        let (group_start_x, group_end_x) = hex_group_x(*group, text_origin_x, hex_cell_width);
-                        let previous_group_end_x = if item_idx > 0 {
-                            hex_group_x(hex_source.groups[item_idx - 1], text_origin_x, hex_cell_width).1
-                        } else {
-                            group_start_x
-                        };
-                        let previous_has_background = item_idx > 0 && group_visuals[item_idx - 1].0.a > 0.0;
-                        let has_next = item_idx + 1 < hex_source.groups.len();
-                        let next_group_start_x = if has_next {
-                            hex_group_x(hex_source.groups[item_idx + 1], text_origin_x, hex_cell_width).0
-                        } else {
-                            group_end_x
-                        };
-                        let next_has_background = has_next && group_visuals[item_idx + 1].0.a > 0.0;
-                        let fill_start_x = if previous_has_background {
-                            pixel_midpoint(previous_group_end_x, group_start_x)
-                        } else {
-                            group_start_x
-                        };
-                        let fill_end_x = if next_has_background {
-                            pixel_midpoint(group_end_x, next_group_start_x)
-                        } else {
-                            group_end_x
-                        };
-
-                        if bg_color.a > 0.0 {
-                            let item_fill_bounds = Bounds::new(
-                                point(fill_start_x, bounds.top() + px(1.0)),
-                                size(fill_end_x - fill_start_x, px(ROW_HEIGHT - 2.0)),
-                            );
-                            window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
-                        }
-
-                        if is_cursor {
-                            let cursor_border_color = if is_focused {
-                                cursor_bg
-                            } else {
-                                darken_cursor_color(muted_color).opacity(0.8)
-                            };
-                            let cursor_start_x = if bg_color.a > 0.0 { fill_start_x } else { group_start_x };
-                            let cursor_end_x = if bg_color.a > 0.0 { fill_end_x } else { group_end_x };
-                            let item_box_bounds = Bounds::new(
-                                point(cursor_start_x, bounds.top() + px(1.0)),
-                                size(cursor_end_x - cursor_start_x, px(ROW_HEIGHT - 2.0)),
-                            );
-                            paint_cursor_border(window, item_box_bounds, cursor_border_color);
-                        }
-                    }
-
-                    // 3. Text Pass for Data Items (same shaped line as the geometry pass)
-                    if !hex_source.text.is_empty() {
-                        paint_centered_hex_glyphs(
-                            &shaped_hex,
-                            &hex_source.groups,
-                            &group_text_colors,
-                            hex_cell_width,
-                            point(text_origin_x, bounds.top() + px(2.0)),
-                            line_height,
-                            window,
-                        );
-                    }
-
-                    // Left-edge subtle gradient fade when hex_scroll_x > 1.0
-                    if hex_scroll_x > 1.0 {
-                        let bg = bg_color_theme;
-                        for step in 0..5 {
-                            let x = hex_start_x + px(step as f32 * 3.2);
-                            let alpha = 1.0 - (step as f32 / 5.0);
-                            window.paint_quad(gpui::fill(
-                                Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                bg.opacity(alpha * 0.95),
-                            ));
-                        }
-                    }
-
-                    // Right-edge subtle gradient fade when row data overflows hex_col_width
-                    if hex_scroll_x + hex_col_width < total_data_width - 1.0 {
-                        let fade_w = 22.0;
-                        let fade_start = hex_end_x - px(fade_w);
-                        let bg = bg_color_theme;
-                        for step in 0..6 {
-                            let x = fade_start + px(step as f32 * 3.6);
-                            let alpha = (step + 1) as f32 / 7.0;
-                            window.paint_quad(gpui::fill(
-                                Bounds::new(point(x, bounds.top()), size(px(3.8), px(ROW_HEIGHT))),
-                                bg.opacity(alpha * 0.95),
-                            ));
-                        }
-                    }
-                });
-            },
-        );
-
-        // 3. ASCII Column (when not in structure definition mode and ASCII view is enabled)
-        if !is_struct_mode && show_ascii {
-            window.with_content_mask(
-                Some(gpui::ContentMask {
-                    bounds: scrollable_mask_bounds,
-                }),
-                |window| {
-                    let ascii_start_x = hex_end_x + px(gap);
-                    let ascii_content_start_x = ascii_start_x - px(ascii_scroll_x);
-                    let ascii_mask_bounds = Bounds::new(point(ascii_start_x, bounds.top()), size(px(ascii_width), px(ROW_HEIGHT)));
-                    window.with_content_mask(Some(gpui::ContentMask { bounds: ascii_mask_bounds }), |window| {
-                        let char_map = build_ascii_char_map(encoding, doc.buffer.data(), offset, chunk.len());
-                        let group_bytes = group_size.byte_count();
-
-                        // 1. Background Quads Pass for ASCII Cells
-                        for (j, _) in chunk.iter().enumerate() {
-                            let byte_pos = offset + j;
-                            let in_selected_group = if min_sel <= max_sel {
-                                let group_start = (byte_pos / group_bytes) * group_bytes;
-                                let group_end = group_start + group_bytes;
-                                group_start <= max_sel && group_end > min_sel
-                            } else {
-                                false
-                            };
-
-                            let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), in_selected_group, active_row_highlights);
-                            let bg_color = if in_selected_group {
-                                selection_bg
-                            } else {
-                                current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
-                            };
-
-                            let ascii_item_bounds = Bounds::new(
-                                point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH), bounds.top() + px(1.0)),
-                                size(px(ASCII_CELL_WIDTH), px(ROW_HEIGHT - 2.0)),
-                            );
-
-                            if bg_color.a > 0.0 {
-                                window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
-                            }
-                        }
-
-                        // 2. Cursor Border Pass for ASCII Groups
-                        for group in hex_source.groups.iter() {
-                            let item_start_offset = offset + group.chunk_start;
-                            let item_end_offset = offset + group.chunk_end;
-                            let is_cursor = cursor_offset >= item_start_offset && cursor_offset < item_end_offset;
-
-                            if is_cursor {
-                                let cursor_border_color = if is_focused {
-                                    cursor_bg
-                                } else {
-                                    darken_cursor_color(muted_color).opacity(0.8)
-                                };
-                                let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
-                                let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
-                                let ascii_group_bounds = Bounds::new(point(group_start_x, bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
-                                paint_cursor_border(window, ascii_group_bounds, cursor_border_color);
-                            }
-                        }
-
-                        // Paint each glyph centered in its fixed byte cell using batched line shaping.
-                        let mut ascii_text = String::with_capacity(chunk.len());
-                        let mut ascii_runs: Vec<gpui::TextRun> = Vec::with_capacity(chunk.len());
-                        let mut ascii_entries: Vec<AsciiCellEntry> = Vec::with_capacity(chunk.len());
-
-                        for (j, opt) in char_map.into_iter().enumerate() {
-                            let (c, _) = if let Some(pair) = opt { pair } else { continue };
-                            let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
-                            let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
-
-                            let text_byte_start = ascii_text.len();
-                            ascii_text.push(c);
-                            let text_byte_end = ascii_text.len();
-
-                            ascii_runs.push(gpui::TextRun {
-                                len: text_byte_end - text_byte_start,
-                                font: font.clone(),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            });
-
-                            ascii_entries.push(AsciiCellEntry {
-                                cell_idx: j,
-                                text_byte_start,
-                                text_byte_end,
-                                color: text_color,
-                            });
-                        }
-
-                        if !ascii_text.is_empty() {
-                            let shaped = window.text_system().shape_line(SharedString::from(ascii_text), font_size, &ascii_runs, None);
-                            paint_centered_ascii_glyphs(
-                                &shaped,
-                                &ascii_entries,
-                                point(ascii_content_start_x, bounds.top() + px(2.0)),
-                                line_height,
-                                window,
-                            );
-                        }
-
-                        // Edge fades when the ASCII row is horizontally scrolled or clipped.
-                        if ascii_scroll_x > 1.0 {
-                            let bg = bg_color_theme;
-                            for step in 0..5 {
-                                let x = ascii_start_x + px(step as f32 * 3.2);
-                                let alpha = 1.0 - (step as f32 / 5.0);
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-
-                        if ascii_scroll_x + ascii_width < chunk.len() as f32 * ASCII_CELL_WIDTH - 1.0 {
-                            let fade_w = 22.0;
-                            let fade_start = ascii_start_x + px(ascii_width - fade_w);
-                            let bg = bg_color_theme;
-                            for step in 0..6 {
-                                let x = fade_start + px(step as f32 * 3.6);
-                                let alpha = (step + 1) as f32 / 7.0;
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(3.8), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-                    });
-                },
-            );
-        }
-
-        // 4. Description Column (when structure definition is present)
-        if let Some(parse_res) = parse_result {
-            let desc_start_x = hex_end_x + px(SECTION_GAP);
-            let desc_end_x = desc_start_x + px(desc_col_width);
-
-            let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
-            let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
-            let leaf_fields = parse_res.find_leaf_fields_starting_at(offset, chunk_len);
-
-            let is_collapsed = container_structs.first().map(|c| collapsed_structs.contains(&c.id)).unwrap_or(false);
-
-            let struct_depth = active_ranges.len().saturating_sub(1);
-            let indent_level = if !container_structs.is_empty() {
-                active_ranges
-                    .iter()
-                    .find(|r| container_structs.first().map(|c| c.id == r.id).unwrap_or(false))
-                    .map(|r| r.depth)
-                    .unwrap_or(struct_depth)
-            } else {
-                active_ranges.len()
-            };
-            let indent_px = indent_level as f32 * 14.0;
-
-            let mut desc_parts = Vec::new();
-            if let Some(container) = container_structs.first() {
-                let icon = if is_collapsed { "▶" } else { "▼" };
-                if is_collapsed {
-                    desc_parts.push(format!("{} {} ({} bytes)", icon, container.id, container.size));
-                } else {
-                    desc_parts.push(format!("{} {}", icon, container.id));
-                }
-            }
-            if !is_collapsed {
-                for f in leaf_fields {
-                    desc_parts.push(f.format_expression());
-                }
-            }
-
-            if !desc_parts.is_empty() {
-                let expr_shared = SharedString::from(desc_parts.join("  "));
-                let text_color = if !container_structs.is_empty() { accent_fg_color } else { fg_color };
-                let run = gpui::TextRun {
-                    len: expr_shared.len(),
-                    font: font.clone(),
-                    color: text_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped_expr = window.text_system().shape_line(expr_shared, font_size, &[run], None);
-                let desc_mask_bounds = Bounds::new(point(desc_start_x, bounds.top()), size(px(desc_col_width), px(ROW_HEIGHT)));
-                let desc_text_width = f32::from(shaped_expr.width) + indent_px + 8.0;
-
-                window.with_content_mask(
-                    Some(gpui::ContentMask {
-                        bounds: scrollable_mask_bounds,
-                    }),
-                    |window| {
-                        window.with_content_mask(Some(gpui::ContentMask { bounds: desc_mask_bounds }), |window| {
-                            let _ = shaped_expr.paint(
-                                point(desc_start_x - px(desc_scroll_x) + px(indent_px), bounds.top() + px(2.0)),
-                                line_height,
-                                window,
-                                cx,
-                            );
-
-                            // Left fade
-                            if desc_scroll_x > 1.0 {
-                                let bg = bg_color_theme;
-                                for step in 0..5 {
-                                    let x = desc_start_x + px(step as f32 * 3.2);
-                                    let alpha = 1.0 - (step as f32 / 5.0);
-                                    window.paint_quad(gpui::fill(
-                                        Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                        bg.opacity(alpha * 0.95),
-                                    ));
-                                }
-                            }
-
-                            // Right fade
-                            if desc_scroll_x + desc_col_width < desc_text_width - 1.0 {
-                                let fade_w = 20.0;
-                                let fade_start = desc_end_x - px(fade_w);
-                                let bg = bg_color_theme;
-                                for step in 0..5 {
-                                    let x = fade_start + px(step as f32 * 4.0);
-                                    let alpha = (step + 1) as f32 / 6.0;
-                                    window.paint_quad(gpui::fill(
-                                        Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
-                                        bg.opacity(alpha * 0.95),
-                                    ));
-                                }
-                            }
-                        });
-                    },
-                );
-            }
-        }
-
-        // 5. Highlight Comments Column
-        let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = highlight_items
-            .iter()
-            .filter(|h| {
-                if h.comment.trim().is_empty() {
-                    return false;
-                }
-                let h_start_row = Editor::find_line_index(h.offset, line_starts);
-                let h_end_offset = h.offset.saturating_add(h.size);
-                let h_last_byte = h_end_offset.saturating_sub(1).max(h.offset);
-                let h_end_row = Editor::find_line_index(h_last_byte, line_starts);
-                let display_row = h_start_row.max(top_visible_row);
-                row_idx == display_row && row_idx <= h_end_row
-            })
-            .map(|h| (h.color.to_badge_hsla(), SharedString::from(h.comment.trim().to_string())))
-            .collect();
-
-        if !row_highlight_comments.is_empty() {
-            let comment_mask_bounds = Bounds::new(point(comment_start_x, bounds.top()), size(px(comment_col_width), px(ROW_HEIGHT)));
-            let comment_end_x = comment_start_x + px(comment_col_width);
-
-            let dot_size = 8.0;
-            let dot_radius = 4.0;
-            let dot_margin_right = 5.0;
-            let item_spacing = 14.0;
-
-            let mut shaped_items = Vec::new();
-            let mut total_content_width = 4.0;
-
-            for (badge_color, comment_shared) in &row_highlight_comments {
-                let run = gpui::TextRun {
-                    len: comment_shared.len(),
-                    font: font.clone(),
-                    color: muted_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped_comment = window.text_system().shape_line(comment_shared.clone(), font_size, &[run], None);
-                let text_w = f32::from(shaped_comment.width);
-                shaped_items.push((*badge_color, shaped_comment, text_w));
-                total_content_width += dot_size + dot_margin_right + text_w + item_spacing;
-            }
-            let comment_text_width = total_content_width;
-
-            window.with_content_mask(
-                Some(gpui::ContentMask {
-                    bounds: scrollable_mask_bounds,
-                }),
-                |window| {
-                    window.with_content_mask(Some(gpui::ContentMask { bounds: comment_mask_bounds }), |window| {
-                        let mut cur_x = comment_start_x - px(comment_scroll_x) + px(4.0);
-                        let dot_y = bounds.top() + px((ROW_HEIGHT - dot_size) / 2.0);
-
-                        for (badge_color, shaped_comment, text_w) in shaped_items {
-                            // Highlight colored circle dot
-                            let dot_bounds = Bounds::new(point(cur_x, dot_y), size(px(dot_size), px(dot_size)));
-                            let mut dot_quad = gpui::fill(dot_bounds, badge_color);
-                            dot_quad.corner_radii = gpui::Corners {
-                                top_left: px(dot_radius),
-                                top_right: px(dot_radius),
-                                bottom_left: px(dot_radius),
-                                bottom_right: px(dot_radius),
-                            };
-                            window.paint_quad(dot_quad);
-
-                            // Comment text
-                            let text_x = cur_x + px(dot_size + dot_margin_right);
-                            let _ = shaped_comment.paint(point(text_x, bounds.top() + px(2.0)), line_height, window, cx);
-
-                            cur_x = text_x + px(text_w + item_spacing);
-                        }
-
-                        // Left fade
-                        if comment_scroll_x > 1.0 {
-                            let bg = bg_color_theme;
-                            for step in 0..5 {
-                                let x = comment_start_x + px(step as f32 * 3.2);
-                                let alpha = 1.0 - (step as f32 / 5.0);
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(3.4), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-
-                        // Right fade
-                        if comment_scroll_x + comment_col_width < comment_text_width - 1.0 {
-                            let fade_w = 20.0;
-                            let fade_start = comment_end_x - px(fade_w);
-                            let bg = bg_color_theme;
-                            for step in 0..5 {
-                                let x = fade_start + px(step as f32 * 4.0);
-                                let alpha = (step + 1) as f32 / 6.0;
-                                window.paint_quad(gpui::fill(
-                                    Bounds::new(point(x, bounds.top()), size(px(4.2), px(ROW_HEIGHT))),
-                                    bg.opacity(alpha * 0.95),
-                                ));
-                            }
-                        }
-                    });
-                },
-            );
-        }
-    }
-
-    fn paint_scrollbar(
-        list_bounds: Bounds<Pixels>,
-        scroll_offset: usize,
-        total_rows: usize,
-        is_dragging: bool,
-        is_hovered: bool,
-        theme: &gpui_component::Theme,
-        window: &mut Window,
-    ) {
-        let list_h = f32::from(list_bounds.size.height);
-        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-        if total_rows <= visible_rows || list_h <= 0.0 {
-            return;
-        }
-        let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
-        let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
-        let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
-        let max_thumb_top = (list_h - thumb_h).max(0.0);
-
-        let scroll_ratio = if max_top_row > 0 {
-            (scroll_offset as f64 / max_top_row as f64).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let thumb_top = (scroll_ratio * max_thumb_top as f64) as f32;
-
-        let bar_w = 10.0;
-        let bar_x = list_bounds.right() - px(bar_w);
-        let bar_bounds = Bounds::new(point(bar_x, list_bounds.top()), size(px(bar_w), list_bounds.size.height));
-
-        if is_hovered || is_dragging {
-            window.paint_quad(gpui::fill(bar_bounds, theme.border.opacity(0.15)));
-        }
-
-        let thumb_bounds = Bounds::new(point(bar_x + px(2.0), list_bounds.top() + px(thumb_top)), size(px(6.0), px(thumb_h)));
-        let thumb_color = if is_dragging {
-            theme.muted_foreground.opacity(0.85)
-        } else if is_hovered {
-            theme.muted_foreground.opacity(0.7)
-        } else {
-            theme.border.opacity(0.6)
-        };
-        let mut quad = gpui::fill(thumb_bounds, thumb_color);
-        quad.corner_radii = gpui::Corners::all(px(3.0));
-        window.paint_quad(quad);
     }
 }
 
@@ -4078,47 +2341,49 @@ impl Render for HexView {
                         for (k, row_idx) in (top_row..end_row).enumerate() {
                             let row_y = bounds.top() + px(k as f32 * ROW_HEIGHT);
                             let row_bounds = Bounds::new(point(bounds.left(), row_y), size(bounds.size.width, px(ROW_HEIGHT)));
-                            Self::paint_hex_row(
-                                row_idx,
-                                row_bounds,
-                                top_row,
-                                &doc,
-                                &line_starts,
-                                parse_result.as_deref(),
-                                &collapsed_structs,
-                                encoding,
-                                radix,
-                                group_size,
-                                is_big_endian,
-                                cursor_offset,
-                                min_sel,
-                                max_sel,
-                                effective_highlights.as_slice(),
-                                highlight_items.as_slice(),
-                                effective_max_hl_len,
-                                show_offset,
-                                show_ascii,
-                                ascii_col_width,
-                                ascii_scroll_x,
-                                is_focused,
-                                outer_scroll_x,
-                                hex_scroll_x,
-                                desc_scroll_x,
-                                comment_scroll_x,
-                                address_col_width,
-                                hex_col_width,
-                                hex_cell_width,
-                                desc_col_width,
-                                comment_col_width,
-                                font_family.clone(),
-                                font_size,
+                            paint_hex_row(
+                                RowPaintParams {
+                                    row_idx,
+                                    bounds: row_bounds,
+                                    top_visible_row: top_row,
+                                    doc: &doc,
+                                    line_starts: &line_starts,
+                                    parse_result: parse_result.as_deref(),
+                                    collapsed_structs: &collapsed_structs,
+                                    encoding,
+                                    radix,
+                                    group_size,
+                                    is_big_endian,
+                                    cursor_offset,
+                                    min_sel,
+                                    max_sel,
+                                    highlights: effective_highlights.as_slice(),
+                                    highlight_items: highlight_items.as_slice(),
+                                    max_highlight_len: effective_max_hl_len,
+                                    show_offset,
+                                    show_ascii,
+                                    ascii_col_width,
+                                    ascii_scroll_x,
+                                    is_focused,
+                                    outer_scroll_x,
+                                    hex_scroll_x,
+                                    desc_scroll_x,
+                                    comment_scroll_x,
+                                    address_col_width,
+                                    hex_col_width,
+                                    hex_cell_width,
+                                    desc_col_width,
+                                    comment_col_width,
+                                    font_family: font_family.clone(),
+                                    font_size,
+                                },
                                 window,
                                 cx,
                             );
                         }
 
                         let theme = cx.theme();
-                        Self::paint_scrollbar(bounds, top_row, total_rows, is_dragging_scrollbar, scrollbar_hovered, theme, window);
+                        paint_scrollbar(bounds, top_row, total_rows, is_dragging_scrollbar, scrollbar_hovered, theme, window);
                     },
                 )
                 .size_full()

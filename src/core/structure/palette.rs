@@ -36,3 +36,28 @@ pub fn color(index: usize) -> Hsla {
 pub fn get_color(index: usize) -> Hsla {
     color(index)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rgb_and_rgba_hex_colors() {
+        let rgb = hex_to_hsla("#FF0000").expect("valid RGB color");
+        assert_eq!(rgb, hex_to_hsla("FF0000").expect("valid RGB color without #"));
+        assert_eq!(rgb.a, 1.0);
+
+        let rgba = hex_to_hsla("#0080FF80").expect("valid RGBA color");
+        assert!((rgba.a - (128.0 / 255.0)).abs() < f32::EPSILON);
+        assert!(rgba.s > 0.0);
+    }
+
+    #[test]
+    fn rejects_invalid_hex_and_wraps_palette_indices() {
+        assert!(hex_to_hsla("").is_none());
+        assert!(hex_to_hsla("#12345").is_none());
+        assert!(hex_to_hsla("#GG0000").is_none());
+        assert_eq!(color(0), color(DEFAULT_PALETTE.len()));
+        assert_eq!(get_color(1), color(1));
+    }
+}

@@ -418,3 +418,60 @@ impl ParseResult {
 fn weighted_char_count(text: &str) -> f32 {
     text.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_value_conversions_cover_numeric_text_and_struct_values() {
+        assert_eq!(FieldValue::U8(0x12).to_i64(), 0x12);
+        assert_eq!(FieldValue::I64(-4).to_i64(), -4);
+        assert_eq!(FieldValue::F32(2.75).to_i64(), 2);
+        assert_eq!(FieldValue::Bool(true).to_i64(), 1);
+        assert_eq!(FieldValue::Bool(false).to_f64(), 0.0);
+        assert_eq!(FieldValue::U16(12).to_f64(), 12.0);
+        assert_eq!(FieldValue::String("text".into()).to_string_value(), "text");
+        assert_eq!(FieldValue::Bytes(vec![b'A', b'\0']).to_string_value(), "A\0");
+        assert_eq!(FieldValue::Struct.to_string_value(), "{...}");
+    }
+
+    #[test]
+    fn parsed_field_formatting_prefers_structure_enum_and_description_details() {
+        let numeric = ParsedField {
+            id: "flags".into(),
+            field_type: "u1".into(),
+            offset: 0,
+            size: 1,
+            value: FieldValue::U8(0xAB),
+            color: Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+            is_instance: false,
+        };
+        assert_eq!(numeric.format_expression(), "flags = ABh (171)");
+        assert_eq!(numeric.format_comment(), None);
+
+        let mut enum_field = numeric.clone();
+        enum_field.enum_label = Some("enabled".into());
+        enum_field.description = Some("flag description".into());
+        assert_eq!(enum_field.format_expression(), "flags = 171 (enabled)");
+        assert_eq!(enum_field.format_comment(), Some("flag description".into()));
+
+        let structure = ParsedField {
+            id: "header".into(),
+            field_type: "header".into(),
+            offset: 0,
+            size: 4,
+            value: FieldValue::Struct,
+            color: Hsla::default(),
+            description: None,
+            children: vec![numeric],
+            enum_label: None,
+            is_instance: false,
+        };
+        assert!(structure.is_struct());
+        assert_eq!(structure.format_expression(), "header");
+    }
+}

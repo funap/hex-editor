@@ -22,4 +22,8 @@ flate2 = "1.1.9"
 image = "0.25.10"
 sha2 = "0.11.0"
 
-
+[profile.test]
+# Keep test builds fast enough for IDE test-runner timeouts. The tests cover
+# deterministic core/layout logic and do not need optimized code or debug info.
+opt-level = 0
+debug = 0

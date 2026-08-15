@@ -15,18 +15,18 @@ pub use paint::{RowPaintParams, paint_hex_row, paint_scrollbar};
 pub use types::*;
 
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
-    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, ExportHighlights, HighlightBlue, HighlightCyan,
-    HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine, RemoveCustomBreakBackward,
-    RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian, SetGroupSize1, SetGroupSize2, SetGroupSize4,
-    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ToggleByteOrder, ToggleSearch,
+    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray,
+    CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, ExportHighlights,
+    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine,
+    LoadStructureDefinition, RemoveCustomBreakBackward, RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian,
+    SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8, SetRadixBin,
+    SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView, ToggleSearch,
 };
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::format::{CopyFormat, format_bytes};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::ParseResult;
-use crate::ui::style::StyleExt as _;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt;
@@ -1489,8 +1489,6 @@ impl Render for HexView {
             .overflow_hidden()
             .key_context(CONTEXT);
 
-        let container = container.focus_indicator(is_focused, theme);
-
         let group_bytes = self.group_size.byte_count();
         let items_in_row = max_bytes_per_row.div_ceil(group_bytes).max(1);
         let hex_cell_width = if self.hex_cell_width > 0.0 {
@@ -2437,6 +2435,12 @@ impl Render for HexView {
                             menu.menu("Little Endian", Box::new(SetByteOrderLittleEndian))
                                 .menu("Big Endian", Box::new(SetByteOrderBigEndian))
                         })
+                        .submenu("Text Encoding", window, cx, move |menu, _window, _cx| {
+                            menu.menu("ASCII", Box::new(SetEncodingAscii))
+                                .menu("UTF-8", Box::new(SetEncodingUtf8))
+                                .menu("UTF-16 LE", Box::new(SetEncodingUtf16Le))
+                                .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
+                        })
                         .separator()
                         .menu("Copy", Box::new(Copy))
                         .submenu("Copy As", window, cx, move |menu, _window, _cx| {
@@ -2469,7 +2473,15 @@ impl Render for HexView {
                                 .menu("Export Highlights...", Box::new(ExportHighlights))
                                 .menu("Import Highlights...", Box::new(ImportHighlights))
                         })
+                        .submenu("Structure", window, cx, move |menu, _window, _cx| {
+                            menu.menu("Toggle Inline Structure View", Box::new(ToggleInlineStructureView))
+                                .menu("Load Structure Definition...", Box::new(LoadStructureDefinition))
+                                .menu("Clear Structure Definition", Box::new(ClearStructureDefinition))
+                                .separator()
+                                .menu("Show Structure Panel", Box::new(ShowStructureTab))
+                        })
                         .separator()
+                        .menu("Find / Replace...", Box::new(ToggleSearch))
                         .menu("Select All", Box::new(SelectAll))
                         .separator()
                         .menu("Break Line", Box::new(AddCustomBreak))

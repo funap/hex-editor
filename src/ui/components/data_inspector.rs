@@ -1,6 +1,7 @@
 use crate::core::editor::Editor;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme as _, Selectable as _, Sizable as _, button::Button, button::ButtonVariants, h_flex, v_flex};
 pub struct DataInspector {
@@ -39,13 +40,31 @@ impl DataInspector {
     }
 
     fn render_row(&self, label: &'static str, value: String, theme: &gpui_component::Theme) -> impl IntoElement {
+        let val_copy = value.clone();
+        let val_for_click = value.clone();
+        let lbl_copy = label.to_string();
+
         h_flex()
+            .id(label)
             .w_full()
             .justify_between()
             .items_center()
             .py_1()
             .px_3()
+            .rounded_sm()
+            .cursor_pointer()
             .hover(|style| style.bg(theme.muted.opacity(0.4)))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                if !val_for_click.is_empty() && val_for_click != "-" {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(val_for_click.clone()));
+                }
+            })
+            .context_menu(move |menu, _window, _cx| {
+                let v = val_copy.clone();
+                let l = lbl_copy.clone();
+                menu.menu(format!("Copy Value ({})", v), Box::new(crate::actions::Copy))
+                    .menu(format!("Copy Field Name ({})", l), Box::new(crate::actions::Copy))
+            })
             .child(div().flex_shrink_0().w(px(110.0)).text_xs().text_color(theme.muted_foreground).child(label))
             .child(
                 div()

@@ -1,6 +1,7 @@
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme, Icon};
 use std::path::PathBuf;
 
@@ -54,7 +55,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 .border_r_1()
                 .border_color(theme.border)
                 .when(is_active, |s| {
-                    s.bg(rgb(0xffffff)).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
+                    s.bg(theme.background).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
                 })
                 .when(!is_active, |s| {
                     s.bg(tab_bar_bg)
@@ -66,6 +67,35 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 })
                 .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                     window.dispatch_action(Box::new(CloseActivePanel), cx);
+                })
+                .context_menu({
+                    let can_close_others = tabs.len() > 1;
+                    let can_close_right = idx + 1 < tabs.len();
+                    let tab_path = tab.path.clone();
+                    move |menu, _window, _cx| {
+                        let mut menu = menu
+                            .menu_with_icon("Close", IconName::Close, Box::new(crate::actions::CloseActivePanel))
+                            .menu_with_icon_and_disabled("Close Others", IconName::Close, Box::new(crate::actions::CloseOtherTabs), !can_close_others)
+                            .menu_with_icon_and_disabled(
+                                "Close to the Right",
+                                IconName::ChevronRight,
+                                Box::new(crate::actions::CloseTabsToRight),
+                                !can_close_right,
+                            )
+                            .menu("Close All", Box::new(crate::actions::CloseAllTabs))
+                            .separator()
+                            .menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
+                            .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown));
+
+                        if tab_path.is_some() {
+                            menu = menu
+                                .separator()
+                                .menu("Copy Path", Box::new(crate::actions::CopyPath))
+                                .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
+                                .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer));
+                        }
+                        menu
+                    }
                 })
                 .child(
                     Icon::new(IconName::File)

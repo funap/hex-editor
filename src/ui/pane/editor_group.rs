@@ -2,6 +2,7 @@ use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme, Icon, Sizable};
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
@@ -171,6 +172,44 @@ impl EditorGroup {
         }
     }
 
+    pub fn close_other_tabs(&mut self, keep_tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let to_remove: Vec<usize> = self.tabs.iter().filter(|t| t.id != keep_tab_id).map(|t| t.id).collect();
+        for id in to_remove {
+            cx.emit(EditorGroupEvent::CloseTab(id));
+            self.remove_tab_by_id(id, window, cx);
+        }
+    }
+
+    pub fn close_tabs_to_right(&mut self, target_tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == target_tab_id) {
+            let to_remove: Vec<usize> = self.tabs[pos + 1..].iter().map(|t| t.id).collect();
+            for id in to_remove {
+                cx.emit(EditorGroupEvent::CloseTab(id));
+                self.remove_tab_by_id(id, window, cx);
+            }
+        }
+    }
+
+    pub fn close_saved_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let to_remove: Vec<usize> = self.tabs.iter().filter(|t| !t.is_dirty(cx)).map(|t| t.id).collect();
+        for id in to_remove {
+            cx.emit(EditorGroupEvent::CloseTab(id));
+            self.remove_tab_by_id(id, window, cx);
+        }
+        if self.tabs.is_empty() {
+            cx.emit(EditorGroupEvent::CloseGroup);
+        }
+    }
+
+    pub fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let to_remove: Vec<usize> = self.tabs.iter().map(|t| t.id).collect();
+        for id in to_remove {
+            cx.emit(EditorGroupEvent::CloseTab(id));
+            self.remove_tab_by_id(id, window, cx);
+        }
+        cx.emit(EditorGroupEvent::CloseGroup);
+    }
+
     pub fn split_active_tab(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active_content) = self.active_content() else {
             return;
@@ -239,8 +278,6 @@ impl Render for EditorGroup {
             .flex()
             .flex_col()
             .bg(theme.background)
-            .border_1()
-            .border_color(if self.is_active_group { theme.border } else { theme.border.opacity(0.5) })
             // --- Custom Tab Bar Header ---
             .child(
                 div()
@@ -329,6 +366,47 @@ impl Render for EditorGroup {
                                             target_index: idx,
                                         });
                                     }))
+                                    .context_menu({
+                                        let tab_path = tab.path(cx);
+                                        let can_close_others = self.tabs.len() > 1;
+                                        let can_close_right = idx + 1 < self.tabs.len();
+                                        let has_saved = self.tabs.iter().any(|t| !t.is_dirty(cx));
+                                        move |menu, _window, _cx| {
+                                            let mut menu = menu
+                                                .menu_with_icon("Close", IconName::Close, Box::new(crate::actions::CloseActivePanel))
+                                                .menu_with_icon_and_disabled(
+                                                    "Close Others",
+                                                    IconName::Close,
+                                                    Box::new(crate::actions::CloseOtherTabs),
+                                                    !can_close_others,
+                                                )
+                                                .menu_with_icon_and_disabled(
+                                                    "Close to the Right",
+                                                    IconName::ChevronRight,
+                                                    Box::new(crate::actions::CloseTabsToRight),
+                                                    !can_close_right,
+                                                )
+                                                .menu_with_icon_and_disabled(
+                                                    "Close Saved",
+                                                    IconName::Check,
+                                                    Box::new(crate::actions::CloseSavedTabs),
+                                                    !has_saved,
+                                                )
+                                                .menu("Close All", Box::new(crate::actions::CloseAllTabs))
+                                                .separator()
+                                                .menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
+                                                .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown));
+
+                                            if tab_path.is_some() {
+                                                menu = menu
+                                                    .separator()
+                                                    .menu("Copy Path", Box::new(crate::actions::CopyPath))
+                                                    .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
+                                                    .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer));
+                                            }
+                                            menu
+                                        }
+                                    })
                                     .child(
                                         Icon::new(IconName::File)
                                             .size(px(14.0))

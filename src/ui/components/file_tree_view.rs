@@ -1,4 +1,4 @@
-use crate::actions::{LoadChildren, OpenDiff, OpenFile, Rename, SelectItem};
+use crate::actions::{LoadChildren, OpenDiff, OpenFile, Rename, SelectForCompare, SelectItem};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -41,6 +41,7 @@ pub struct FileTreeView {
     root_path: Option<PathBuf>,
     loaded_paths: HashSet<String>,
     items: Vec<TreeItem>,
+    pub pending_compare_path: Option<String>,
 }
 
 fn build_file_items(ignorer: &Ignorer, root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
@@ -109,6 +110,7 @@ impl FileTreeView {
             root_path: None,
             loaded_paths: HashSet::new(),
             items: Vec::new(),
+            pending_compare_path: None,
         }
     }
 
@@ -323,7 +325,6 @@ impl FileTreeView {
 
 impl Render for FileTreeView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
-        let view = cx.entity();
         let is_empty = self.root_path.is_none();
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
@@ -394,6 +395,7 @@ impl Render for FileTreeView {
                 )
                 .into_any_element()
             } else {
+                let view = cx.entity().clone();
                 tree(&self.tree_state, {
                     let selected_ids: HashSet<_> = self.selected_items.iter().map(|i| i.id.clone()).collect();
                     let focus_handle = self.focus_handle.clone();
@@ -428,42 +430,63 @@ impl Render for FileTreeView {
                             .child(h_flex().gap_2().child(icon).child(item.label.clone()).size_full().context_menu({
                                 let view = view.clone();
                                 let item_id = item.id.clone();
+                                let is_folder = item.is_folder();
                                 move |menu, _window, cx| {
-                                    let (can_compare, left_path, right_path) = view.update(cx, |this, _cx| {
+                                    let (can_compare, left_path, right_path, pending_compare) = view.update(cx, |this, _cx| {
                                         let can_compare = this.selected_items.len() == 2 && this.selected_items.iter().all(|item| !item.is_folder());
-                                        if can_compare {
-                                            (true, Some(this.selected_items[0].id.to_string()), Some(this.selected_items[1].id.to_string()))
+                                        let (lp, rp) = if can_compare {
+                                            (Some(this.selected_items[0].id.to_string()), Some(this.selected_items[1].id.to_string()))
                                         } else {
-                                            (false, None, None)
-                                        }
+                                            (None, None)
+                                        };
+                                        (can_compare, lp, rp, this.pending_compare_path.clone())
                                     });
 
-                                    let mut menu = menu
-                                        .menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile { path: item_id.to_string() }))
-                                        .separator();
+                                    let mut menu = menu.menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile { path: item_id.to_string() }));
 
-                                    if can_compare {
+                                    if !is_folder {
+                                        menu = menu.separator();
+                                        if let Some(ref pending_path) = pending_compare
+                                            && pending_path != &item_id.to_string()
+                                        {
+                                            let pending_file_name = std::path::Path::new(pending_path)
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| "Selected".to_string());
+                                            menu = menu.menu_with_icon(
+                                                format!("Compare with '{}'", pending_file_name),
+                                                IconName::GitCompare,
+                                                Box::new(OpenDiff {
+                                                    left_path: pending_path.clone(),
+                                                    right_path: item_id.to_string(),
+                                                }),
+                                            );
+                                        }
+
                                         menu = menu.menu_with_icon(
-                                            "Compare Files",
+                                            "Select for Compare",
                                             IconName::GitCompare,
-                                            Box::new(OpenDiff {
-                                                left_path: left_path.unwrap_or_default(),
-                                                right_path: right_path.unwrap_or_default(),
-                                            }),
+                                            Box::new(SelectForCompare { path: item_id.to_string() }),
                                         );
-                                    } else {
-                                        menu = menu.menu_with_icon_and_disabled(
-                                            "Compare Files",
-                                            IconName::GitCompare,
-                                            Box::new(OpenDiff {
-                                                left_path: String::new(),
-                                                right_path: String::new(),
-                                            }),
-                                            true,
-                                        );
+
+                                        if can_compare {
+                                            menu = menu.menu_with_icon(
+                                                "Compare Selected Files",
+                                                IconName::GitCompare,
+                                                Box::new(OpenDiff {
+                                                    left_path: left_path.unwrap_or_default(),
+                                                    right_path: right_path.unwrap_or_default(),
+                                                }),
+                                            );
+                                        }
                                     }
 
-                                    menu.separator().menu("Rename", Box::new(Rename))
+                                    menu.separator()
+                                        .menu("Copy Path", Box::new(crate::actions::CopyPath))
+                                        .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
+                                        .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer))
+                                        .separator()
+                                        .menu("Rename", Box::new(Rename))
                                 }
                             }))
                             .on_click(window.listener_for(&view, {
@@ -479,9 +502,6 @@ impl Render for FileTreeView {
                                     }
 
                                     if !item.is_folder() && this.selected_items.len() == 1 {
-                                        println!("Emitting FileTreeViewEvent::OpenFile for path: {}", item.id);
-                                        // cx.focus_self(window);
-                                        // window.dispatch_action(Box::new(OpenFile { path: item.id.to_string() }), cx);
                                         cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(item.id.to_string())));
                                     }
                                     this.clear_tree_selection(cx);

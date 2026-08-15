@@ -55,6 +55,13 @@ pub struct OpenDiff {
     pub right_path: String,
 }
 
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct SelectForCompare {
+    pub path: String,
+}
+
 #[derive(Clone, PartialEq, Action)]
 pub struct NextDifference;
 
@@ -184,7 +191,22 @@ pub struct ActivateTab {
 pub struct CloseOtherTabs;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct CloseTabsToRight;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CloseSavedTabs;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct CloseAllTabs;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyPath;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyFileName;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct RevealInExplorer;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct SplitRight;
@@ -194,6 +216,12 @@ pub struct SplitDown;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ToggleInlineStructureView;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ExpandAllStructure;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CollapseAllStructure;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct Copy;

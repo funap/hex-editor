@@ -1054,6 +1054,15 @@ impl Workspace {
         .detach();
     }
 
+    fn on_action_select_for_compare(&mut self, action: &SelectForCompare, _window: &mut Window, cx: &mut Context<Self>) {
+        self.left_panel.update(cx, |panel, cx| {
+            panel.file_tree.update(cx, |file_tree, cx| {
+                file_tree.pending_compare_path = Some(action.path.clone());
+                cx.notify();
+            });
+        });
+    }
+
     fn on_action_toggle_left_panel(&mut self, _: &ToggleLeftPanel, window: &mut Window, cx: &mut Context<Self>) {
         self.set_left_panel_visible(!self.is_left_panel_visible, window, cx);
     }
@@ -1348,10 +1357,62 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_action_close_tabs_to_right(&mut self, _: &CloseTabsToRight, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            let active_id = group.read(cx).active_tab().map(|t| t.id);
+            if let Some(active_id) = active_id {
+                group.update(cx, |g, cx| {
+                    g.close_tabs_to_right(active_id, window, cx);
+                });
+            }
+        }
+        self.sync_active_editor(window, cx);
+        cx.notify();
+    }
+
+    fn on_action_close_saved_tabs(&mut self, _: &CloseSavedTabs, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(group) = self.pane_tree.read(cx).active_group(cx) {
+            group.update(cx, |g, cx| {
+                g.close_saved_tabs(window, cx);
+            });
+        }
+        self.sync_active_editor(window, cx);
+        cx.notify();
+    }
+
     fn on_action_close_all_tabs(&mut self, _: &CloseAllTabs, window: &mut Window, cx: &mut Context<Self>) {
         self.pane_tree = cx.new(|_| PaneTree::new());
         self.sync_active_editor(window, cx);
         cx.notify();
+    }
+
+    fn on_action_copy_path(&mut self, _: &CopyPath, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            let path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+            if let Some(path) = path {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.to_string_lossy().to_string()));
+            }
+        }
+    }
+
+    fn on_action_copy_file_name(&mut self, _: &CopyFileName, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            let path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+            if let Some(path) = path
+                && let Some(name) = path.file_name()
+            {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.to_string_lossy().to_string()));
+            }
+        }
+    }
+
+    fn on_action_reveal_in_explorer(&mut self, _: &RevealInExplorer, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor(cx) {
+            let path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
+            if let Some(path) = path {
+                crate::ui::style::reveal_in_file_explorer(&path);
+            }
+        }
     }
 
     fn on_action_split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
@@ -1524,6 +1585,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_set_byte_order_be))
             .on_action(cx.listener(Self::on_action_toggle_byte_order))
             .on_action(cx.listener(Self::on_action_open_diff))
+            .on_action(cx.listener(Self::on_action_select_for_compare))
             .on_action(cx.listener(Self::on_action_toggle_left_panel))
             .on_action(cx.listener(Self::on_action_open_settings))
             .on_action(cx.listener(Self::on_action_open_visual_map))
@@ -1542,7 +1604,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_activate_previous_tab))
             .on_action(cx.listener(Self::on_action_activate_tab))
             .on_action(cx.listener(Self::on_action_close_other_tabs))
+            .on_action(cx.listener(Self::on_action_close_tabs_to_right))
+            .on_action(cx.listener(Self::on_action_close_saved_tabs))
             .on_action(cx.listener(Self::on_action_close_all_tabs))
+            .on_action(cx.listener(Self::on_action_copy_path))
+            .on_action(cx.listener(Self::on_action_copy_file_name))
+            .on_action(cx.listener(Self::on_action_reveal_in_explorer))
             .on_action(cx.listener(Self::on_action_split_right))
             .on_action(cx.listener(Self::on_action_split_down))
             .on_drop(cx.listener(move |this, external_paths: &gpui::ExternalPaths, window, cx| {

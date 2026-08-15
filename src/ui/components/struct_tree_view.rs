@@ -3,7 +3,8 @@ use crate::core::structure::ParsedField;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, Sizable as _, button::ButtonVariants as _};
+use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::{ActiveTheme as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use std::collections::HashSet;
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
@@ -514,6 +515,39 @@ impl StructTreeView {
         }
     }
 
+    pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        self.expanded_paths.clear();
+        self.rebuild_flattened();
+        self.selected_index = self.selected_index.map(|idx| idx.min(self.flattened_fields.len().saturating_sub(1)));
+        cx.notify();
+    }
+
+    pub fn expand_all(&mut self, cx: &mut Context<Self>) {
+        if let Some(ref res) = self.parse_result {
+            fn collect_branches<'a>(fields: impl IntoIterator<Item = &'a ParsedField>, parent_path: Vec<usize>, out: &mut HashSet<Vec<usize>>) {
+                for (idx, field) in fields.into_iter().enumerate() {
+                    let mut path = parent_path.clone();
+                    path.push(idx);
+                    if !field.children.is_empty() {
+                        out.insert(path.clone());
+                        collect_branches(field.children.iter(), path, out);
+                    }
+                }
+            }
+            collect_branches(res.fields.iter(), Vec::new(), &mut self.expanded_paths);
+        }
+        self.rebuild_flattened();
+        cx.notify();
+    }
+
+    fn on_action_expand_all(&mut self, _: &crate::actions::ExpandAllStructure, _window: &mut Window, cx: &mut Context<Self>) {
+        self.expand_all(cx);
+    }
+
+    fn on_action_collapse_all(&mut self, _: &crate::actions::CollapseAllStructure, _window: &mut Window, cx: &mut Context<Self>) {
+        self.collapse_all(cx);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_list_item(
         ix: usize,
@@ -534,7 +568,8 @@ impl StructTreeView {
             hsla(0.0, 0.0, 0.0, 0.0)
         };
 
-        let focus_handle = focus_handle.clone();
+        let focus_handle_left = focus_handle.clone();
+        let focus_handle_right = focus_handle.clone();
         let id = SharedString::from(parsed_field.id.clone());
         let value = if let Some(label) = &parsed_field.enum_label {
             SharedString::from(format!("{} ({})", parsed_field.value, label))
@@ -547,6 +582,10 @@ impl StructTreeView {
             " "
         };
 
+        let field_offset = parsed_field.offset;
+        let field_id = parsed_field.id.clone();
+        let field_val = value.to_string();
+
         div()
             .id(ix)
             .flex()
@@ -558,6 +597,39 @@ impl StructTreeView {
             .px_2()
             .pl(padding_left)
             .gap_1()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
+                    focus_handle_left.focus(window);
+                    this.select_item(ix, cx);
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
+                    focus_handle_right.focus(window);
+                    this.select_item(ix, cx);
+                }),
+            )
+            .context_menu({
+                let val_copy = field_val.clone();
+                let id_copy = field_id.clone();
+                let offset_hex = format!("0x{:08X}", field_offset);
+                move |menu, _window, _cx| {
+                    let off_h = offset_hex.clone();
+                    let v_val = val_copy.clone();
+                    let v_id = id_copy.clone();
+
+                    menu.menu(format!("Go to Offset ({})", off_h), Box::new(crate::actions::GoToBeginning))
+                        .separator()
+                        .menu(format!("Copy Value ({})", v_val), Box::new(crate::actions::Copy))
+                        .menu(format!("Copy Field Name ({})", v_id), Box::new(crate::actions::Copy))
+                        .menu(format!("Copy Offset ({})", off_h), Box::new(crate::actions::Copy))
+                        .separator()
+                        .menu("Expand All", Box::new(crate::actions::ExpandAllStructure))
+                        .menu("Collapse All", Box::new(crate::actions::CollapseAllStructure))
+                }
+            })
             .child(
                 div()
                     .flex_shrink_0()
@@ -579,13 +651,6 @@ impl StructTreeView {
             )
             .child(div().text_sm().text_color(theme.foreground).child(id))
             .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(value))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
-                    focus_handle.focus(window);
-                    this.select_item(ix, cx);
-                }),
-            )
             .into_any_element()
     }
 }
@@ -621,14 +686,39 @@ impl Render for StructTreeView {
 
         let header_actions = if has_structure {
             Some(
-                gpui_component::button::Button::new("clear-structure-btn")
-                    .ghost()
-                    .icon(IconName::Close)
-                    .with_size(gpui_component::Size::XSmall)
-                    .tooltip("Clear Structure Definition")
-                    .on_click(cx.listener(|_, _, window, cx| {
-                        window.dispatch_action(Box::new(crate::actions::ClearStructureDefinition), cx);
-                    }))
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        gpui_component::button::Button::new("expand-all-struct-btn")
+                            .ghost()
+                            .icon(IconName::ListTree)
+                            .with_size(gpui_component::Size::XSmall)
+                            .tooltip("Expand All")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.expand_all(cx);
+                            })),
+                    )
+                    .child(
+                        gpui_component::button::Button::new("collapse-all-struct-btn")
+                            .ghost()
+                            .icon(IconName::Minimize)
+                            .with_size(gpui_component::Size::XSmall)
+                            .tooltip("Collapse All")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.collapse_all(cx);
+                            })),
+                    )
+                    .child(
+                        gpui_component::button::Button::new("clear-structure-btn")
+                            .ghost()
+                            .icon(IconName::Close)
+                            .with_size(gpui_component::Size::XSmall)
+                            .tooltip("Clear Structure Definition")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.dispatch_action(Box::new(crate::actions::ClearStructureDefinition), cx);
+                            })),
+                    )
                     .into_any_element(),
             )
         } else {
@@ -662,6 +752,8 @@ impl Render for StructTreeView {
             .on_action(cx.listener(Self::toggle_expand))
             .on_action(cx.listener(Self::expand))
             .on_action(cx.listener(Self::collapse))
+            .on_action(cx.listener(Self::on_action_expand_all))
+            .on_action(cx.listener(Self::on_action_collapse_all))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {

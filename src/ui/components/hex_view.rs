@@ -788,6 +788,58 @@ fn paint_centered_hex_glyphs(
     });
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AsciiCellEntry {
+    cell_idx: usize,
+    text_byte_start: usize,
+    text_byte_end: usize,
+    color: Hsla,
+}
+
+/// Paint every glyph centered in its fixed ASCII cell while reusing the line
+/// shaped for the row. This keeps shaping batched and avoids per-character
+/// string allocations and shaping passes.
+fn paint_centered_ascii_glyphs(
+    shaped: &gpui::ShapedLine,
+    entries: &[AsciiCellEntry],
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+) {
+    let natural_width = shaped.width;
+    let baseline_offset = point(px(0.0), (line_height - shaped.ascent - shaped.descent) / 2.0 + shaped.ascent);
+    let mut entry_idx = 0;
+    let mut glyphs = shaped
+        .runs
+        .iter()
+        .flat_map(|run| run.glyphs.iter().map(move |glyph| (run.font_id, glyph)))
+        .peekable();
+
+    while let Some((font_id, glyph)) = glyphs.next() {
+        let natural_end = glyphs.peek().map(|(_, next)| next.position.x).unwrap_or(natural_width);
+        let glyph_width = f32::from(natural_end - glyph.position.x).max(0.0);
+        let centered_offset = centered_glyph_offset(ASCII_CELL_WIDTH, glyph_width);
+
+        while entry_idx < entries.len() && glyph.index >= entries[entry_idx].text_byte_end {
+            entry_idx += 1;
+        }
+
+        if entry_idx < entries.len()
+            && entries[entry_idx].text_byte_start <= glyph.index
+            && glyph.index < entries[entry_idx].text_byte_end
+        {
+            let cell_idx = entries[entry_idx].cell_idx;
+            let glyph_origin = point(origin.x + px(cell_idx as f32 * ASCII_CELL_WIDTH + centered_offset), origin.y) + baseline_offset;
+            let color = entries[entry_idx].color;
+            if glyph.is_emoji {
+                let _ = window.paint_emoji(glyph_origin, font_id, glyph.id, shaped.font_size);
+            } else {
+                let _ = window.paint_glyph(glyph_origin, font_id, glyph.id, shaped.font_size, color);
+            }
+        }
+    }
+}
+
 #[inline]
 fn format_offset_08(offset: usize) -> SharedString {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -1288,11 +1340,7 @@ impl HexView {
         let highlights_guard = editor.highlights.read().expect("highlights read lock");
         let highlights = &*highlights_guard;
         let mut start_idx = highlights.partition_point(|highlight| highlight.offset < scan_range.start);
-        if start_idx > 0 {
-            // Include the item immediately before the range because a comment
-            // beginning on the previous row can continue into the viewport.
-            start_idx -= 1;
-        }
+        start_idx = start_idx.saturating_sub(1);
         let end_idx = highlights.partition_point(|highlight| highlight.offset < scan_range.end);
 
         use std::collections::HashMap;
@@ -1319,7 +1367,7 @@ impl HexView {
         let scan_range = self.auto_fit_scan_range(cx);
         let editor = self.editor.read(cx);
         let char_w = f32::from(self.font_size_prop) * 0.61;
-        let max_content_w = Self::comment_content_width_in_range(&editor, &scan_range, char_w);
+        let max_content_w = Self::comment_content_width_in_range(editor, &scan_range, char_w);
         self.cached_comment_content_width.set(Some(max_content_w));
         let max_w = (max_content_w + 32.0).max(self.comment_col_width);
         (max_w - self.comment_col_width).max(0.0)
@@ -1487,7 +1535,7 @@ impl HexView {
                 let scan_range = self.auto_fit_scan_range(cx);
                 let editor = self.editor.read(cx);
                 let char_w = f32::from(self.font_size_prop) * 0.61;
-                let max_content_w = Self::comment_content_width_in_range(&editor, &scan_range, char_w);
+                let max_content_w = Self::comment_content_width_in_range(editor, &scan_range, char_w);
                 self.cached_comment_content_width.set(Some(max_content_w));
                 self.comment_col_width = if max_content_w > 0.0 {
                     (max_content_w + 24.0).max(COMMENT_WIDTH)
@@ -2804,27 +2852,46 @@ impl HexView {
                             }
                         }
 
-                        // Paint each glyph centered in its fixed byte cell.
-                        // Shaping remains one character at a time, as before;
-                        // only the already-known glyph position is adjusted.
+                        // Paint each glyph centered in its fixed byte cell using batched line shaping.
+                        let mut ascii_text = String::with_capacity(chunk.len());
+                        let mut ascii_runs: Vec<gpui::TextRun> = Vec::with_capacity(chunk.len());
+                        let mut ascii_entries: Vec<AsciiCellEntry> = Vec::with_capacity(chunk.len());
+
                         for (j, opt) in char_map.into_iter().enumerate() {
-                            let c = if let Some((c, _)) = opt { c } else { continue };
+                            let (c, _) = if let Some(pair) = opt { pair } else { continue };
                             let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
                             let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
 
-                            let ch_str = c.to_string();
-                            let ascii_run = gpui::TextRun {
-                                len: ch_str.len(),
+                            let text_byte_start = ascii_text.len();
+                            ascii_text.push(c);
+                            let text_byte_end = ascii_text.len();
+
+                            ascii_runs.push(gpui::TextRun {
+                                len: text_byte_end - text_byte_start,
                                 font: font.clone(),
                                 color: text_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
-                            };
-                            let shaped = window.text_system().shape_line(ch_str.into(), font_size, &[ascii_run], None);
-                            let glyph_offset = centered_glyph_offset(ASCII_CELL_WIDTH, f32::from(shaped.width));
-                            let ascii_pos = point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH + glyph_offset), bounds.top() + px(2.0));
-                            let _ = shaped.paint(ascii_pos, line_height, window, cx);
+                            });
+
+                            ascii_entries.push(AsciiCellEntry {
+                                cell_idx: j,
+                                text_byte_start,
+                                text_byte_end,
+                                color: text_color,
+                            });
+                        }
+
+                        if !ascii_text.is_empty() {
+                            let shaped = window.text_system().shape_line(SharedString::from(ascii_text), font_size, &ascii_runs, None);
+                            paint_centered_ascii_glyphs(
+                                &shaped,
+                                &ascii_entries,
+                                point(ascii_content_start_x, bounds.top() + px(2.0)),
+                                line_height,
+                                window,
+                            );
                         }
 
                         // Edge fades when the ASCII row is horizontally scrolled or clipped.
@@ -2859,7 +2926,7 @@ impl HexView {
         }
 
         // 4. Description Column (when structure definition is present)
-        if let Some(ref parse_res) = parse_result {
+        if let Some(parse_res) = parse_result {
             let desc_start_x = hex_end_x + px(SECTION_GAP);
             let desc_end_x = desc_start_x + px(desc_col_width);
 
@@ -3158,8 +3225,14 @@ impl Render for HexView {
             self.hex_cell_width = f32::from(measured);
             measured
         };
-        let probe_bytes = vec![0u8; items_in_row * group_bytes];
-        let probe_source = build_hex_text_source(&probe_bytes, 0, self.radix, self.group_size, self.is_big_endian);
+        const ZERO_BUFFER: [u8; 512] = [0u8; 512];
+        let probe_len = items_in_row * group_bytes;
+        let probe_source = if probe_len <= ZERO_BUFFER.len() {
+            build_hex_text_source(&ZERO_BUFFER[..probe_len], 0, self.radix, self.group_size, self.is_big_endian)
+        } else {
+            let probe_bytes = vec![0u8; probe_len];
+            build_hex_text_source(&probe_bytes, 0, self.radix, self.group_size, self.is_big_endian)
+        };
         let total_data_width = f32::from(hex_grid_width(probe_source.text.len(), hex_cell_width));
         self.hex_content_width = total_data_width;
         if self.hex_col_width <= 0.0 {

@@ -229,15 +229,13 @@ impl EditorPanel {
             editor
         });
 
-        let new_editor_panel = cx.new(|cx| {
+        cx.new(|cx| {
             let panel = EditorPanel::new(new_editor, window, cx);
             panel.hex_view.update(cx, |hv, _| {
                 hv.apply_layout_state(&layout_state);
             });
             panel
-        });
-
-        new_editor_panel
+        })
     }
 
     pub fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {

@@ -106,7 +106,7 @@ impl ChecksumPanel {
         let (range, data) = {
             let editor = editor_entity.read(cx);
             let selected_range = if self.calculation_range == CalculationRange::Selection {
-                selected_range_for_checksum(&editor)
+                selected_range_for_checksum(editor)
             } else {
                 None
             };
@@ -260,7 +260,7 @@ impl Render for ChecksumPanel {
             info_text = format!("File Size: {} bytes", total_len);
 
             let range = match self.calculation_range {
-                CalculationRange::Selection => selected_range_for_checksum(&editor).unwrap_or(editor.cursor_offset..editor.cursor_offset),
+                CalculationRange::Selection => selected_range_for_checksum(editor).unwrap_or(editor.cursor_offset..editor.cursor_offset),
                 CalculationRange::EntireFile => 0..total_len,
             };
             data_len = range.len();

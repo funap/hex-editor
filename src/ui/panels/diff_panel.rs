@@ -49,12 +49,12 @@ impl DiffPanel {
         let right_editor = cx.new(|_cx| Editor::new(right_document.clone()));
         let appearance = cx.global::<Appearance>().clone();
         let left_view = cx.new(|cx| {
-            HexView::new(left_editor, cx)
+            HexView::new(left_editor, window, cx)
                 .font_family(appearance.font_family.clone())
                 .font_size(px(appearance.font_size))
         });
         let right_view = cx.new(|cx| {
-            HexView::new(right_editor, cx)
+            HexView::new(right_editor, window, cx)
                 .font_family(appearance.font_family.clone())
                 .font_size(px(appearance.font_size))
         });

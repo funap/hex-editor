@@ -2,7 +2,6 @@ use crate::core::appearance::Appearance;
 use gpui::prelude::*;
 use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div};
 use gpui_component::{
-    ActiveTheme,
     dock::{Panel, PanelEvent},
     input::{self, Input, InputState},
 };

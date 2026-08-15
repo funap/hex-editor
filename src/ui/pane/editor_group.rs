@@ -84,6 +84,11 @@ impl EditorGroup {
                 cx.emit(EditorGroupEvent::TabChanged);
             }
             cx.emit(EditorGroupEvent::Focused);
+            cx.notify();
+        })
+        .detach();
+        cx.on_focus_out(&tab.focus_handle(cx), window, move |_this, _window, _event, cx| {
+            cx.notify();
         })
         .detach();
 
@@ -106,6 +111,11 @@ impl EditorGroup {
                 cx.emit(EditorGroupEvent::TabChanged);
             }
             cx.emit(EditorGroupEvent::Focused);
+            cx.notify();
+        })
+        .detach();
+        cx.on_focus_out(&tab.focus_handle(cx), window, move |_this, _window, _event, cx| {
+            cx.notify();
         })
         .detach();
 
@@ -145,6 +155,7 @@ impl EditorGroup {
             if let Some(tab) = self.tabs.get(index) {
                 tab.focus_handle(cx).focus(window);
             }
+            cx.emit(EditorGroupEvent::Focused);
             cx.emit(EditorGroupEvent::TabChanged);
             cx.notify();
         }
@@ -263,7 +274,7 @@ impl Focusable for EditorGroup {
 }
 
 impl Render for EditorGroup {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tab_bar_bg = theme.tab_bar;
         let group_id = self.id;
@@ -315,9 +326,13 @@ impl Render for EditorGroup {
                                 let is_dirty = tab.is_dirty(cx);
                                 let title = tab.title(cx);
                                 let title_for_drag = title.clone();
+                                let tab_focus_handle = tab.focus_handle(cx);
+                                let is_tab_focused = is_active && (tab_focus_handle.is_focused(window) || tab_focus_handle.contains_focused(window, cx));
 
                                 div()
                                     .id(ElementId::NamedInteger("tab-item".into(), tab_id as u64))
+                                    .track_focus(&tab_focus_handle)
+                                    .relative()
                                     .flex()
                                     .flex_row()
                                     .items_center()
@@ -337,6 +352,9 @@ impl Render for EditorGroup {
                                         s.bg(tab_bar_bg)
                                             .text_color(theme.muted_foreground)
                                             .hover(|style| style.bg(theme.accent.opacity(0.12)))
+                                    })
+                                    .when(is_tab_focused, |s| {
+                                        s.child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(theme.primary))
                                     })
                                     .on_mouse_down(
                                         MouseButton::Left,

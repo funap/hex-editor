@@ -65,7 +65,7 @@ impl EditorPanel {
         let focus_handle = cx.focus_handle();
         let appearance = cx.global::<Appearance>().clone();
         let hex_view = cx.new(|cx| {
-            HexView::new(editor.clone(), cx)
+            HexView::new(editor.clone(), window, cx)
                 .font_family(appearance.font_family.clone())
                 .font_size(px(appearance.font_size))
         });

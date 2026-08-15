@@ -86,13 +86,23 @@ impl EventEmitter<HexViewEvent> for HexView {}
 
 #[allow(dead_code)]
 impl HexView {
-    pub fn new(editor: Entity<Editor>, cx: &mut Context<Self>) -> Self {
+    pub fn new(editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (radix, group_size, is_big_endian, encoding) = {
             let ed = editor.read(cx);
             (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
         };
         let font_size_prop = px(14.0);
         let hex_col_width = 0.0;
+        let focus_handle = cx.focus_handle();
+
+        cx.on_focus_in(&focus_handle, window, |_this, _, cx| {
+            cx.notify();
+        })
+        .detach();
+        cx.on_focus_out(&focus_handle, window, |_this, _, _, cx| {
+            cx.notify();
+        })
+        .detach();
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
             this.cached_comment_content_width.set(None);
@@ -126,7 +136,7 @@ impl HexView {
 
         Self {
             editor,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             scroll_offset: 0,
             accum_scroll_y: 0.0,
             outer_scroll_x: 0.0,

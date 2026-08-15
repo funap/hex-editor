@@ -42,6 +42,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
 
             div()
                 .id(ElementId::NamedInteger("zed-tab".into(), tab_id as u64))
+                .relative()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -55,7 +56,10 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 .border_r_1()
                 .border_color(theme.border)
                 .when(is_active, |s| {
-                    s.bg(theme.background).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
+                    s.bg(theme.background)
+                        .text_color(theme.foreground)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(theme.accent))
                 })
                 .when(!is_active, |s| {
                     s.bg(tab_bar_bg)

@@ -25,23 +25,20 @@ const CONTEXT: &str = "EditorPanel";
 pub fn init(cx: &mut App) {
     // Initialize HexView actions and keybindings
     hex_view::init(cx);
-    #[cfg(target_os = "macos")]
     cx.bind_keys([
-        KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),
-        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
-    ]);
-    #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
         KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
     ]);
 }

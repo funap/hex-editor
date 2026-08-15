@@ -155,7 +155,7 @@ pub fn reveal_in_file_explorer(path: &std::path::Path) {
     {
         let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let parent = path.parent().unwrap_or(path);
         let _ = std::process::Command::new("xdg-open").arg(parent).spawn();

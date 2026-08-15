@@ -6,8 +6,8 @@ pub struct Appearance {
     pub font_size: f32,
 }
 
-impl Appearance {
-    pub fn default() -> Self {
+impl Default for Appearance {
+    fn default() -> Self {
         let font_family = if cfg!(target_os = "macos") {
             "Menlo"
         } else if cfg!(target_os = "windows") {
@@ -22,6 +22,8 @@ impl Appearance {
         }
     }
 }
+
+impl gpui::Global for Appearance {}
 
 #[cfg(test)]
 mod tests {

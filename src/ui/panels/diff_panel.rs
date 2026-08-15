@@ -15,17 +15,12 @@ use crate::ui::components::hex_view::{HexView, HexViewEvent, HorizontalScrollTar
 const CONTEXT: &str = "DiffPanel";
 
 pub fn init(cx: &mut App) {
-    #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("f3", NextDifference, Some(CONTEXT)),
         KeyBinding::new("shift-f3", PrevDifference, Some(CONTEXT)),
-        KeyBinding::new("ctrl-l", ToggleSyncScroll, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-l", ToggleSyncScroll, Some(CONTEXT)),
-    ]);
-    #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([
-        KeyBinding::new("f3", NextDifference, Some(CONTEXT)),
-        KeyBinding::new("shift-f3", PrevDifference, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-l", ToggleSyncScroll, Some(CONTEXT)),
     ]);
 }

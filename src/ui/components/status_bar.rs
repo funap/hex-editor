@@ -11,17 +11,28 @@ pub enum StatusBarEvent {
 
 pub struct StatusBar {
     active_editor: Option<WeakEntity<Editor>>,
+    editor_subscription: Option<Subscription>,
 }
 
 impl EventEmitter<StatusBarEvent> for StatusBar {}
 
 impl StatusBar {
     pub fn new(_cx: &mut Context<Self>) -> Self {
-        Self { active_editor: None }
+        Self {
+            active_editor: None,
+            editor_subscription: None,
+        }
     }
 
-    pub fn set_active_editor(&mut self, editor: Option<Entity<Editor>>) {
-        self.active_editor = editor.map(|e| e.downgrade());
+    pub fn set_active_editor(&mut self, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) {
+        self.editor_subscription = None;
+        self.active_editor = editor.as_ref().map(|e| e.downgrade());
+        if let Some(editor) = editor {
+            self.editor_subscription = Some(cx.observe(&editor, |_, _, cx| {
+                cx.notify();
+            }));
+        }
+        cx.notify();
     }
 }
 
@@ -121,7 +132,7 @@ impl Render for StatusBar {
             false
         };
 
-        let (is_parsing, parse_offset, parse_total, parse_result_info) = if let Some(editor) = &active_editor {
+        let (is_parsing, is_finalizing, parse_offset, parse_total, parse_result_info) = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
             let parse_info = editor
                 .parse_result()
@@ -131,9 +142,15 @@ impl Render for StatusBar {
             } else {
                 editor.total_size()
             };
-            (editor.is_parsing_structure, editor.parse_progress_offset, total, parse_info)
+            (
+                editor.is_parsing_structure,
+                editor.is_finalizing_structure,
+                editor.parse_progress_offset,
+                total,
+                parse_info,
+            )
         } else {
-            (false, 0, 0, None)
+            (false, false, 0, 0, None)
         };
 
         let format_badge_info = if let Some(editor) = &active_editor {
@@ -220,7 +237,7 @@ impl Render for StatusBar {
                                             .bg(theme.blue.opacity(0.2))
                                             .text_color(theme.blue)
                                             .font_bold()
-                                            .child("Parsing..."),
+                                            .child(if is_finalizing { "Finalizing layout..." } else { "Parsing..." }),
                                     )
                                     .child(
                                         div()

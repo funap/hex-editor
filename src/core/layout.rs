@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub const BYTES_PER_ROW: usize = 16;
@@ -200,6 +201,194 @@ impl LineMap {
             LineMap::Sparse(sparse) => sparse.max_bytes_per_row,
         }
     }
+}
+
+/// Builds a line map when the layout and break events are already sorted and
+/// deduplicated. The default expanded structure layout uses the same boundary
+/// list for both event streams, so this avoids a second allocation and sort.
+pub fn build_line_map_from_sorted_events(total_size: usize, events: &[usize], custom_joins: &BTreeSet<usize>, empty_lines: &BTreeMap<usize, usize>) -> LineMap {
+    if events.is_empty() && custom_joins.is_empty() && empty_lines.is_empty() {
+        return LineMap::Standard { total_size };
+    }
+
+    build_line_map_from_sorted_event_lists(total_size, events, events, custom_joins, empty_lines)
+}
+
+fn build_line_map_from_sorted_event_lists(
+    total_size: usize,
+    layout_events: &[usize],
+    break_events: &[usize],
+    custom_joins: &BTreeSet<usize>,
+    empty_lines: &BTreeMap<usize, usize>,
+) -> LineMap {
+    let mut segments = Vec::new();
+
+    if total_size == 0 {
+        segments.push(LayoutSegment {
+            start_offset: 0,
+            start_line: 0,
+            byte_len: 0,
+            line_count: 1,
+            kind: SegmentKind::Custom { starts: Arc::new(vec![0]) },
+        });
+    } else {
+        let mut current = 0;
+        let mut current_line = 0;
+        let mut event_idx = 0;
+        let mut break_idx = 0;
+
+        while current < total_size {
+            // Find next event > current.
+            while event_idx < layout_events.len() && layout_events[event_idx] <= current {
+                event_idx += 1;
+            }
+            let next_event = if event_idx < layout_events.len() {
+                Some(layout_events[event_idx])
+            } else {
+                None
+            };
+
+            match next_event {
+                Some(ev) if ev - current > BYTES_PER_ROW => {
+                    // We can fit one or more standard lines of BYTES_PER_ROW.
+                    let n = (ev - current - 1) / BYTES_PER_ROW;
+                    if n > 0 {
+                        let len_bytes = n * BYTES_PER_ROW;
+                        segments.push(LayoutSegment {
+                            start_offset: current,
+                            start_line: current_line,
+                            byte_len: len_bytes,
+                            line_count: n,
+                            kind: SegmentKind::Standard,
+                        });
+                        current += len_bytes;
+                        current_line += n;
+                        continue;
+                    }
+                }
+                None if total_size - current >= BYTES_PER_ROW => {
+                    // No more events, and we have at least one full standard line remaining.
+                    let remaining_bytes = total_size - current;
+                    let n = remaining_bytes / BYTES_PER_ROW;
+                    let len_bytes = n * BYTES_PER_ROW;
+                    segments.push(LayoutSegment {
+                        start_offset: current,
+                        start_line: current_line,
+                        byte_len: len_bytes,
+                        line_count: n,
+                        kind: SegmentKind::Standard,
+                    });
+                    current += len_bytes;
+                    current_line += n;
+                    continue;
+                }
+                _ => {}
+            }
+
+            // Otherwise, we are too close to an event or at the end of the file.
+            // Generate a custom segment using localized layout logic.
+            let mut starts = Vec::new();
+            let start_offset = current;
+            let start_line = current_line;
+
+            while current < total_size {
+                // Check if we can transition back to Standard mode.
+                if !starts.is_empty() {
+                    while event_idx < layout_events.len() && layout_events[event_idx] < current {
+                        event_idx += 1;
+                    }
+                    let next_ev = if event_idx < layout_events.len() {
+                        Some(layout_events[event_idx])
+                    } else {
+                        None
+                    };
+
+                    let can_transition = match next_ev {
+                        Some(ev) => ev - current > BYTES_PER_ROW,
+                        None => total_size - current >= BYTES_PER_ROW,
+                    };
+
+                    if can_transition {
+                        break;
+                    }
+                }
+
+                // Process empty lines at current.
+                if let Some(&count) = empty_lines.get(&current) {
+                    for _ in 0..count {
+                        starts.push(current);
+                    }
+                }
+
+                starts.push(current);
+
+                // Find the next event break after current (includes structure
+                // field breaks and custom breaks) in O(1) amortized time.
+                while break_idx < break_events.len() && break_events[break_idx] <= current {
+                    break_idx += 1;
+                }
+                let next_event_break = break_events.get(break_idx).copied();
+
+                // Advance in BYTES_PER_ROW increments, skipping joined boundaries.
+                let mut next_pos = current + BYTES_PER_ROW;
+                while custom_joins.contains(&next_pos) && next_pos < total_size {
+                    next_pos += BYTES_PER_ROW;
+                }
+
+                match next_event_break {
+                    Some(break_pos) if break_pos < next_pos && break_pos > current => {
+                        current = break_pos;
+                    }
+                    _ => {
+                        current = next_pos;
+                    }
+                }
+            }
+
+            let line_count = starts.len();
+            let byte_len = current - start_offset;
+
+            segments.push(LayoutSegment {
+                start_offset,
+                start_line,
+                byte_len,
+                line_count,
+                kind: SegmentKind::Custom { starts: Arc::new(starts) },
+            });
+            current_line += line_count;
+        }
+    }
+
+    // Compute max_bytes_per_row and total_lines once from the compact segments.
+    let mut max_bytes_per_row = BYTES_PER_ROW;
+    let mut total_lines = 0;
+    for i in 0..segments.len() {
+        let segment = &segments[i];
+        total_lines += segment.line_count;
+        match &segment.kind {
+            SegmentKind::Standard => {
+                if i + 1 == segments.len() {
+                    let last_line_start = segment.start_offset + (segment.line_count - 1) * BYTES_PER_ROW;
+                    let last_line_len = total_size - last_line_start;
+                    max_bytes_per_row = max_bytes_per_row.max(last_line_len);
+                }
+            }
+            SegmentKind::Custom { starts } => {
+                let next_start_offset = if i + 1 < segments.len() { segments[i + 1].start_offset } else { total_size };
+                for j in 0..segment.line_count {
+                    let end = if j + 1 < segment.line_count { starts[j + 1] } else { next_start_offset };
+                    max_bytes_per_row = max_bytes_per_row.max(end.saturating_sub(starts[j]));
+                }
+            }
+        }
+    }
+
+    LineMap::Sparse(Arc::new(SparseLineMap {
+        segments,
+        total_lines,
+        total_size,
+        max_bytes_per_row,
+    }))
 }
 
 #[cfg(test)]

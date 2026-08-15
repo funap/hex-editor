@@ -65,16 +65,22 @@ fn build_file_items(ignorer: &Ignorer, root: &PathBuf, path: &PathBuf) -> Vec<Tr
     items
 }
 
-fn update_item_children_recursive(items: &mut [TreeItem], target_id: &str, children: Vec<TreeItem>) -> bool {
-    for item in items.iter_mut() {
-        if item.id == target_id {
-            item.children = children;
-            return true;
-        }
-        if item.is_folder() && update_item_children_recursive(&mut item.children, target_id, children.clone()) {
-            return true;
+fn update_item_children(items: &mut [TreeItem], target_id: &str, children: Vec<TreeItem>) -> bool {
+    let mut pending = vec![items];
+    let mut replacement = Some(children);
+
+    while let Some(items) = pending.pop() {
+        for item in items.iter_mut() {
+            if item.id == target_id {
+                item.children = replacement.take().expect("tree child replacement must be available");
+                return true;
+            }
+            if item.is_folder() {
+                pending.push(item.children.as_mut_slice());
+            }
         }
     }
+
     false
 }
 
@@ -143,7 +149,7 @@ impl FileTreeView {
                         let children = build_file_items(&ignorer, &root_path, &PathBuf::from(&item_id_clone));
 
                         view.update(&mut cx, |this, cx| {
-                            if update_item_children_recursive(&mut this.items, &item_id_clone, children) {
+                            if update_item_children(&mut this.items, &item_id_clone, children) {
                                 this.tree_state.update(cx, |state, cx| {
                                     state.set_items(this.items.clone(), cx);
                                 });
@@ -288,10 +294,11 @@ impl FileTreeView {
     }
 
     fn collect_visible_items(items: &[TreeItem], visible_items: &mut Vec<TreeItem>) {
-        for item in items {
+        let mut pending: Vec<&TreeItem> = items.iter().rev().collect();
+        while let Some(item) = pending.pop() {
             visible_items.push(item.clone());
             if item.is_expanded() {
-                Self::collect_visible_items(&item.children, visible_items);
+                pending.extend(item.children.iter().rev());
             }
         }
     }

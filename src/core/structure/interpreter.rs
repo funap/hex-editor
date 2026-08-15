@@ -2,8 +2,9 @@ use crate::core::structure::definition::*;
 use crate::core::structure::expression::{EvalContext, ExprEvaluator};
 use crate::core::structure::palette;
 use crate::core::structure::stream::*;
-use crate::core::structure::types::{FieldValue, ParseError, ParseProgress, ParseResult, ParsedField};
+use crate::core::structure::types::{FieldCollection, FieldValue, ParseError, ParseProgress, ParseResult, ParsedField, StructureIndexBuilder};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub struct TypeScope<'a> {
@@ -26,21 +27,23 @@ impl<'a> TypeScope<'a> {
     }
 
     pub fn get_type(&self, name: &str) -> Option<&'a KsyType> {
-        if let Some(t) = self.types.get(name) {
-            return Some(t);
-        }
-        if let Some(parent) = self.parent {
-            return parent.get_type(name);
+        let mut scope = Some(self);
+        while let Some(current) = scope {
+            if let Some(type_def) = current.types.get(name) {
+                return Some(type_def);
+            }
+            scope = current.parent;
         }
         None
     }
 
     pub fn get_enum(&self, name: &str) -> Option<&'a HashMap<String, serde_yaml::Value>> {
-        if let Some(e) = self.enums.get(name) {
-            return Some(e);
-        }
-        if let Some(parent) = self.parent {
-            return parent.get_enum(name);
+        let mut scope = Some(self);
+        while let Some(current) = scope {
+            if let Some(enum_def) = current.enums.get(name) {
+                return Some(enum_def);
+            }
+            scope = current.parent;
         }
         None
     }
@@ -62,6 +65,15 @@ pub struct KaitaiInterpreter {
 }
 
 const MAX_RECURSION: usize = 64;
+const MAX_PROGRESS_FIELDS: usize = 512;
+
+fn into_field_chunk(fields: Vec<ParsedField>) -> Arc<[ParsedField]> {
+    Arc::from(fields.into_boxed_slice())
+}
+
+fn empty_field_chunk() -> Arc<[ParsedField]> {
+    Arc::from(Vec::<ParsedField>::new().into_boxed_slice())
+}
 
 /// Helper: extract a simple type string from serde_yaml::Value
 fn type_as_str(val: &serde_yaml::Value) -> Option<String> {
@@ -177,15 +189,17 @@ fn collect_enums(ksy: &KsyDefinition) -> HashMap<String, HashMap<String, String>
     for (name, raw) in &ksy.enums {
         all.insert(name.clone(), normalize_enum(raw));
     }
-    fn collect_type_enums(types: &HashMap<String, KsyType>, out: &mut HashMap<String, HashMap<String, String>>) {
-        for t in types.values() {
-            for (ename, raw) in &t.enums {
-                out.insert(ename.clone(), normalize_enum(raw));
+
+    let mut pending = vec![&ksy.types];
+    while let Some(types) = pending.pop() {
+        for type_def in types.values() {
+            for (ename, raw) in &type_def.enums {
+                all.insert(ename.clone(), normalize_enum(raw));
             }
-            collect_type_enums(&t.types, out);
+            pending.push(&type_def.types);
         }
     }
-    collect_type_enums(&ksy.types, &mut all);
+
     all
 }
 
@@ -212,21 +226,35 @@ impl KaitaiInterpreter {
     }
 
     pub fn parse(self, stream: &mut KaitaiStream) -> ParseResult {
-        self.parse_with_progress(stream, |_| {})
+        self.parse_with_progress_cancellable_impl(stream, None, |_| {}, false)
     }
 
+    #[allow(dead_code)]
     pub fn parse_with_progress<F>(self, stream: &mut KaitaiStream, on_progress: F) -> ParseResult
     where
         F: FnMut(&ParseProgress),
     {
-        self.parse_with_progress_cancellable(stream, None, on_progress)
+        self.parse_with_progress_cancellable_impl(stream, None, on_progress, true)
     }
 
     pub fn parse_with_progress_cancellable<F>(
+        self,
+        stream: &mut KaitaiStream,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+        on_progress: F,
+    ) -> ParseResult
+    where
+        F: FnMut(&ParseProgress),
+    {
+        self.parse_with_progress_cancellable_impl(stream, cancel_token, on_progress, true)
+    }
+
+    fn parse_with_progress_cancellable_impl<F>(
         mut self,
         stream: &mut KaitaiStream,
         cancel_token: Option<&std::sync::atomic::AtomicBool>,
         mut on_progress: F,
+        prepare_display_layout: bool,
     ) -> ParseResult
     where
         F: FnMut(&ParseProgress),
@@ -242,14 +270,17 @@ impl KaitaiInterpreter {
 
         let mut last_notify_time = std::time::Instant::now();
         let mut last_notify_offset = 0usize;
+        let mut pending_fields = Vec::new();
+        let mut index_builder = prepare_display_layout.then(StructureIndexBuilder::new);
 
         // Initial progress notification
         on_progress(&ParseProgress {
             definition_id: def_id.clone(),
-            fields: Vec::new(),
+            fields: empty_field_chunk(),
             parsed_offset: stream.pos() as usize,
             total_bytes,
             is_done: false,
+            is_finalizing: false,
             errors: Vec::new(),
             parse_result: None,
         });
@@ -260,18 +291,30 @@ impl KaitaiInterpreter {
             {
                 break;
             }
-            let parsed = self.parse_attr_repeated_cb_cancellable(attr, stream, root_scope, false, cancel_token, &mut |_items, current_offset| {
+            let parsed = self.parse_attr_repeated_cb_cancellable(attr, stream, root_scope, false, cancel_token, &mut |items, current_offset| {
+                if let Some(field) = items.last() {
+                    if let Some(index_builder) = index_builder.as_mut() {
+                        index_builder.add_field(field);
+                    }
+                    if prepare_display_layout {
+                        pending_fields.push(field.clone());
+                    }
+                }
                 let now = std::time::Instant::now();
-                if now.duration_since(last_notify_time).as_millis() >= 50 || current_offset.saturating_sub(last_notify_offset) >= 65536 {
+                if now.duration_since(last_notify_time).as_millis() >= 50
+                    || current_offset.saturating_sub(last_notify_offset) >= 65536
+                    || pending_fields.len() >= MAX_PROGRESS_FIELDS
+                {
                     last_notify_time = now;
                     last_notify_offset = current_offset;
 
                     on_progress(&ParseProgress {
                         definition_id: def_id.clone(),
-                        fields: Vec::new(),
+                        fields: into_field_chunk(std::mem::take(&mut pending_fields)),
                         parsed_offset: current_offset,
                         total_bytes,
                         is_done: false,
+                        is_finalizing: false,
                         errors: Vec::new(),
                         parse_result: None,
                     });
@@ -279,18 +322,18 @@ impl KaitaiInterpreter {
             });
             fields.extend(parsed);
 
-            let now = std::time::Instant::now();
             let cur_pos = stream.pos() as usize;
-            if now.duration_since(last_notify_time).as_millis() >= 50 || cur_pos.saturating_sub(last_notify_offset) >= 65536 {
-                last_notify_time = now;
+            if !pending_fields.is_empty() {
+                last_notify_time = std::time::Instant::now();
                 last_notify_offset = cur_pos;
 
                 on_progress(&ParseProgress {
                     definition_id: def_id.clone(),
-                    fields: Vec::new(),
+                    fields: into_field_chunk(std::mem::take(&mut pending_fields)),
                     parsed_offset: cur_pos,
                     total_bytes,
                     is_done: false,
+                    is_finalizing: false,
                     errors: Vec::new(),
                     parse_result: None,
                 });
@@ -306,38 +349,91 @@ impl KaitaiInterpreter {
             if attr.pos.is_some() || attr.value.is_some() {
                 let mut inst_attr = attr.clone();
                 inst_attr.id = Some(id.clone());
-                let parsed = self.parse_attr_repeated_cb_cancellable(&inst_attr, stream, root_scope, true, cancel_token, &mut |_items, current_offset| {
+                let parsed = self.parse_attr_repeated_cb_cancellable(&inst_attr, stream, root_scope, true, cancel_token, &mut |items, current_offset| {
+                    if let Some(field) = items.last() {
+                        if let Some(index_builder) = index_builder.as_mut() {
+                            index_builder.add_field(field);
+                        }
+                        if prepare_display_layout {
+                            pending_fields.push(field.clone());
+                        }
+                    }
                     let now = std::time::Instant::now();
-                    if now.duration_since(last_notify_time).as_millis() >= 50 || current_offset.saturating_sub(last_notify_offset) >= 65536 {
+                    if now.duration_since(last_notify_time).as_millis() >= 50
+                        || current_offset.saturating_sub(last_notify_offset) >= 65536
+                        || pending_fields.len() >= MAX_PROGRESS_FIELDS
+                    {
                         last_notify_time = now;
                         last_notify_offset = current_offset;
 
                         on_progress(&ParseProgress {
                             definition_id: def_id.clone(),
-                            fields: Vec::new(),
+                            fields: into_field_chunk(std::mem::take(&mut pending_fields)),
                             parsed_offset: current_offset,
                             total_bytes,
                             is_done: false,
+                            is_finalizing: false,
                             errors: Vec::new(),
                             parse_result: None,
                         });
                     }
                 });
                 fields.extend(parsed);
+
+                if !pending_fields.is_empty() {
+                    last_notify_time = std::time::Instant::now();
+                    last_notify_offset = stream.pos() as usize;
+                    on_progress(&ParseProgress {
+                        definition_id: def_id.clone(),
+                        fields: into_field_chunk(std::mem::take(&mut pending_fields)),
+                        parsed_offset: last_notify_offset,
+                        total_bytes,
+                        is_done: false,
+                        is_finalizing: false,
+                        errors: Vec::new(),
+                        parse_result: None,
+                    });
+                }
             }
         }
 
         let final_offset = stream.pos() as usize;
         let final_errors = self.errors.into_inner();
-        let final_result = ParseResult::new(def_id.clone(), fields, final_offset, final_errors.clone());
+        if prepare_display_layout {
+            // Let the UI show 100% while the final index and default line map
+            // are prepared on the parser thread. The receiver treats this as
+            // a separate phase and does not coalesce it with the final result.
+            on_progress(&ParseProgress {
+                definition_id: def_id.clone(),
+                fields: empty_field_chunk(),
+                parsed_offset: final_offset,
+                total_bytes,
+                is_done: false,
+                is_finalizing: true,
+                errors: final_errors.clone(),
+                parse_result: None,
+            });
+        }
+
+        let final_result = if prepare_display_layout {
+            let fields = FieldCollection::from_vec(fields);
+            let index = index_builder
+                .take()
+                .expect("display-layout parsing must initialize a structure index builder")
+                .finish();
+            ParseResult::new_with_index(def_id.clone(), fields, final_offset, final_errors.clone(), index).with_structure_line_map(total_bytes)
+        } else {
+            ParseResult::new(def_id.clone(), fields, final_offset, final_errors.clone())
+        };
         let final_result_arc = std::sync::Arc::new(final_result.clone());
 
         on_progress(&ParseProgress {
             definition_id: def_id.clone(),
-            fields: Vec::new(),
+            fields: empty_field_chunk(),
             parsed_offset: final_offset,
             total_bytes,
             is_done: true,
+            is_finalizing: false,
             errors: final_errors.clone(),
             parse_result: Some(final_result_arc),
         });
@@ -527,7 +623,7 @@ impl KaitaiInterpreter {
         }
 
         let start_offset = if attr.pos.is_some() {
-            self.resolve_size(&attr.pos, stream)?
+            self.resolve_pos(attr, stream)?
         } else {
             stream.pos() as usize
         };
@@ -956,10 +1052,10 @@ impl KaitaiInterpreter {
         let res = (|| {
             if use_substream {
                 let sub_size = if attr.size_eos { self.remaining_bytes(stream) } else { size_val.unwrap_or(0) };
-                let sub_data = stream.read_bytes(sub_size)?;
-
-                // Construct nested stream using the sub_data slice
-                let mut sub_stream = KaitaiStream::new(&sub_data);
+                // Construct a bounded nested stream over the original bytes.
+                // The parent cursor is advanced by `take_substream`, so this
+                // avoids copying every size-bounded custom type.
+                let mut sub_stream = stream.take_substream(sub_size)?;
 
                 let old_stream_size = self.stream_size;
                 self.stream_size = sub_size;
@@ -1015,14 +1111,14 @@ impl KaitaiInterpreter {
                 stream.set_pos(new_pos);
                 self.stream_size = old_stream_size;
                 // Adjust offsets from substream-relative to absolute file offsets
-                fn adjust_offsets(fields: &mut Vec<ParsedField>, base: usize) {
-                    for f in fields {
-                        f.offset += base;
-                        adjust_offsets(&mut f.children, base);
+                let mut fields_adj = fields;
+                let mut pending = fields_adj.iter_mut().map(|field| (field, start_offset)).collect::<Vec<_>>();
+                while let Some((field, base)) = pending.pop() {
+                    field.offset += base;
+                    for child in &mut field.children {
+                        pending.push((child, base));
                     }
                 }
-                let mut fields_adj = fields;
-                adjust_offsets(&mut fields_adj, start_offset);
                 Some(fields_adj)
             } else {
                 // Pre-evaluate pos-based instances before seq
@@ -1130,6 +1226,16 @@ impl KaitaiInterpreter {
             Some(if val < 0 { 0 } else { val as usize })
         } else {
             self.resolve_size(&attr.size, stream)
+        }
+    }
+
+    fn resolve_pos(&self, attr: &KsyAttr, stream: &KaitaiStream) -> Option<usize> {
+        if let Some(ref ast) = attr.compiled_pos {
+            let ctx = self.make_eval_ctx(stream);
+            let val = ExprEvaluator::eval_ast_i64(ast, &ctx);
+            Some(if val < 0 { 0 } else { val as usize })
+        } else {
+            self.resolve_size(&attr.pos, stream)
         }
     }
 

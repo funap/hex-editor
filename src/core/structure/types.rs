@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use crate::core::layout::{LineMap, build_line_map_from_sorted_events};
 use gpui::Hsla;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -98,7 +100,7 @@ impl std::fmt::Display for FieldValue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ParsedField {
     pub id: String,
     pub field_type: String,
@@ -110,6 +112,84 @@ pub struct ParsedField {
     pub children: Vec<ParsedField>,
     pub enum_label: Option<String>,
     pub is_instance: bool,
+}
+
+impl Clone for ParsedField {
+    fn clone(&self) -> Self {
+        struct Frame<'a> {
+            source: &'a ParsedField,
+            next_child: usize,
+            cloned: ParsedField,
+        }
+
+        let mut frames = vec![Frame {
+            source: self,
+            next_child: 0,
+            cloned: Self::clone_shallow(self),
+        }];
+
+        loop {
+            let next_child = {
+                let frame = frames.last_mut().expect("parsed-field clone stack must not be empty");
+                if frame.next_child < frame.source.children.len() {
+                    let index = frame.next_child;
+                    frame.next_child += 1;
+                    Some(index)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(index) = next_child {
+                let child = {
+                    let frame = frames.last().expect("parsed-field clone parent must exist");
+                    &frame.source.children[index]
+                };
+                frames.push(Frame {
+                    source: child,
+                    next_child: 0,
+                    cloned: Self::clone_shallow(child),
+                });
+                continue;
+            }
+
+            let completed = frames.pop().expect("parsed-field clone frame must exist").cloned;
+            if let Some(parent) = frames.last_mut() {
+                parent.cloned.children.push(completed);
+            } else {
+                return completed;
+            }
+        }
+    }
+}
+
+impl ParsedField {
+    fn clone_shallow(field: &Self) -> Self {
+        Self {
+            id: field.id.clone(),
+            field_type: field.field_type.clone(),
+            offset: field.offset,
+            size: field.size,
+            value: field.value.clone(),
+            color: field.color,
+            description: field.description.clone(),
+            children: Vec::with_capacity(field.children.len()),
+            enum_label: field.enum_label.clone(),
+            is_instance: field.is_instance,
+        }
+    }
+}
+
+impl Drop for ParsedField {
+    fn drop(&mut self) {
+        // ParsedField is a recursive logical tree. Drain descendants on an
+        // explicit heap-backed worklist so dropping a deeply nested Kaitai
+        // result never consumes one stack frame per structure level.
+        let mut pending = std::mem::take(&mut self.children);
+        while let Some(mut field) = pending.pop() {
+            pending.append(&mut field.children);
+        }
+    }
 }
 
 impl ParsedField {
@@ -162,101 +242,405 @@ pub struct ActiveStructRange {
     pub id: String,
 }
 
+/// A node in the persistent, append-only root field collection.
+///
+/// The collection uses a binary-counter forest. Appending a chunk copies only
+/// the small forest of roots (`O(log n)`) and shares all existing field data.
+/// This avoids copying an ever-growing `Vec<Arc<[ParsedField]>>` on every
+/// progress update.
+#[derive(Debug)]
+enum FieldCollectionNode {
+    Chunk(Arc<[ParsedField]>),
+    Concat {
+        left: Arc<FieldCollectionNode>,
+        right: Arc<FieldCollectionNode>,
+        len: usize,
+    },
+}
+
+impl FieldCollectionNode {
+    fn len(&self) -> usize {
+        match self {
+            Self::Chunk(fields) => fields.len(),
+            Self::Concat { len, .. } => *len,
+        }
+    }
+}
+
+/// Append-only collection used for parse snapshots.
+///
+/// Each snapshot shares the already parsed chunks instead of cloning the
+/// complete root field vector. Snapshots are persistent, so append and drop
+/// remain proportional to the number of chunk roots rather than the number of
+/// chunks already parsed.
+#[derive(Debug, Clone, Default)]
+pub struct FieldCollection {
+    roots: Arc<Vec<Option<Arc<FieldCollectionNode>>>>,
+    len: usize,
+}
+
+impl FieldCollection {
+    /// Creates a collection containing one owned chunk.
+    pub fn from_vec(fields: Vec<ParsedField>) -> Self {
+        if fields.is_empty() {
+            return Self::default();
+        }
+
+        let chunk: Arc<[ParsedField]> = Arc::from(fields.into_boxed_slice());
+        Self::from_shared_chunks(std::slice::from_ref(&chunk))
+    }
+
+    /// Returns a new collection with an additional shared chunk.
+    pub fn append_chunk(&self, fields: Vec<ParsedField>) -> Self {
+        if fields.is_empty() {
+            return self.clone();
+        }
+
+        let chunk: Arc<[ParsedField]> = Arc::from(fields.into_boxed_slice());
+        self.append_shared_chunks(std::slice::from_ref(&chunk))
+    }
+
+    /// Returns a new collection with additional shared chunks.
+    pub fn append_shared_chunks(&self, chunks: &[Arc<[ParsedField]>]) -> Self {
+        let mut result = self.clone();
+        for chunk in chunks.iter().filter(|chunk| !chunk.is_empty()) {
+            result = result.append_node(Arc::new(FieldCollectionNode::Chunk(chunk.clone())), chunk.len());
+        }
+        result
+    }
+
+    fn from_shared_chunks(chunks: &[Arc<[ParsedField]>]) -> Self {
+        Self::default().append_shared_chunks(chunks)
+    }
+
+    fn append_node(&self, mut node: Arc<FieldCollectionNode>, node_len: usize) -> Self {
+        let mut roots = (*self.roots).clone();
+        let mut root_index = 0;
+
+        loop {
+            if root_index == roots.len() {
+                roots.push(None);
+            }
+
+            if let Some(left) = roots[root_index].take() {
+                let len = left.len() + node.len();
+                node = Arc::new(FieldCollectionNode::Concat { left, right: node, len });
+                root_index += 1;
+            } else {
+                roots[root_index] = Some(node);
+                break;
+            }
+        }
+
+        Self {
+            roots: Arc::new(roots),
+            len: self.len + node_len,
+        }
+    }
+
+    /// Returns the number of root fields.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns whether the collection has no root fields.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns a root field by index.
+    pub fn get(&self, index: usize) -> Option<&ParsedField> {
+        if index >= self.len {
+            return None;
+        }
+
+        let mut index = index;
+        for root in self.roots.iter().rev().flatten() {
+            if index < root.len() {
+                return Self::get_from_node(root, index);
+            }
+            index -= root.len();
+        }
+        None
+    }
+
+    fn get_from_node(mut node: &FieldCollectionNode, mut index: usize) -> Option<&ParsedField> {
+        loop {
+            match node {
+                FieldCollectionNode::Chunk(fields) => return fields.get(index),
+                FieldCollectionNode::Concat { left, right, .. } => {
+                    if index < left.len() {
+                        node = left.as_ref();
+                    } else {
+                        index -= left.len();
+                        node = right.as_ref();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Iterates over root fields in parse order.
+    pub fn iter(&self) -> FieldCollectionIter<'_> {
+        self.iter_from(0)
+    }
+
+    /// Iterates from a root-field index without walking the skipped fields.
+    pub fn iter_from(&self, index: usize) -> FieldCollectionIter<'_> {
+        let mut stack = Vec::new();
+        let mut current = None;
+        if index < self.len {
+            let mut remaining = index;
+            let mut selected_root = None;
+            for (root_index, root) in self.roots.iter().enumerate().rev() {
+                let Some(root) = root else { continue };
+                if remaining < root.len() {
+                    selected_root = Some(root_index);
+                    break;
+                }
+                remaining -= root.len();
+            }
+
+            if let Some(selected_root) = selected_root {
+                // Lower roots contain later fields. Push them first so the
+                // selected root remains on top of the iterator stack.
+                for root in self.roots[..selected_root].iter().flatten() {
+                    stack.push((root.as_ref(), 0));
+                }
+                if let Some(root) = &self.roots[selected_root] {
+                    if let FieldCollectionNode::Chunk(fields) = root.as_ref() {
+                        // The common final-result representation is one flat
+                        // chunk. Keep it in the iterator's current slot so
+                        // iterating it does not allocate a traversal stack.
+                        current = Some((fields.as_ref(), remaining));
+                    } else {
+                        Self::push_from_node(root.as_ref(), remaining, &mut stack);
+                    }
+                }
+            }
+        }
+
+        FieldCollectionIter { stack, current }
+    }
+
+    fn push_from_node<'a>(mut node: &'a FieldCollectionNode, mut index: usize, stack: &mut Vec<(&'a FieldCollectionNode, usize)>) {
+        loop {
+            match node {
+                FieldCollectionNode::Chunk(_) => {
+                    stack.push((node, index));
+                    return;
+                }
+                FieldCollectionNode::Concat { left, right, .. } => {
+                    if index < left.len() {
+                        stack.push((right.as_ref(), 0));
+                        node = left.as_ref();
+                    } else {
+                        index -= left.len();
+                        node = right.as_ref();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Iterator over the shared chunks in a [`FieldCollection`].
+pub struct FieldCollectionIter<'a> {
+    stack: Vec<(&'a FieldCollectionNode, usize)>,
+    current: Option<(&'a [ParsedField], usize)>,
+}
+
+impl<'a> Iterator for FieldCollectionIter<'a> {
+    type Item = &'a ParsedField;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((fields, index)) = self.current.as_mut() {
+                if let Some(field) = fields.get(*index) {
+                    *index += 1;
+                    return Some(field);
+                }
+                self.current = None;
+            }
+
+            let (node, index) = self.stack.pop()?;
+            match node {
+                FieldCollectionNode::Chunk(fields) => {
+                    self.current = Some((fields.as_ref(), index));
+                }
+                FieldCollectionNode::Concat { left, right, .. } => {
+                    self.stack.push((right.as_ref(), 0));
+                    self.stack.push((left.as_ref(), index));
+                }
+            }
+        }
+    }
+}
+
+impl std::ops::Index<usize> for FieldCollection {
+    type Output = ParsedField;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).unwrap_or_else(|| panic!("field index {index} out of bounds"))
+    }
+}
+
+/// Lightweight field data used by byte-range queries.
+///
+/// The index intentionally does not retain `children` or raw byte buffers.
+/// Those values remain in `ParseResult::fields` and are only cloned when a
+/// snapshot itself is created.
+#[derive(Debug, Clone)]
+pub struct IndexedField {
+    pub id: String,
+    pub offset: usize,
+    pub size: usize,
+    expression: String,
+}
+
+impl IndexedField {
+    fn container(field: &ParsedField) -> Self {
+        Self {
+            id: field.id.clone(),
+            offset: field.offset,
+            size: field.size,
+            expression: String::new(),
+        }
+    }
+
+    fn leaf(field: &ParsedField) -> Self {
+        Self {
+            id: field.id.clone(),
+            offset: field.offset,
+            size: field.size,
+            expression: field.format_expression(),
+        }
+    }
+
+    /// Returns the preformatted expression used by the description column.
+    pub fn format_expression(&self) -> &str {
+        &self.expression
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StructureIndex {
-    pub container_structs: Vec<ParsedField>,
-    pub leaf_fields: Vec<ParsedField>,
+    pub container_structs: Vec<IndexedField>,
+    pub leaf_fields: Vec<IndexedField>,
     pub active_ranges: Vec<ActiveStructRange>,
     pub highlights: Arc<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
-    /// Maximum weighted character count used by the structure description column.
-    pub max_container_id_chars: f32,
-    pub max_leaf_expression_chars: f32,
+    /// Sorted physical field boundaries used by the inline line layout.
+    pub field_breaks: Arc<Vec<usize>>,
     active_range_tree_base: usize,
     active_range_max_tree: Vec<usize>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ParseProgress {
-    pub definition_id: String,
-    pub fields: Vec<ParsedField>,
-    pub parsed_offset: usize,
-    pub total_bytes: usize,
-    pub is_done: bool,
-    pub errors: Vec<ParseError>,
-    pub parse_result: Option<Arc<ParseResult>>,
+/// Incrementally collects the byte-range data needed by structure rendering.
+///
+/// The parser receives completed fields in batches. Collecting each batch
+/// here avoids traversing the complete field tree again when the final parse
+/// result is published. Ordering and deduplication are intentionally deferred
+/// to [`Self::finish`] because instance fields may point backwards in the
+/// stream.
+#[derive(Debug, Default)]
+pub(crate) struct StructureIndexBuilder {
+    highlights: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+    container_structs: Vec<IndexedField>,
+    leaf_fields: Vec<IndexedField>,
+    active_ranges: Vec<ActiveStructRange>,
+    field_breaks: Vec<usize>,
+    /// Interns IDs so duplicate-detection keys do not clone the full string
+    /// for every parsed field.
+    id_keys: HashMap<String, usize>,
+    container_seen: HashSet<(usize, usize, usize)>,
+    leaf_seen: HashSet<(usize, usize, usize)>,
+    range_seen: HashSet<(usize, usize, usize)>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ParseResult {
-    pub definition_id: String,
-    pub fields: Vec<ParsedField>,
-    pub total_parsed_bytes: usize,
-    pub errors: Vec<ParseError>,
-    pub index: Arc<StructureIndex>,
-}
+impl StructureIndexBuilder {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
 
-impl ParseResult {
-    pub fn new(definition_id: String, fields: Vec<ParsedField>, total_parsed_bytes: usize, errors: Vec<ParseError>) -> Self {
-        let index = Arc::new(Self::build_structure_index(&fields));
-        Self {
-            definition_id,
-            fields,
-            total_parsed_bytes,
-            errors,
-            index,
+    /// Adds one newly completed root field and all of its children.
+    pub(crate) fn add_field(&mut self, field: &ParsedField) {
+        self.collect_index_field(field, 0);
+    }
+
+    fn id_key(&mut self, id: &str) -> usize {
+        if let Some(&key) = self.id_keys.get(id) {
+            return key;
+        }
+
+        let key = self.id_keys.len();
+        self.id_keys.insert(id.to_owned(), key);
+        key
+    }
+
+    /// Finalizes ordering and lookup metadata without revisiting the fields.
+    pub(crate) fn finish(mut self) -> StructureIndex {
+        self.highlights.sort_unstable_by_key(|(range, _)| range.start);
+        // The lookup helpers below use `partition_point`, so both collections
+        // must be ordered by file offset. Structure traversal is normally in
+        // stream order, but `pos`-based instances are appended after `seq`
+        // fields and can point backwards in the file.
+        self.container_structs.sort_by_key(|field| field.offset);
+        self.leaf_fields.sort_by_key(|field| field.offset);
+        self.active_ranges.sort_unstable_by_key(|r| r.start);
+        self.field_breaks.sort_unstable();
+        self.field_breaks.dedup();
+        let (active_range_tree_base, active_range_max_tree) = Self::build_active_range_tree(&self.active_ranges);
+
+        StructureIndex {
+            container_structs: self.container_structs,
+            leaf_fields: self.leaf_fields,
+            active_ranges: self.active_ranges,
+            highlights: Arc::new(self.highlights),
+            field_breaks: Arc::new(self.field_breaks),
+            active_range_tree_base,
+            active_range_max_tree,
         }
     }
 
-    pub fn build_index(&mut self) {
-        self.index = Arc::new(Self::build_structure_index(&self.fields));
-    }
+    fn collect_index_field(&mut self, field: &ParsedField, depth: usize) {
+        let mut work = vec![(field, depth)];
 
-    fn build_structure_index(fields: &[ParsedField]) -> StructureIndex {
-        let mut highlights = Vec::new();
-        let mut container_structs = Vec::new();
-        let mut leaf_fields = Vec::new();
-        let mut active_ranges = Vec::new();
+        while let Some((field, depth)) = work.pop() {
+            let is_str = field.is_struct();
+            if !field.is_instance && field.size > 0 {
+                self.field_breaks.push(field.offset);
+                self.field_breaks.push(field.offset + field.size);
+            }
+            if field.size > 0 && !is_str {
+                self.highlights.push((field.offset..field.offset + field.size, field.color));
+            }
 
-        let mut container_seen = std::collections::HashSet::new();
-        let mut leaf_seen = std::collections::HashSet::new();
-        let mut range_seen = std::collections::HashSet::new();
+            if is_str {
+                let end = field.offset + field.size;
+                let id_key = self.id_key(&field.id);
+                if self.container_seen.insert((field.offset, field.size, id_key)) {
+                    self.container_structs.push(IndexedField::container(field));
+                }
+                if self.range_seen.insert((field.offset, end, id_key)) {
+                    self.active_ranges.push(ActiveStructRange {
+                        start: field.offset,
+                        end,
+                        depth,
+                        id: field.id.clone(),
+                    });
+                }
+            } else if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
+                let id_key = self.id_key(&field.id);
+                if self.leaf_seen.insert((field.offset, field.size, id_key)) {
+                    self.leaf_fields.push(IndexedField::leaf(field));
+                }
+            }
 
-        Self::collect_index_data(
-            fields,
-            0,
-            &mut highlights,
-            &mut container_structs,
-            &mut leaf_fields,
-            &mut active_ranges,
-            &mut container_seen,
-            &mut leaf_seen,
-            &mut range_seen,
-        );
-
-        highlights.sort_unstable_by_key(|(range, _)| range.start);
-        // The lookup helpers below use `partition_point`, so both collections
-        // must be ordered by file offset.  Structure traversal is normally in
-        // stream order, but `pos`-based instances are appended after `seq`
-        // fields and can point backwards in the file.
-        container_structs.sort_by_key(|field| field.offset);
-        leaf_fields.sort_by_key(|field| field.offset);
-        active_ranges.sort_unstable_by_key(|r| r.start);
-        let (active_range_tree_base, active_range_max_tree) = Self::build_active_range_tree(&active_ranges);
-        let max_container_id_chars = container_structs.iter().map(|field| weighted_char_count(&field.id)).fold(0.0, f32::max);
-        let max_leaf_expression_chars = leaf_fields
-            .iter()
-            .map(|field| weighted_char_count(&field.format_expression()))
-            .fold(0.0, f32::max);
-
-        StructureIndex {
-            container_structs,
-            leaf_fields,
-            active_ranges,
-            highlights: Arc::new(highlights),
-            max_container_id_chars,
-            max_leaf_expression_chars,
-            active_range_tree_base,
-            active_range_max_tree,
+            // LIFO traversal needs children in reverse order to retain the
+            // same source order as the former recursive implementation.
+            for child in field.children.iter().rev() {
+                work.push((child, depth + 1));
+            }
         }
     }
 
@@ -273,58 +657,137 @@ impl ParseResult {
 
         (base, tree)
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn collect_index_data<'a>(
-        fields: &'a [ParsedField],
-        depth: usize,
-        highlights: &mut Vec<(std::ops::Range<usize>, gpui::Hsla)>,
-        container_structs: &mut Vec<ParsedField>,
-        leaf_fields: &mut Vec<ParsedField>,
-        active_ranges: &mut Vec<ActiveStructRange>,
-        container_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
-        leaf_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
-        range_seen: &mut std::collections::HashSet<(usize, usize, &'a str)>,
-    ) {
-        for field in fields {
-            let is_str = field.is_struct();
-            if field.size > 0 && !is_str {
-                highlights.push((field.offset..field.offset + field.size, field.color));
-            }
+#[derive(Debug, Clone)]
+pub struct ParseProgress {
+    pub definition_id: String,
+    /// Newly completed root fields since the previous progress notification.
+    /// This is a delta, not a cumulative snapshot.
+    pub fields: Arc<[ParsedField]>,
+    pub parsed_offset: usize,
+    pub total_bytes: usize,
+    pub is_done: bool,
+    /// True while the parser has reached the byte end but is preparing the
+    /// final display index and line map.
+    pub is_finalizing: bool,
+    pub errors: Vec<ParseError>,
+    pub parse_result: Option<Arc<ParseResult>>,
+}
 
-            if is_str {
-                let end = field.offset + field.size;
-                let key = (field.offset, end, field.id.as_str());
-                if container_seen.insert((field.offset, field.size, field.id.as_str())) {
-                    container_structs.push(field.clone());
-                }
-                if range_seen.insert(key) {
-                    active_ranges.push(ActiveStructRange {
-                        start: field.offset,
-                        end,
-                        depth,
-                        id: field.id.clone(),
-                    });
-                }
-            } else if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) && leaf_seen.insert((field.offset, field.size, field.id.as_str()))
-            {
-                leaf_fields.push(field.clone());
-            }
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    pub definition_id: String,
+    pub fields: FieldCollection,
+    pub total_parsed_bytes: usize,
+    pub errors: Vec<ParseError>,
+    pub index: Arc<StructureIndex>,
+    /// Background-prepared layout for the default expanded structure view.
+    ///
+    /// Custom joins/breaks and collapsed structures are intentionally not
+    /// included. The editor falls back to the existing dynamic layout for
+    /// those cases, so this cache cannot change their display semantics.
+    pub structure_line_map: Option<Arc<LineMap>>,
+}
 
-            if !field.children.is_empty() {
-                Self::collect_index_data(
-                    &field.children,
-                    depth + 1,
-                    highlights,
-                    container_structs,
-                    leaf_fields,
-                    active_ranges,
-                    container_seen,
-                    leaf_seen,
-                    range_seen,
-                );
-            }
+impl ParseResult {
+    pub fn new(definition_id: String, fields: Vec<ParsedField>, total_parsed_bytes: usize, errors: Vec<ParseError>) -> Self {
+        let fields = FieldCollection::from_vec(fields);
+        let mut index_builder = StructureIndexBuilder::new();
+        for field in fields.iter() {
+            index_builder.add_field(field);
         }
+        Self::new_with_index(definition_id, fields, total_parsed_bytes, errors, index_builder.finish())
+    }
+
+    pub(crate) fn new_with_index(
+        definition_id: String,
+        fields: FieldCollection,
+        total_parsed_bytes: usize,
+        errors: Vec<ParseError>,
+        index: StructureIndex,
+    ) -> Self {
+        Self {
+            definition_id,
+            fields,
+            total_parsed_bytes,
+            errors,
+            index: Arc::new(index),
+            structure_line_map: None,
+        }
+    }
+
+    /// Creates an empty result that can receive incremental parse batches.
+    pub fn empty(definition_id: String) -> Self {
+        Self {
+            definition_id,
+            fields: FieldCollection::default(),
+            total_parsed_bytes: 0,
+            errors: Vec::new(),
+            index: Arc::new(StructureIndex::default()),
+            structure_line_map: None,
+        }
+    }
+
+    /// Prepares the default expanded structure line map off the UI thread.
+    pub fn with_structure_line_map(mut self, total_size: usize) -> Self {
+        let field_breaks = self.index.field_breaks.as_ref();
+        self.structure_line_map = Some(Arc::new(build_line_map_from_sorted_events(
+            total_size,
+            field_breaks,
+            &Default::default(),
+            &Default::default(),
+        )));
+        self
+    }
+
+    /// Appends a field batch while sharing all previously parsed field chunks.
+    pub fn append_fields(&self, fields: Vec<ParsedField>, total_parsed_bytes: usize) -> Self {
+        let fields = self.fields.append_chunk(fields);
+        let mut index_builder = StructureIndexBuilder::new();
+        for field in fields.iter() {
+            index_builder.add_field(field);
+        }
+        Self::new_with_index(
+            self.definition_id.clone(),
+            fields,
+            total_parsed_bytes,
+            self.errors.clone(),
+            index_builder.finish(),
+        )
+    }
+
+    /// Appends a field batch without rebuilding the byte-range index.
+    ///
+    /// This is intended for live parse snapshots. The structure tree can use
+    /// the appended fields immediately, while the complete index is supplied
+    /// by the final parse result. Keeping this operation index-free prevents
+    /// the UI thread from repeatedly scanning every field seen so far.
+    pub fn append_fields_without_index(&self, fields: Vec<ParsedField>, total_parsed_bytes: usize) -> Self {
+        let chunk: Arc<[ParsedField]> = Arc::from(fields.into_boxed_slice());
+        self.append_shared_chunks_without_index(std::slice::from_ref(&chunk), total_parsed_bytes)
+    }
+
+    /// Appends shared parse chunks without rebuilding the byte-range index.
+    pub fn append_shared_chunks_without_index(&self, chunks: &[Arc<[ParsedField]>], total_parsed_bytes: usize) -> Self {
+        let fields = self.fields.append_shared_chunks(chunks);
+        Self {
+            definition_id: self.definition_id.clone(),
+            fields,
+            total_parsed_bytes,
+            errors: self.errors.clone(),
+            index: self.index.clone(),
+            structure_line_map: None,
+        }
+    }
+
+    pub fn build_index(&mut self) {
+        let mut index_builder = StructureIndexBuilder::new();
+        for field in self.fields.iter() {
+            index_builder.add_field(field);
+        }
+        self.index = Arc::new(index_builder.finish());
+        self.structure_line_map = None;
     }
 
     pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
@@ -332,24 +795,31 @@ impl ParseResult {
     }
 
     pub fn collect_field_breaks(&self, breaks: &mut Vec<usize>, collapsed_structs: &std::collections::HashSet<String>) {
-        Self::collect_field_breaks_recursive(&self.fields, breaks, collapsed_structs);
-    }
+        if collapsed_structs.is_empty() {
+            breaks.extend(self.index.field_breaks.iter().copied());
+            return;
+        }
 
-    fn collect_field_breaks_recursive(fields: &[ParsedField], breaks: &mut Vec<usize>, collapsed_structs: &std::collections::HashSet<String>) {
-        for field in fields {
-            // Sequence fields define physical stream boundaries and line breaks.
-            // Instance fields (computed values or pos-peeks) do not break the physical stream.
-            if !field.is_instance && field.size > 0 {
-                breaks.push(field.offset);
-                breaks.push(field.offset + field.size);
-            }
-            if !field.children.is_empty() && !collapsed_structs.contains(&field.id) {
-                Self::collect_field_breaks_recursive(&field.children, breaks, collapsed_structs);
+        let mut work = Vec::new();
+        for field in self.fields.iter() {
+            work.push(field);
+            while let Some(field) = work.pop() {
+                // Sequence fields define physical stream boundaries and line breaks.
+                // Instance fields (computed values or pos-peeks) do not break the physical stream.
+                if !field.is_instance && field.size > 0 {
+                    breaks.push(field.offset);
+                    breaks.push(field.offset + field.size);
+                }
+                if !field.children.is_empty() && !collapsed_structs.contains(&field.id) {
+                    for child in field.children.iter().rev() {
+                        work.push(child);
+                    }
+                }
             }
         }
     }
 
-    pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> &[ParsedField] {
+    pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> &[IndexedField] {
         let end_offset = start_offset.saturating_add(len);
         let containers = &self.index.container_structs;
         let start_idx = containers.partition_point(|f| f.offset < start_offset);
@@ -357,7 +827,7 @@ impl ParseResult {
         &containers[start_idx..end_idx]
     }
 
-    pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> &[ParsedField] {
+    pub fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> &[IndexedField] {
         let end_offset = start_offset.saturating_add(len);
         let leaves = &self.index.leaf_fields;
         let start_idx = leaves.partition_point(|f| f.offset < start_offset);
@@ -373,55 +843,79 @@ impl ParseResult {
             return result;
         }
 
-        Self::collect_active_struct_ranges(
-            ranges,
-            &self.index.active_range_max_tree,
-            1,
-            0,
-            self.index.active_range_tree_base,
-            start_offset,
-            row_end,
-            &mut result,
-        );
+        let tree = &self.index.active_range_max_tree;
+        let mut work = vec![(1, 0, self.index.active_range_tree_base)];
+        while let Some((node, segment_start, segment_end)) = work.pop() {
+            if segment_start >= ranges.len() || ranges[segment_start].start >= row_end || tree[node] <= start_offset {
+                continue;
+            }
+
+            if segment_end - segment_start == 1 {
+                let range = &ranges[segment_start];
+                if range.start < row_end && range.end > start_offset {
+                    result.push(range);
+                }
+                continue;
+            }
+
+            let middle = segment_start + (segment_end - segment_start) / 2;
+            // Push right first so results remain sorted by the range start.
+            work.push((node * 2 + 1, middle, segment_end));
+            work.push((node * 2, segment_start, middle));
+        }
         result
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn collect_active_struct_ranges<'a>(
-        ranges: &'a [ActiveStructRange],
-        tree: &[usize],
-        node: usize,
-        segment_start: usize,
-        segment_end: usize,
-        query_start: usize,
-        query_end: usize,
-        result: &mut Vec<&'a ActiveStructRange>,
-    ) {
-        if segment_start >= ranges.len() || ranges[segment_start].start >= query_end || tree[node] <= query_start {
-            return;
-        }
-
-        if segment_end - segment_start == 1 {
-            let range = &ranges[segment_start];
-            if range.start < query_end && range.end > query_start {
-                result.push(range);
-            }
-            return;
-        }
-
-        let middle = segment_start + (segment_end - segment_start) / 2;
-        Self::collect_active_struct_ranges(ranges, tree, node * 2, segment_start, middle, query_start, query_end, result);
-        Self::collect_active_struct_ranges(ranges, tree, node * 2 + 1, middle, segment_end, query_start, query_end, result);
-    }
-}
-
-fn weighted_char_count(text: &str) -> f32 {
-    text.chars().map(|c| if c.is_ascii() { 1.0 } else { 1.8 }).sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_field(id: &str, offset: usize) -> ParsedField {
+        ParsedField {
+            id: id.into(),
+            field_type: "u1".into(),
+            offset,
+            size: 1,
+            value: FieldValue::U8(offset as u8),
+            color: Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+            is_instance: false,
+        }
+    }
+
+    #[test]
+    fn field_collection_appends_shared_chunks_in_parse_order() {
+        let first: Arc<[ParsedField]> = Arc::from(vec![test_field("a", 0), test_field("b", 1)].into_boxed_slice());
+        let second: Arc<[ParsedField]> = Arc::from(vec![test_field("c", 2)].into_boxed_slice());
+        let third: Arc<[ParsedField]> = Arc::from(vec![test_field("d", 3), test_field("e", 4), test_field("f", 5)].into_boxed_slice());
+
+        let collection = FieldCollection::default().append_shared_chunks(&[first, second, third]);
+
+        assert_eq!(collection.len(), 6);
+        assert_eq!(collection.get(0).map(|field| field.id.as_str()), Some("a"));
+        assert_eq!(collection.get(5).map(|field| field.id.as_str()), Some("f"));
+        assert!(collection.get(6).is_none());
+
+        let all_ids: Vec<_> = collection.iter().map(|field| field.id.as_str()).collect();
+        assert_eq!(all_ids, ["a", "b", "c", "d", "e", "f"]);
+
+        let tail_ids: Vec<_> = collection.iter_from(2).map(|field| field.id.as_str()).collect();
+        assert_eq!(tail_ids, ["c", "d", "e", "f"]);
+        assert!(collection.iter_from(collection.len()).next().is_none());
+
+        let mut many = FieldCollection::default();
+        for index in 0..97 {
+            many = many.append_chunk(vec![test_field(&format!("field_{index}"), index)]);
+        }
+        for start in 0..=many.len() {
+            let actual: Vec<_> = many.iter_from(start).map(|field| field.offset).collect();
+            let expected: Vec<_> = (start..many.len()).collect();
+            assert_eq!(actual, expected, "iterator start index {start}");
+        }
+    }
 
     #[test]
     fn field_value_conversions_cover_numeric_text_and_struct_values() {
@@ -473,5 +967,43 @@ mod tests {
         };
         assert!(structure.is_struct());
         assert_eq!(structure.format_expression(), "header");
+    }
+
+    #[test]
+    fn deep_structure_index_walks_without_call_stack_growth() {
+        let depth = 4096;
+        let mut field = test_field("leaf", 0);
+        for level in (0..depth).rev() {
+            field = ParsedField {
+                id: format!("node_{level}"),
+                field_type: "nested".into(),
+                offset: 0,
+                size: 1,
+                value: FieldValue::Struct,
+                color: Hsla::default(),
+                description: None,
+                children: vec![field],
+                enum_label: None,
+                is_instance: false,
+            };
+        }
+
+        // The result is dropped normally at the end of the test. ParsedField's
+        // custom destructor must keep that operation off the call stack too.
+        let result = ParseResult::new("deep".into(), vec![field], 1, Vec::new());
+
+        let mut collapsed = HashSet::new();
+        collapsed.insert("unrelated".to_string());
+        let mut breaks = Vec::new();
+        result.collect_field_breaks(&mut breaks, &collapsed);
+        assert_eq!(breaks.len(), (depth + 1) * 2);
+
+        let ranges = result.find_active_struct_ranges(0, 1);
+        assert_eq!(ranges.len(), depth);
+        assert_eq!(ranges.first().map(|range| range.depth), Some(0));
+        assert_eq!(ranges.last().map(|range| range.depth), Some(depth - 1));
+
+        let cloned = result.fields.get(0).expect("deep root field").clone();
+        assert_eq!(cloned.children.len(), 1);
     }
 }

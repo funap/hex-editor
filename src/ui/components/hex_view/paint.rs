@@ -684,7 +684,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         }
         if !is_collapsed {
             for f in leaf_fields {
-                desc_parts.push(f.format_expression());
+                desc_parts.push(f.format_expression().to_string());
             }
         }
 

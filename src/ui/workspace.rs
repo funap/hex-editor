@@ -16,8 +16,11 @@ use crate::ui::components::status_bar::StatusBar;
 use gpui_component::Root;
 use gpui_component::menu::AppMenuBar;
 use gpui_component::resizable::{h_resizable, resizable_panel};
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct Workspace {
     pub pane_tree: Entity<PaneTree>,
@@ -28,6 +31,125 @@ pub struct Workspace {
     pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
     pub is_left_panel_visible: bool,
     focus_handle: FocusHandle,
+    last_active_editor_id: Cell<Option<EntityId>>,
+}
+
+struct PendingParseUpdate {
+    definition_id: String,
+    fields: VecDeque<Arc<[crate::core::structure::ParsedField]>>,
+    parsed_offset: usize,
+    total_bytes: usize,
+    is_done: bool,
+    is_finalizing: bool,
+    parse_result: Option<Arc<crate::core::structure::ParseResult>>,
+}
+
+struct ParseUpdateBatch {
+    definition_id: String,
+    fields: Vec<Arc<[crate::core::structure::ParsedField]>>,
+    parsed_offset: usize,
+    total_bytes: usize,
+    is_done: bool,
+    is_finalizing: bool,
+    parse_result: Option<Arc<crate::core::structure::ParseResult>>,
+    has_more_fields: bool,
+}
+
+struct ParseUpdateMailbox {
+    pending: Mutex<Option<PendingParseUpdate>>,
+    notify: tokio::sync::Notify,
+    closed: AtomicBool,
+}
+
+impl ParseUpdateMailbox {
+    fn publish(&self, progress: crate::core::structure::types::ParseProgress) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+
+        let mut pending = self.pending.lock().expect("parse update mailbox lock");
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let update = pending.get_or_insert_with(|| PendingParseUpdate {
+            definition_id: progress.definition_id.clone(),
+            fields: VecDeque::new(),
+            parsed_offset: progress.parsed_offset,
+            total_bytes: progress.total_bytes,
+            is_done: false,
+            is_finalizing: false,
+            parse_result: None,
+        });
+
+        update.definition_id = progress.definition_id;
+        update.parsed_offset = progress.parsed_offset;
+        update.total_bytes = progress.total_bytes;
+        update.is_done = progress.is_done;
+        update.is_finalizing = progress.is_finalizing;
+        if !progress.fields.is_empty() {
+            update.fields.push_back(progress.fields);
+        }
+        if progress.parse_result.is_some() {
+            update.parse_result = progress.parse_result;
+            // The final result contains every field. Discarding queued partial
+            // chunks prevents stale intermediate work from delaying completion.
+            update.fields.clear();
+        }
+
+        drop(pending);
+        self.notify.notify_one();
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    fn take_batch(&self, max_fields: usize) -> Option<ParseUpdateBatch> {
+        let mut pending = self.pending.lock().expect("parse update mailbox lock");
+        let update = pending.as_mut()?;
+
+        if update.parse_result.is_some() {
+            let update = pending.take().expect("pending parse update");
+            return Some(ParseUpdateBatch {
+                definition_id: update.definition_id,
+                fields: Vec::new(),
+                parsed_offset: update.parsed_offset,
+                total_bytes: update.total_bytes,
+                is_done: update.is_done,
+                is_finalizing: update.is_finalizing,
+                parse_result: update.parse_result,
+                has_more_fields: false,
+            });
+        }
+
+        let mut fields = Vec::new();
+        let mut field_count = 0;
+        while let Some(chunk) = update.fields.front()
+            && (fields.is_empty() || field_count + chunk.len() <= max_fields)
+        {
+            let chunk = update.fields.pop_front().expect("parse field chunk");
+            field_count += chunk.len();
+            fields.push(chunk);
+        }
+
+        let has_more_fields = !update.fields.is_empty();
+        let batch = ParseUpdateBatch {
+            definition_id: update.definition_id.clone(),
+            fields,
+            parsed_offset: update.parsed_offset,
+            total_bytes: update.total_bytes,
+            is_done: update.is_done,
+            is_finalizing: update.is_finalizing,
+            parse_result: None,
+            has_more_fields,
+        };
+
+        if !has_more_fields {
+            pending.take();
+        }
+        Some(batch)
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -211,6 +333,7 @@ impl Workspace {
             ksy_definition: None,
             is_left_panel_visible: true,
             focus_handle: cx.focus_handle(),
+            last_active_editor_id: Cell::new(None),
         }
     }
 
@@ -225,8 +348,22 @@ impl Workspace {
     fn sync_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         let active_editor = self.active_editor(cx);
         let pane_tree_is_empty = self.pane_tree.read(cx).is_empty();
-        self.status_bar.update(cx, |status_bar, _| {
-            status_bar.set_active_editor(active_editor.clone());
+
+        // A split can emit several state events while its new group is being
+        // assembled. Only the active editor entity affects these subscribers,
+        // so avoid rebuilding every side-panel subscription for duplicate
+        // notifications.
+        let active_editor_id = active_editor.as_ref().map(Entity::entity_id);
+        if self.last_active_editor_id.get() == active_editor_id {
+            if pane_tree_is_empty {
+                self.focus_handle.focus(window);
+            }
+            return;
+        }
+        self.last_active_editor_id.set(active_editor_id);
+
+        self.status_bar.update(cx, |status_bar, cx| {
+            status_bar.set_active_editor(active_editor.clone(), cx);
         });
         self.left_panel.update(cx, |panel, cx| {
             panel.set_editor(active_editor, cx);
@@ -1480,14 +1617,15 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
     let (doc_arc, doc_path, generation) = editor_entity.update(cx, |editor, cx| {
         editor.cancel_structure_parsing();
         editor.parse_cancel_token = Some(cancel_token.clone());
+        editor.structure_parse_async = true;
+        editor.structure_reparse_requested = false;
         *editor.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy.clone());
         editor.is_parsing_structure = true;
         editor.parse_progress_offset = 0;
         let total = editor.document.read().expect("document read lock").buffer.len();
         let path = editor.document.read().ok().map(|d| d.path().to_path_buf());
         editor.parse_total_size = total;
-        editor.parse_generation += 1;
-        *editor.parse_result.write().expect("parse_result write lock") = None;
+        editor.begin_partial_parse_result(ksy.meta.id.clone());
         editor.invalidate_line_map();
         cx.notify();
         (editor.document.clone(), path, editor.parse_generation)
@@ -1498,7 +1636,12 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
         service.notify_document_changed(path, cx);
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::core::structure::types::ParseProgress>();
+    let mailbox = Arc::new(ParseUpdateMailbox {
+        pending: Mutex::new(None),
+        notify: tokio::sync::Notify::new(),
+        closed: AtomicBool::new(false),
+    });
+    let producer_mailbox = mailbox.clone();
 
     let editor_entity = editor_entity.clone();
     let ksy_clone = (*ksy).clone();
@@ -1506,62 +1649,78 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
     std::thread::Builder::new()
         .name("kaitai-parser".into())
         .spawn(move || {
-            let bytes = {
+            let buffer = {
                 if let Ok(doc) = doc_arc.read() {
-                    doc.buffer.data().to_vec()
+                    doc.buffer.clone()
                 } else {
-                    Vec::new()
+                    crate::core::buffer::Buffer::empty()
                 }
             };
 
-            let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
+            let mut stream = crate::core::structure::KaitaiStream::new(buffer.data());
             let interpreter = crate::core::structure::KaitaiInterpreter::new(ksy_clone);
             interpreter.parse_with_progress_cancellable(&mut stream, Some(&cancel_token_clone), |progress| {
                 if !cancel_token_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    let _ = tx.send(progress.clone());
+                    // The mailbox keeps field chunks but coalesces all stale
+                    // progress metadata. Cloning the progress is shallow for
+                    // the field payload (`Arc<[ParsedField]>`).
+                    producer_mailbox.publish(progress.clone());
                 }
             });
+            producer_mailbox.close();
         })
         .expect("Failed to spawn kaitai parser thread");
 
     cx.spawn(async move |cx| {
-        while let Some(mut progress) = rx.recv().await {
-            while let Ok(newer) = rx.try_recv() {
-                progress = newer;
-            }
-            let is_done = progress.is_done;
-            let parse_res = progress.parse_result;
+        // Keep one foreground update small enough to leave the renderer
+        // responsive even when a structure contains very cheap repeated
+        // fields. The parser remains free to run ahead in the mailbox.
+        const MAX_FIELDS_PER_UPDATE: usize = 1024;
+
+        loop {
+            let notified = mailbox.notify.notified();
+            let Some(batch) = mailbox.take_batch(MAX_FIELDS_PER_UPDATE) else {
+                if mailbox.closed.load(Ordering::Acquire) {
+                    break;
+                }
+                notified.await;
+                continue;
+            };
 
             let should_continue = editor_entity.update(cx, |editor, cx| {
                 if editor.parse_generation != generation {
                     return false;
                 }
-                if !editor.is_parsing_structure && !is_done {
+                if !editor.is_parsing_structure && !batch.is_done {
                     return false;
                 }
-                editor.parse_progress_offset = progress.parsed_offset;
-                editor.parse_total_size = progress.total_bytes;
-                if let Some(res) = parse_res {
+                editor.parse_progress_offset = batch.parsed_offset;
+                editor.parse_total_size = batch.total_bytes;
+                editor.is_finalizing_structure = batch.is_finalizing;
+                if let Some(res) = batch.parse_result {
                     editor.set_parse_result_arc(res);
+                } else if !batch.fields.is_empty() {
+                    editor.append_parse_chunks(batch.definition_id, batch.fields, batch.parsed_offset, batch.total_bytes);
                 }
-                if is_done {
+                if batch.is_done {
                     editor.is_parsing_structure = false;
+                    editor.is_finalizing_structure = false;
                     editor.parse_cancel_token = None;
                 }
                 cx.notify();
-                !is_done
+                !batch.is_done
             });
-
-            if let Some(ref path) = doc_path {
-                let path = path.clone();
-                let _ = cx.update(|cx| {
-                    let service = crate::app_state::AppState::global(cx).editor_service.clone();
-                    service.notify_document_changed(&path, cx);
-                });
-            }
 
             if should_continue.is_err() || !should_continue.unwrap_or(false) {
                 break;
+            }
+
+            // Give GPUI a chance to render the newly received fields and
+            // update the status bar before processing the next batch. If the
+            // mailbox still contains chunks, the next notification is already
+            // scheduled by `take_batch`.
+            if batch.has_more_fields || !batch.is_done {
+                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
             }
         }
     })

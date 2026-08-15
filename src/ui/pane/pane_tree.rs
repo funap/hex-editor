@@ -8,20 +8,30 @@ use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
 use crate::core::editor::Editor;
 use crate::ui::panels::editor_panel::EditorPanel;
 
-#[derive(Clone)]
 pub enum PaneNode {
     Leaf { id: usize, group: Entity<EditorGroup> },
-    HSplit { id: usize, left: Box<PaneNode>, right: Box<PaneNode> },
-    VSplit { id: usize, top: Box<PaneNode>, bottom: Box<PaneNode> },
+    HSplit { id: usize, left: usize, right: usize },
+    VSplit { id: usize, top: usize, bottom: usize },
 }
 
 pub enum PaneTreeEvent {
     ActiveEditorChanged,
 }
 
+type PaneParent = (usize, bool);
+
+struct PaneLocation {
+    node_id: usize,
+    parent: Option<PaneParent>,
+    grandparent: Option<PaneParent>,
+}
+
 #[allow(dead_code)]
 pub struct PaneTree {
-    root: Option<PaneNode>,
+    /// The pane tree is stored as an arena so replacing or dropping a layout
+    /// never walks a recursive `Box<PaneNode>` chain on the UI stack.
+    nodes: Vec<Option<PaneNode>>,
+    root: Option<usize>,
     active_group_id: Option<usize>,
     next_group_id: usize,
     next_split_id: usize,
@@ -32,6 +42,7 @@ pub struct PaneTree {
 impl PaneTree {
     pub fn new() -> Self {
         Self {
+            nodes: Vec::new(),
             root: None,
             active_group_id: None,
             next_group_id: 1,
@@ -62,40 +73,59 @@ impl PaneTree {
     }
 
     pub fn find_group(&self, group_id: usize) -> Option<Entity<EditorGroup>> {
-        fn search(node: &PaneNode, target_id: usize) -> Option<Entity<EditorGroup>> {
+        let root = self.root?;
+        let mut stack = vec![root];
+
+        while let Some(node_id) = stack.pop() {
+            let Some(node) = self.nodes.get(node_id).and_then(Option::as_ref) else {
+                continue;
+            };
             match node {
                 PaneNode::Leaf { id, group } => {
-                    if *id == target_id {
-                        Some(group.clone())
-                    } else {
-                        None
+                    if *id == group_id {
+                        return Some(group.clone());
                     }
                 }
-                PaneNode::HSplit { left, right, .. } => search(left, target_id).or_else(|| search(right, target_id)),
-                PaneNode::VSplit { top, bottom, .. } => search(top, target_id).or_else(|| search(bottom, target_id)),
+                PaneNode::HSplit { left, right, .. } => {
+                    // Push right first so the traversal keeps the original
+                    // left-to-right search order without using call frames.
+                    stack.push(*right);
+                    stack.push(*left);
+                }
+                PaneNode::VSplit { top, bottom, .. } => {
+                    stack.push(*bottom);
+                    stack.push(*top);
+                }
             }
         }
-        self.root.as_ref().and_then(|r| search(r, group_id))
+
+        None
     }
 
     pub fn all_groups(&self) -> Vec<Entity<EditorGroup>> {
-        fn collect(node: &PaneNode, acc: &mut Vec<Entity<EditorGroup>>) {
+        let mut groups = Vec::new();
+        let Some(root) = self.root else {
+            return groups;
+        };
+
+        let mut stack = vec![root];
+        while let Some(node_id) = stack.pop() {
+            let Some(node) = self.nodes.get(node_id).and_then(Option::as_ref) else {
+                continue;
+            };
             match node {
-                PaneNode::Leaf { group, .. } => acc.push(group.clone()),
+                PaneNode::Leaf { group, .. } => groups.push(group.clone()),
                 PaneNode::HSplit { left, right, .. } => {
-                    collect(left, acc);
-                    collect(right, acc);
+                    stack.push(*right);
+                    stack.push(*left);
                 }
                 PaneNode::VSplit { top, bottom, .. } => {
-                    collect(top, acc);
-                    collect(bottom, acc);
+                    stack.push(*bottom);
+                    stack.push(*top);
                 }
             }
         }
-        let mut groups = Vec::new();
-        if let Some(root) = &self.root {
-            collect(root, &mut groups);
-        }
+
         groups
     }
 
@@ -137,6 +167,141 @@ impl PaneTree {
         group
     }
 
+    fn insert_node(&mut self, node: PaneNode) -> usize {
+        let node_id = self.nodes.len();
+        self.nodes.push(Some(node));
+        node_id
+    }
+
+    fn take_leaf(&mut self, node_id: usize, group_id: usize) -> Option<Entity<EditorGroup>> {
+        let node = self.nodes.get_mut(node_id)?.take()?;
+        match node {
+            PaneNode::Leaf { id, group } if id == group_id => Some(group),
+            node => {
+                self.nodes[node_id] = Some(node);
+                None
+            }
+        }
+    }
+
+    fn set_child(&mut self, parent_id: usize, is_first_child: bool, child_id: usize) -> bool {
+        let Some(Some(parent)) = self.nodes.get_mut(parent_id) else {
+            return false;
+        };
+
+        match parent {
+            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+                if is_first_child {
+                    *left = child_id;
+                } else {
+                    *right = child_id;
+                }
+                true
+            }
+            PaneNode::Leaf { .. } => false,
+        }
+    }
+
+    fn sibling_of(&self, parent_id: usize, is_first_child: bool) -> Option<usize> {
+        let parent = self.nodes.get(parent_id)?.as_ref()?;
+        match parent {
+            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => Some(if is_first_child { *right } else { *left }),
+            PaneNode::Leaf { .. } => None,
+        }
+    }
+
+    fn find_group_location(&self, group_id: usize) -> Option<PaneLocation> {
+        struct Visit {
+            node_id: usize,
+            parent: Option<PaneParent>,
+            grandparent: Option<PaneParent>,
+        }
+
+        let root = self.root?;
+        let mut work = vec![Visit {
+            node_id: root,
+            parent: None,
+            grandparent: None,
+        }];
+
+        while let Some(Visit { node_id, parent, grandparent }) = work.pop() {
+            let Some(node) = self.nodes.get(node_id).and_then(Option::as_ref) else {
+                continue;
+            };
+            match node {
+                PaneNode::Leaf { id, .. } => {
+                    if *id == group_id {
+                        return Some(PaneLocation { node_id, parent, grandparent });
+                    }
+                }
+                PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+                    work.push(Visit {
+                        node_id: *right,
+                        parent: Some((node_id, false)),
+                        grandparent: parent,
+                    });
+                    work.push(Visit {
+                        node_id: *left,
+                        parent: Some((node_id, true)),
+                        grandparent: parent,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Replaces one leaf with a split without moving or rebuilding the rest of
+    /// the arena. The existing group remains the first or second child and
+    /// the new group occupies the other side.
+    fn split_group_node(
+        &mut self,
+        target_group_id: usize,
+        new_group_id: usize,
+        new_group: &Entity<EditorGroup>,
+        split_id: usize,
+        horizontal: bool,
+        new_group_is_first: bool,
+    ) -> bool {
+        let Some(PaneLocation { node_id: target_node_id, .. }) = self.find_group_location(target_group_id) else {
+            return false;
+        };
+        let Some(target_group) = self.take_leaf(target_node_id, target_group_id) else {
+            return false;
+        };
+
+        let target_leaf_id = self.insert_node(PaneNode::Leaf {
+            id: target_group_id,
+            group: target_group,
+        });
+        let new_leaf_id = self.insert_node(PaneNode::Leaf {
+            id: new_group_id,
+            group: new_group.clone(),
+        });
+
+        let (first_child, second_child) = if new_group_is_first {
+            (new_leaf_id, target_leaf_id)
+        } else {
+            (target_leaf_id, new_leaf_id)
+        };
+        let split = if horizontal {
+            PaneNode::HSplit {
+                id: split_id,
+                left: first_child,
+                right: second_child,
+            }
+        } else {
+            PaneNode::VSplit {
+                id: split_id,
+                top: first_child,
+                bottom: second_child,
+            }
+        };
+        self.nodes[target_node_id] = Some(split);
+        true
+    }
+
     pub fn open_tab(&mut self, content: TabContent, window: &mut Window, cx: &mut Context<Self>) -> usize {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -152,10 +317,11 @@ impl PaneTree {
         } else {
             let new_group = self.create_group(window, cx);
             let group_id = new_group.read(cx).id;
-            self.root = Some(PaneNode::Leaf {
+            let node_id = self.insert_node(PaneNode::Leaf {
                 id: group_id,
                 group: new_group.clone(),
             });
+            self.root = Some(node_id);
             self.active_group_id = Some(group_id);
             new_group
         };
@@ -168,13 +334,16 @@ impl PaneTree {
         });
 
         self.sync_active_states(cx);
-        cx.emit(PaneTreeEvent::ActiveEditorChanged);
         cx.notify();
 
         tab_id
     }
 
     pub fn split_group(&mut self, target_group_id: usize, direction: SplitDirection, content: TabContent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find_group(target_group_id).is_none() {
+            return;
+        }
+
         let new_group = self.create_group(window, cx);
         let new_group_id = new_group.read(cx).id;
 
@@ -182,42 +351,29 @@ impl PaneTree {
         self.next_tab_id += 1;
         let tab = TabItem::new(tab_id, content);
 
-        new_group.update(cx, |g, cx| {
-            g.add_tab(tab, true, window, cx);
-        });
-
         let split_id = self.next_split_id;
         self.next_split_id += 1;
 
-        let new_leaf = PaneNode::Leaf {
-            id: new_group_id,
-            group: new_group.clone(),
-        };
-
-        if let Some(root) = self.root.take() {
-            self.root = Some(replace_node(root, target_group_id, &mut |target_group| match direction {
-                SplitDirection::Horizontal => PaneNode::HSplit {
-                    id: split_id,
-                    left: Box::new(PaneNode::Leaf {
-                        id: target_group_id,
-                        group: target_group,
-                    }),
-                    right: Box::new(new_leaf.clone()),
-                },
-                SplitDirection::Vertical => PaneNode::VSplit {
-                    id: split_id,
-                    top: Box::new(PaneNode::Leaf {
-                        id: target_group_id,
-                        group: target_group,
-                    }),
-                    bottom: Box::new(new_leaf.clone()),
-                },
-            }));
+        let split_created = self.split_group_node(
+            target_group_id,
+            new_group_id,
+            &new_group,
+            split_id,
+            matches!(direction, SplitDirection::Horizontal),
+            false,
+        );
+        if !split_created {
+            return;
         }
 
+        // Install the new leaf before adding its first tab. `add_tab` focuses
+        // the tab and emits `TabChanged`; subscribers must see a complete pane
+        // tree when that event is flushed by GPUI.
         self.active_group_id = Some(new_group_id);
         self.sync_active_states(cx);
-        cx.emit(PaneTreeEvent::ActiveEditorChanged);
+        new_group.update(cx, |g, cx| {
+            g.add_tab(tab, true, window, cx);
+        });
         cx.notify();
     }
 
@@ -241,55 +397,38 @@ impl PaneTree {
                     target_group.update(cx, |g, cx| {
                         g.add_tab(tab, true, window, cx);
                     });
+                } else {
+                    // The target can disappear between drag start and drop.
+                    // Keep the removed tab usable instead of dropping it.
+                    from_group.update(cx, |g, cx| {
+                        g.add_tab(tab, true, window, cx);
+                    });
+                    return;
                 }
             }
             DropPlacement::Left | DropPlacement::Right | DropPlacement::Top | DropPlacement::Bottom => {
                 let new_group = self.create_group(window, cx);
                 let new_group_id = new_group.read(cx).id;
-                new_group.update(cx, |g, cx| {
-                    g.add_tab(tab, true, window, cx);
-                });
 
                 let split_id = self.next_split_id;
                 self.next_split_id += 1;
 
-                let new_leaf = PaneNode::Leaf {
-                    id: new_group_id,
-                    group: new_group.clone(),
-                };
-
-                if let Some(root) = self.root.take() {
-                    self.root = Some(replace_node(root, target_group_id, &mut |target_group| {
-                        let target_leaf = PaneNode::Leaf {
-                            id: target_group_id,
-                            group: target_group,
-                        };
-                        match placement {
-                            DropPlacement::Left => PaneNode::HSplit {
-                                id: split_id,
-                                left: Box::new(new_leaf.clone()),
-                                right: Box::new(target_leaf),
-                            },
-                            DropPlacement::Right => PaneNode::HSplit {
-                                id: split_id,
-                                left: Box::new(target_leaf),
-                                right: Box::new(new_leaf.clone()),
-                            },
-                            DropPlacement::Top => PaneNode::VSplit {
-                                id: split_id,
-                                top: Box::new(new_leaf.clone()),
-                                bottom: Box::new(target_leaf),
-                            },
-                            DropPlacement::Bottom => PaneNode::VSplit {
-                                id: split_id,
-                                top: Box::new(target_leaf),
-                                bottom: Box::new(new_leaf.clone()),
-                            },
-                            DropPlacement::Center => target_leaf,
-                        }
-                    }));
+                let horizontal = matches!(placement, DropPlacement::Left | DropPlacement::Right);
+                let new_group_is_first = matches!(placement, DropPlacement::Left | DropPlacement::Top);
+                let split_created = self.split_group_node(target_group_id, new_group_id, &new_group, split_id, horizontal, new_group_is_first);
+                if !split_created {
+                    // The target can disappear between drag start and drop.
+                    // Keep the removed tab usable instead of dropping it.
+                    from_group.update(cx, |g, cx| {
+                        g.add_tab(tab, true, window, cx);
+                    });
+                    return;
                 }
                 self.active_group_id = Some(new_group_id);
+                self.sync_active_states(cx);
+                new_group.update(cx, |g, cx| {
+                    g.add_tab(tab, true, window, cx);
+                });
             }
         }
 
@@ -298,7 +437,6 @@ impl PaneTree {
         }
 
         self.sync_active_states(cx);
-        cx.emit(PaneTreeEvent::ActiveEditorChanged);
         cx.notify();
     }
 
@@ -322,13 +460,41 @@ impl PaneTree {
         }
 
         self.sync_active_states(cx);
-        cx.emit(PaneTreeEvent::ActiveEditorChanged);
         cx.notify();
     }
 
     pub fn remove_group(&mut self, group_id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(root) = self.root.take() {
-            self.root = remove_node(root, group_id);
+        if let Some(PaneLocation { node_id, parent, grandparent }) = self.find_group_location(group_id) {
+            match parent {
+                None => {
+                    // The only leaf in the tree is being removed.
+                    if self.root == Some(node_id) {
+                        self.root = None;
+                        self.nodes[node_id] = None;
+                    }
+                }
+                Some((parent_id, is_first_child)) => {
+                    let Some(survivor_id) = self.sibling_of(parent_id, is_first_child) else {
+                        return;
+                    };
+
+                    let layout_updated = if let Some((grandparent_id, parent_is_first_child)) = grandparent {
+                        self.set_child(grandparent_id, parent_is_first_child, survivor_id)
+                    } else if self.root == Some(parent_id) {
+                        self.root = Some(survivor_id);
+                        true
+                    } else {
+                        false
+                    };
+
+                    if layout_updated {
+                        // The parent split and target leaf are now unreachable.
+                        // Clearing slots drops only a flat node value.
+                        self.nodes[node_id] = None;
+                        self.nodes[parent_id] = None;
+                    }
+                }
+            }
         }
 
         if self.active_group_id == Some(group_id) {
@@ -357,6 +523,10 @@ impl PaneTree {
     }
 
     pub fn set_active_group(&mut self, group_id: usize, cx: &mut Context<Self>) {
+        if self.active_group_id == Some(group_id) {
+            return;
+        }
+
         self.active_group_id = Some(group_id);
         self.sync_active_states(cx);
         cx.emit(PaneTreeEvent::ActiveEditorChanged);
@@ -377,84 +547,110 @@ impl PaneTree {
     }
 }
 
-fn remove_node(node: PaneNode, target_id: usize) -> Option<PaneNode> {
-    match node {
-        PaneNode::Leaf { id, .. } => {
-            if id == target_id {
-                None
-            } else {
-                Some(node)
-            }
-        }
-        PaneNode::HSplit { id, left, right } => {
-            let left_opt = remove_node(*left, target_id);
-            let right_opt = remove_node(*right, target_id);
-            match (left_opt, right_opt) {
-                (Some(l), Some(r)) => Some(PaneNode::HSplit {
-                    id,
-                    left: Box::new(l),
-                    right: Box::new(r),
-                }),
-                (Some(l), None) => Some(l),
-                (None, Some(r)) => Some(r),
-                (None, None) => None,
-            }
-        }
-        PaneNode::VSplit { id, top, bottom } => {
-            let top_opt = remove_node(*top, target_id);
-            let bottom_opt = remove_node(*bottom, target_id);
-            match (top_opt, bottom_opt) {
-                (Some(t), Some(b)) => Some(PaneNode::VSplit {
-                    id,
-                    top: Box::new(t),
-                    bottom: Box::new(b),
-                }),
-                (Some(t), None) => Some(t),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            }
-        }
+fn render_node(tree: &PaneTree) -> AnyElement {
+    enum Work {
+        Visit(usize),
+        Combine { id: usize, horizontal: bool, child_count: usize },
     }
-}
 
-fn replace_node<F>(node: PaneNode, target_id: usize, f: &mut F) -> PaneNode
-where
-    F: FnMut(Entity<EditorGroup>) -> PaneNode,
-{
-    match node {
-        PaneNode::Leaf { id, group } => {
-            if id == target_id {
-                f(group)
-            } else {
-                PaneNode::Leaf { id, group }
-            }
-        }
-        PaneNode::HSplit { id, left, right } => PaneNode::HSplit {
-            id,
-            left: Box::new(replace_node(*left, target_id, f)),
-            right: Box::new(replace_node(*right, target_id, f)),
-        },
-        PaneNode::VSplit { id, top, bottom } => PaneNode::VSplit {
-            id,
-            top: Box::new(replace_node(*top, target_id, f)),
-            bottom: Box::new(replace_node(*bottom, target_id, f)),
-        },
-    }
-}
-
-fn render_node(node: &PaneNode) -> AnyElement {
-    let content = match node {
-        PaneNode::Leaf { group, .. } => group.clone().into_any_element(),
-        PaneNode::HSplit { id, left, right } => h_resizable(ElementId::NamedInteger("h-split".into(), *id as u64))
-            .child(resizable_panel().child(render_node(left)))
-            .child(resizable_panel().child(render_node(right)))
-            .into_any_element(),
-        PaneNode::VSplit { id, top, bottom } => v_resizable(ElementId::NamedInteger("v-split".into(), *id as u64))
-            .child(resizable_panel().child(render_node(top)))
-            .child(resizable_panel().child(render_node(bottom)))
-            .into_any_element(),
+    let Some(root) = tree.root else {
+        return div().size_full().into_any_element();
     };
 
+    let mut work = vec![Work::Visit(root)];
+    let mut elements = Vec::new();
+
+    while let Some(item) = work.pop() {
+        match item {
+            Work::Visit(node_id) => {
+                let node = tree
+                    .nodes
+                    .get(node_id)
+                    .and_then(Option::as_ref)
+                    .expect("reachable pane node must exist in the arena");
+                match node {
+                    PaneNode::Leaf { group, .. } => {
+                        elements.push(wrap_pane_content(group.clone().into_any_element()));
+                    }
+                    PaneNode::HSplit { id, left, right } => {
+                        let mut children = Vec::new();
+                        collect_same_axis_children(tree, *left, *right, true, &mut children);
+                        let child_count = children.len();
+                        work.push(Work::Combine {
+                            id: *id,
+                            horizontal: true,
+                            child_count,
+                        });
+                        for child in children.into_iter().rev() {
+                            work.push(Work::Visit(child));
+                        }
+                    }
+                    PaneNode::VSplit { id, top, bottom } => {
+                        let mut children = Vec::new();
+                        collect_same_axis_children(tree, *top, *bottom, false, &mut children);
+                        let child_count = children.len();
+                        work.push(Work::Combine {
+                            id: *id,
+                            horizontal: false,
+                            child_count,
+                        });
+                        for child in children.into_iter().rev() {
+                            work.push(Work::Visit(child));
+                        }
+                    }
+                }
+            }
+            Work::Combine { id, horizontal, child_count } => {
+                let mut children = Vec::with_capacity(child_count);
+                for _ in 0..child_count {
+                    children.push(elements.pop().expect("pane rendering must produce a child element"));
+                }
+                children.reverse();
+
+                let content = if horizontal {
+                    h_resizable(ElementId::NamedInteger("h-split".into(), id as u64))
+                        .children(children.into_iter().map(|child| resizable_panel().child(child)))
+                        .into_any_element()
+                } else {
+                    v_resizable(ElementId::NamedInteger("v-split".into(), id as u64))
+                        .children(children.into_iter().map(|child| resizable_panel().child(child)))
+                        .into_any_element()
+                };
+                elements.push(wrap_pane_content(content));
+            }
+        }
+    }
+
+    elements.pop().expect("pane rendering must produce a root element")
+}
+
+/// Collects a contiguous same-axis split chain without adding recursive call
+/// frames. Repeated Split Down/Right operations therefore become one
+/// resizable group instead of a deeply nested element tree.
+fn collect_same_axis_children(tree: &PaneTree, first: usize, second: usize, horizontal: bool, children: &mut Vec<usize>) {
+    let mut pending = vec![second, first];
+
+    while let Some(node_id) = pending.pop() {
+        let node = tree
+            .nodes
+            .get(node_id)
+            .and_then(Option::as_ref)
+            .expect("reachable pane node must exist in the arena");
+        match (horizontal, node) {
+            (true, PaneNode::HSplit { left, right, .. }) => {
+                pending.push(*right);
+                pending.push(*left);
+            }
+            (false, PaneNode::VSplit { top, bottom, .. }) => {
+                pending.push(*bottom);
+                pending.push(*top);
+            }
+            _ => children.push(node_id),
+        }
+    }
+}
+
+fn wrap_pane_content(content: AnyElement) -> AnyElement {
     div().size_full().min_w_0().min_h_0().overflow_hidden().child(content).into_any_element()
 }
 
@@ -462,14 +658,14 @@ impl EventEmitter<PaneTreeEvent> for PaneTree {}
 
 impl Render for PaneTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(root) = &self.root {
+        if self.root.is_some() {
             div()
                 .id("pane-tree-root")
                 .size_full()
                 .min_w_0()
                 .min_h_0()
                 .overflow_hidden()
-                .child(render_node(root))
+                .child(render_node(self))
         } else {
             div()
                 .id("pane-tree-empty")

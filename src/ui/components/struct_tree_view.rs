@@ -38,18 +38,17 @@ pub struct StructTreeView {
     pub scroll_handle: UniformListScrollHandle,
     pub focus_handle: FocusHandle,
     pub selected_index: Option<usize>,
-    last_parse_id: Option<(String, usize, usize, usize)>,
+    last_parse_id: Option<(String, usize, usize, usize, usize, bool)>,
+    last_selection_cursor: Option<usize>,
+    last_selection_scan_len: usize,
     _editor_subscription: Option<Subscription>,
 }
 
 #[derive(Clone)]
 pub struct FlattenedField {
     pub path: Vec<usize>,
-    pub id: SharedString,
-    pub _field_type: SharedString,
     pub offset: usize,
     pub size: usize,
-    pub value_str: SharedString,
     pub depth: usize,
     pub has_children: bool,
     pub is_collapsed: bool,
@@ -66,7 +65,7 @@ impl StructTreeView {
         let expanded_paths = HashSet::new();
         let mut flattened = Vec::new();
         if let Some(ref res) = parse_result {
-            Self::flatten_fields(&res.fields, 0, &Vec::new(), &expanded_paths, &mut flattened);
+            Self::flatten_fields(res.fields.iter(), 0, &[], &expanded_paths, &mut flattened, 0);
         }
         let scroll_handle = UniformListScrollHandle::new();
         let focus_handle = cx.focus_handle();
@@ -80,6 +79,8 @@ impl StructTreeView {
             focus_handle,
             selected_index: None,
             last_parse_id: None,
+            last_selection_cursor: None,
+            last_selection_scan_len: 0,
             _editor_subscription: None,
         };
 
@@ -94,6 +95,15 @@ impl StructTreeView {
     }
 
     pub fn set_editor(&mut self, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) {
+        let same_editor = match (&self.editor, &editor) {
+            (Some(current), Some(next)) => current.entity_id() == next.entity_id(),
+            (None, None) => true,
+            _ => false,
+        };
+        if same_editor {
+            return;
+        }
+
         self._editor_subscription = None;
         self.editor = editor.clone();
 
@@ -110,25 +120,59 @@ impl StructTreeView {
     }
 
     fn sync_fields(&mut self, editor: &Entity<Editor>, cx: &mut Context<Self>) {
-        let (current_parse_id, cursor_offset, is_parsing) = {
+        let (current_parse_id, cursor_offset) = {
             let editor_lock = editor.read(cx);
             let doc_version = editor_lock.document.read().ok().map(|d| d.history.version()).unwrap_or(0);
-            let parse_id = editor_lock
-                .parse_result()
-                .map(|r| (r.definition_id.clone(), r.total_parsed_bytes, r.fields.len(), doc_version));
-            (parse_id, editor_lock.cursor_offset, editor_lock.is_parsing_structure)
+            let parse_id = editor_lock.parse_result().map(|r| {
+                (
+                    r.definition_id.clone(),
+                    r.total_parsed_bytes,
+                    r.fields.len(),
+                    doc_version,
+                    editor_lock.parse_generation,
+                    editor_lock.is_parsing_structure,
+                )
+            });
+            (parse_id, editor_lock.cursor_offset)
         };
-
-        if is_parsing {
-            if self.parse_result.is_some() {
-                self.set_parse_result(None, cx);
-            }
-            return;
-        }
 
         if current_parse_id != self.last_parse_id {
             let parse_res = editor.read(cx).parse_result();
-            self.set_parse_result(parse_res, cx);
+            let can_append = match (&self.last_parse_id, &current_parse_id, &self.parse_result) {
+                (Some(previous), Some(current), Some(existing)) => {
+                    previous.3 == current.3 && previous.4 == current.4 && current.2 >= previous.2 && existing.fields.len() == previous.2
+                }
+                _ => false,
+            };
+            if can_append {
+                let previous_field_count = self.last_parse_id.as_ref().map(|parse_id| parse_id.2).unwrap_or(0);
+                let is_finishing =
+                    self.last_parse_id.as_ref().is_some_and(|parse_id| parse_id.5) && current_parse_id.as_ref().is_some_and(|parse_id| !parse_id.5);
+                if is_finishing {
+                    let old = self.parse_result.take();
+                    self.parse_result = parse_res;
+                    if let Some(old) = old {
+                        std::thread::spawn(move || drop(old));
+                    }
+                } else {
+                    self.parse_result = parse_res;
+                }
+                if let Some(ref res) = self.parse_result
+                    && current_parse_id.as_ref().map(|parse_id| parse_id.2).unwrap_or(0) > previous_field_count
+                {
+                    Self::flatten_fields(
+                        res.fields.iter_from(previous_field_count),
+                        0,
+                        &[],
+                        &self.expanded_paths,
+                        &mut self.flattened_fields,
+                        previous_field_count,
+                    );
+                }
+                cx.notify();
+            } else {
+                self.set_parse_result(parse_res, cx);
+            }
             self.last_parse_id = current_parse_id;
         }
 
@@ -137,6 +181,8 @@ impl StructTreeView {
 
     fn sync_selected_index_from_cursor(&mut self, cursor_offset: usize, cx: &mut Context<Self>) {
         if self.flattened_fields.is_empty() {
+            self.last_selection_cursor = Some(cursor_offset);
+            self.last_selection_scan_len = 0;
             return;
         }
 
@@ -151,12 +197,24 @@ impl StructTreeView {
                 cursor_offset == field.offset
             };
             if matches {
+                self.last_selection_cursor = Some(cursor_offset);
+                self.last_selection_scan_len = self.flattened_fields.len();
                 return;
             }
         }
 
+        let cursor_changed = self.last_selection_cursor != Some(cursor_offset);
+        let scan_start = if !cursor_changed && self.selected_index.is_none() && self.last_selection_scan_len <= self.flattened_fields.len() {
+            self.last_selection_scan_len
+        } else {
+            0
+        };
+        if scan_start == self.flattened_fields.len() {
+            return;
+        }
+
         let mut best_match: Option<(usize, bool, usize, usize)> = None; // (index, is_leaf, depth, size)
-        for (i, field) in self.flattened_fields.iter().enumerate() {
+        for (i, field) in self.flattened_fields.iter().enumerate().skip(scan_start) {
             let end = field.offset + field.size;
             let matches = if field.size > 0 {
                 cursor_offset >= field.offset && cursor_offset < end
@@ -183,20 +241,29 @@ impl StructTreeView {
             }
         }
 
+        self.last_selection_cursor = Some(cursor_offset);
+        self.last_selection_scan_len = self.flattened_fields.len();
         if let Some((idx, _, _, _)) = best_match
             && self.selected_index != Some(idx)
         {
             self.selected_index = Some(idx);
             self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
             cx.notify();
+        } else if best_match.is_none() {
+            self.selected_index = None;
         }
     }
 
     pub fn set_parse_result(&mut self, parse_result: Option<std::sync::Arc<crate::core::structure::types::ParseResult>>, cx: &mut Context<Self>) {
         self.expanded_paths.clear();
-        self.parse_result = parse_result;
+        let old = std::mem::replace(&mut self.parse_result, parse_result);
+        if let Some(old) = old {
+            std::thread::spawn(move || drop(old));
+        }
         self.rebuild_flattened();
         self.selected_index = None;
+        self.last_selection_cursor = None;
+        self.last_selection_scan_len = 0;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -204,56 +271,98 @@ impl StructTreeView {
     fn rebuild_flattened(&mut self) {
         let mut flattened = Vec::new();
         if let Some(ref res) = self.parse_result {
-            Self::flatten_fields(&res.fields, 0, &Vec::new(), &self.expanded_paths, &mut flattened);
+            Self::flatten_fields(res.fields.iter(), 0, &[], &self.expanded_paths, &mut flattened, 0);
         }
         self.flattened_fields = flattened;
+        self.last_selection_cursor = None;
+        self.last_selection_scan_len = 0;
     }
 
-    fn flatten_fields(fields: &[ParsedField], depth: usize, parent_path: &[usize], expanded_paths: &HashSet<Vec<usize>>, results: &mut Vec<FlattenedField>) {
-        for (idx, field) in fields.iter().enumerate() {
-            let mut current_path = parent_path.to_vec();
-            current_path.push(idx);
+    fn flatten_fields<'a, I>(
+        fields: I,
+        depth: usize,
+        parent_path: &[usize],
+        expanded_paths: &HashSet<Vec<usize>>,
+        results: &mut Vec<FlattenedField>,
+        index_offset: usize,
+    ) where
+        I: IntoIterator<Item = &'a ParsedField>,
+    {
+        struct Frame<'a, I> {
+            root: Option<I>,
+            children: Option<std::slice::Iter<'a, ParsedField>>,
+            depth: usize,
+            parent_path: Vec<usize>,
+            index_offset: usize,
+            next_index: usize,
+        }
 
-            let val_str = if let Some(label) = &field.enum_label {
-                SharedString::from(format!("{} ({})", field.value, label))
-            } else {
-                SharedString::from(format!("{}", field.value))
+        let mut frames = vec![Frame {
+            root: Some(fields.into_iter()),
+            children: None,
+            depth,
+            parent_path: parent_path.to_vec(),
+            index_offset,
+            next_index: 0,
+        }];
+
+        while !frames.is_empty() {
+            let Some((relative_idx, field, frame_depth, frame_index_offset, parent_path)) = ({
+                let frame = frames.last_mut().expect("flattening stack must not be empty");
+                let next = if let Some(root) = frame.root.as_mut() {
+                    root.next().map(|field| (frame.next_index, field))
+                } else if let Some(children) = frame.children.as_mut() {
+                    children.next().map(|field| (frame.next_index, field))
+                } else {
+                    None
+                };
+
+                next.map(|(relative_idx, field)| {
+                    frame.next_index += 1;
+                    (relative_idx, field, frame.depth, frame.index_offset, frame.parent_path.clone())
+                })
+            }) else {
+                frames.pop();
+                continue;
             };
+
+            let idx = relative_idx + frame_index_offset;
+            let mut current_path = parent_path;
+            current_path.push(idx);
 
             let has_children = !field.children.is_empty();
             let is_expanded = expanded_paths.contains(&current_path);
 
             results.push(FlattenedField {
                 path: current_path.clone(),
-                id: SharedString::from(field.id.clone()),
-                _field_type: SharedString::from(field.field_type.clone()),
                 offset: field.offset,
                 size: field.size,
-                value_str: val_str,
-                depth,
+                depth: frame_depth,
                 has_children,
                 is_collapsed: !is_expanded,
             });
 
             if has_children && is_expanded {
-                Self::flatten_fields(&field.children, depth + 1, &current_path, expanded_paths, results);
+                frames.push(Frame {
+                    root: None,
+                    children: Some(field.children.iter()),
+                    depth: frame_depth + 1,
+                    parent_path: current_path,
+                    index_offset: 0,
+                    next_index: 0,
+                });
             }
         }
     }
 
     pub fn field_at_path<'a>(&'a self, path: &[usize]) -> Option<&'a ParsedField> {
         let res = self.parse_result.as_ref()?;
-        let mut current_fields = &res.fields;
-        let mut target_field: Option<&'a ParsedField> = None;
-        for &idx in path {
-            target_field = current_fields.get(idx);
-            if let Some(f) = target_field {
-                current_fields = &f.children;
-            } else {
-                return None;
-            }
+        let (&first, rest) = path.split_first()?;
+        let mut target_field = res.fields.get(first)?;
+        for &idx in rest {
+            target_field = target_field.children.get(idx)?;
         }
-        target_field
+        Some(target_field)
     }
 
     #[allow(dead_code)]
@@ -262,11 +371,11 @@ impl StructTreeView {
     }
 
     fn find_first_leaf_offset(field: &ParsedField) -> usize {
-        if let Some(first_child) = field.children.first() {
-            Self::find_first_leaf_offset(first_child)
-        } else {
-            field.offset
+        let mut current = field;
+        while let Some(first_child) = current.children.first() {
+            current = first_child;
         }
+        current.offset
     }
 
     fn select_item(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -409,6 +518,7 @@ impl StructTreeView {
     fn render_list_item(
         ix: usize,
         field: &FlattenedField,
+        parsed_field: &ParsedField,
         is_selected: bool,
         is_focused: bool,
         view: Entity<Self>,
@@ -425,6 +535,12 @@ impl StructTreeView {
         };
 
         let focus_handle = focus_handle.clone();
+        let id = SharedString::from(parsed_field.id.clone());
+        let value = if let Some(label) = &parsed_field.enum_label {
+            SharedString::from(format!("{} ({})", parsed_field.value, label))
+        } else {
+            SharedString::from(format!("{}", parsed_field.value))
+        };
         let chevron_symbol = if field.has_children {
             if field.is_collapsed { "▶" } else { "▼" }
         } else {
@@ -461,8 +577,8 @@ impl StructTreeView {
                         }),
                     ),
             )
-            .child(div().text_sm().text_color(theme.foreground).child(field.id.clone()))
-            .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(field.value_str.clone()))
+            .child(div().text_sm().text_color(theme.foreground).child(id))
+            .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(value))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
@@ -479,14 +595,27 @@ impl Render for StructTreeView {
         let view = cx.entity().clone();
         let is_parsing = self.editor.as_ref().is_some_and(|ed| ed.read(cx).is_parsing_structure);
         let is_empty = self.flattened_fields.is_empty() && self.parse_result.is_none();
+        let show_parsing_placeholder = is_parsing && self.flattened_fields.is_empty();
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
+        let parse_progress = self.editor.as_ref().and_then(|editor| {
+            let editor = editor.read(cx);
+            if !editor.is_parsing_structure && !editor.is_finalizing_structure {
+                return None;
+            }
 
-        let badge = if !self.flattened_fields.is_empty() {
-            Some(crate::ui::style::panel_badge(format!("{}", self.flattened_fields.len()), theme).into_any_element())
-        } else {
-            None
-        };
+            let total_bytes = if editor.parse_total_size > 0 {
+                editor.parse_total_size
+            } else {
+                editor.total_size()
+            };
+            let progress = if total_bytes > 0 {
+                (editor.parse_progress_offset as f32 / total_bytes as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            Some((progress, editor.is_finalizing_structure))
+        });
 
         let has_structure = self.parse_result.is_some() || !self.flattened_fields.is_empty();
 
@@ -520,7 +649,7 @@ impl Render for StructTreeView {
             )
         };
 
-        let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, badge, header_actions);
+        let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, None, header_actions);
 
         let container = crate::ui::style::panel_container(is_focused, theme);
 
@@ -540,7 +669,18 @@ impl Render for StructTreeView {
                 }),
             )
             .child(header)
-            .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_parsing {
+            .when_some(parse_progress, |el, (progress, is_finalizing)| {
+                el.child(
+                    div()
+                        .id("structure-parse-progress")
+                        .h(px(3.0))
+                        .w_full()
+                        .overflow_hidden()
+                        .bg(theme.border.opacity(0.35))
+                        .child(div().h_full().w(relative(progress)).bg(if is_finalizing { theme.yellow } else { theme.accent })),
+                )
+            })
+            .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if show_parsing_placeholder {
                 crate::ui::style::panel_empty_state(
                     IconName::LoaderCircle,
                     "Parsing Structure...",
@@ -575,7 +715,11 @@ impl Render for StructTreeView {
                         .map(|ix| {
                             if let Some(field) = this.flattened_fields.get(ix) {
                                 let is_selected = this.selected_index == Some(ix);
-                                Self::render_list_item(ix, field, is_selected, is_focused, view.clone(), &focus_handle, window, cx)
+                                if let Some(parsed_field) = this.field_at_path(&field.path) {
+                                    Self::render_list_item(ix, field, parsed_field, is_selected, is_focused, view.clone(), &focus_handle, window, cx)
+                                } else {
+                                    div().into_any_element()
+                                }
                             } else {
                                 div().into_any_element()
                             }

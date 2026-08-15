@@ -901,6 +901,38 @@ seq:
 }
 
 #[test]
+fn test_editor_defers_structure_line_breaks_while_parsing() {
+    use crate::core::document::Document;
+    use crate::core::editor::Editor;
+    use std::sync::{Arc, RwLock};
+
+    let ksy_yaml = r#"
+meta:
+  id: test_header
+seq:
+  - id: field_a
+    type: u2
+  - id: field_b
+    type: u2
+"#;
+    let ksy = Arc::new(parse_ksy_yaml(ksy_yaml));
+    let buffer = crate::core::buffer::Buffer::new(vec![0x01, 0x02, 0x03, 0x04, 0x05]);
+    let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+    let mut editor = Editor::new(doc);
+    editor.set_kaitai_definition(ksy);
+
+    assert_eq!(editor.line_starts(), vec![0, 2, 4]);
+
+    editor.is_parsing_structure = true;
+    editor.invalidate_line_map();
+    assert_eq!(editor.line_starts(), vec![0]);
+
+    editor.is_parsing_structure = false;
+    editor.invalidate_line_map();
+    assert_eq!(editor.line_starts(), vec![0, 2, 4]);
+}
+
+#[test]
 fn test_editor_toggle_inline_structure_view_and_collapse() {
     use crate::core::document::Document;
     use crate::core::editor::Editor;
@@ -1250,7 +1282,13 @@ seq:
 
     let mut progress_events = Vec::new();
     let result = interpreter.parse_with_progress(&mut stream, |progress| {
-        progress_events.push((progress.parsed_offset, progress.total_bytes, progress.fields.len(), progress.is_done));
+        progress_events.push((
+            progress.parsed_offset,
+            progress.total_bytes,
+            progress.fields.len(),
+            progress.is_done,
+            progress.is_finalizing,
+        ));
     });
 
     assert_eq!(result.total_parsed_bytes, 5);
@@ -1260,11 +1298,44 @@ seq:
     assert_eq!(progress_events[0].1, 5); // total_bytes
     assert!(!progress_events[0].3); // is_done: false
 
+    // Intermediate notifications carry only newly completed root fields.
+    let intermediate_field_counts: Vec<_> = progress_events.iter().filter(|event| !event.3).map(|event| event.2).collect();
+    assert!(intermediate_field_counts.iter().any(|&count| count > 0));
+    assert!(progress_events.iter().any(|event| event.4), "finalization phase should be observable");
+
     // Last event is done
     let last = progress_events.last().unwrap();
     assert_eq!(last.0, 5); // parsed_offset = 5
     assert_eq!(last.1, 5); // total_bytes = 5
     assert!(last.3); // is_done = true
+    assert!(!last.4); // finalization is complete
+}
+
+#[test]
+fn test_parse_progress_batches_do_not_grow_unbounded_for_repeated_fields() {
+    let yaml = r#"
+meta:
+  id: test_progress_batch_limit
+seq:
+  - id: items
+    type: u1
+    repeat: eos
+"#;
+    let ksy = parse_ksy_yaml(yaml);
+    let data = vec![0xAA; 4096];
+    let mut stream = KaitaiStream::new(&data);
+    let interpreter = KaitaiInterpreter::new(ksy);
+    let mut progress_field_counts = Vec::new();
+
+    let result = interpreter.parse_with_progress(&mut stream, |progress| {
+        if !progress.is_done {
+            progress_field_counts.push(progress.fields.len());
+        }
+    });
+
+    assert_eq!(result.fields.len(), data.len());
+    assert!(!progress_field_counts.is_empty());
+    assert!(progress_field_counts.iter().all(|&count| count <= 512));
 }
 
 #[test]

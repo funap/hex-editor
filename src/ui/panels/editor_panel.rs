@@ -54,6 +54,7 @@ pub struct EditorPanel {
     search_bar: Entity<SearchBar>,
     search_task: Option<Task<()>>,
     viewport_search_task: Option<Task<()>>,
+    structure_reparse_task: Option<Task<()>>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     _appearance_subscription: Subscription,
     _editor_subscription: Subscription,
@@ -133,9 +134,14 @@ impl EditorPanel {
             });
         });
 
-        let _editor_subscription = cx.observe(&editor, |this, _, cx| {
+        let _editor_subscription = cx.observe(&editor, |this, editor, cx| {
             this.update_search_bar_results(cx);
             this.update_highlights(cx);
+
+            if let Some((_, generation)) = editor.read(cx).pending_structure_reparse() {
+                this.schedule_structure_reparse(generation, cx);
+            }
+
             cx.notify();
         });
 
@@ -165,6 +171,7 @@ impl EditorPanel {
             search_bar,
             search_task: None,
             viewport_search_task: None,
+            structure_reparse_task: None,
             tab_panel: None,
             _appearance_subscription,
             _editor_subscription,
@@ -178,6 +185,27 @@ impl EditorPanel {
     #[allow(dead_code)]
     pub fn hex_view(&self) -> Entity<HexView> {
         self.hex_view.clone()
+    }
+
+    fn schedule_structure_reparse(&mut self, generation: usize, cx: &mut Context<Self>) {
+        // Replacing the task cancels the previous debounce timer. The editor
+        // generation check below is still required because a timer may have
+        // already resumed while a newer edit was being applied.
+        self.structure_reparse_task = None;
+        let editor = self.editor.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(75)).await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |_, cx| {
+                    if let Some(ksy) = editor.update(cx, |editor, _| editor.take_structure_reparse_request(generation)) {
+                        crate::ui::workspace::set_kaitai_definition_async(&editor, ksy, cx);
+                    }
+                })
+                .ok();
+            }
+        });
+        self.structure_reparse_task = Some(task);
     }
 
     pub fn scroll_to_byte(&mut self, byte_offset: usize, cx: &mut Context<Self>) {

@@ -217,6 +217,20 @@ impl<'a> KaitaiStream<'a> {
         self.read_bytes_slice(size).map(|s| s.to_vec())
     }
 
+    /// Advances the parent stream and returns a bounded view over the same
+    /// backing bytes. Unlike `read_bytes`, this does not allocate or copy the
+    /// substream contents.
+    pub fn take_substream(&mut self, size: usize) -> Option<KaitaiStream<'a>> {
+        self.align_to_byte();
+        if self.pos + size > self.data.len() {
+            return None;
+        }
+
+        let start = self.pos;
+        self.pos += size;
+        Some(KaitaiStream::new(&self.data[start..start + size]))
+    }
+
     #[inline(always)]
     pub fn read_bytes_remaining_slice(&mut self) -> Option<&'a [u8]> {
         self.align_to_byte();
@@ -372,6 +386,17 @@ mod tests {
         stream.set_pos(100);
         assert_eq!(stream.pos(), stream.size());
         assert_eq!(stream.read_u1(), None);
+    }
+
+    #[test]
+    fn substream_shares_parent_bytes_without_copying() {
+        let data = [1, 2, 3, 4];
+        let mut parent = KaitaiStream::new(&data);
+        let mut child = parent.take_substream(2).expect("substream");
+
+        assert_eq!(parent.pos(), 2);
+        assert_eq!(child.read_u2be(), Some(0x0102));
+        assert_eq!(parent.read_u1(), Some(3));
     }
 
     #[test]

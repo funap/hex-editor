@@ -5,7 +5,7 @@ use crate::core::document::Document;
 use crate::core::encoding::Encoding;
 use crate::core::highlight::{HighlightColor, HighlightFile, HighlightItem, generate_highlight_id};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
-use crate::core::structure::ParseResult;
+use crate::core::structure::{ParseResult, ParsedField};
 use gpui::Hsla;
 use std::cell::RefCell;
 use std::cmp;
@@ -47,10 +47,20 @@ pub struct Editor {
     pub ksy_definition: Arc<RwLock<Option<Arc<crate::core::structure::KsyDefinition>>>>,
     pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
     pub is_parsing_structure: bool,
+    /// True after byte parsing reaches the end and display indexes are being finalized.
+    pub is_finalizing_structure: bool,
     pub parse_progress_offset: usize,
     pub parse_total_size: usize,
     pub parse_generation: usize,
     pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Enables background reparsing after document edits.
+    ///
+    /// This is enabled by the UI entry point that owns the parser task. It
+    /// remains disabled for the synchronous core API used by deterministic
+    /// tests and non-UI callers.
+    pub structure_parse_async: bool,
+    /// Set after an edit until the UI starts the debounced background parse.
+    pub structure_reparse_requested: bool,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
     pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
@@ -87,10 +97,13 @@ impl Editor {
             ksy_definition,
             parse_result,
             is_parsing_structure: false,
+            is_finalizing_structure: false,
             parse_progress_offset: 0,
             parse_total_size: 0,
             parse_generation: 0,
             parse_cancel_token: None,
+            structure_parse_async: false,
+            structure_reparse_requested: false,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
             highlights,
@@ -840,6 +853,24 @@ impl Editor {
             return cached.clone();
         }
 
+        // The parser prepares the default expanded structure layout before it
+        // publishes the 100% result. Reuse it directly on the UI thread; the
+        // dynamic builder below remains the compatibility path for custom
+        // joins/breaks and collapsed structures.
+        if self.show_inline_structure_view
+            && !self.is_parsing_structure
+            && self.collapsed_struct_ids.is_empty()
+            && self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
+            && self.custom_joins.read().expect("custom_joins read lock").is_empty()
+            && self.empty_lines.read().expect("empty_lines read lock").is_empty()
+            && let Some(parse_res) = self.parse_result()
+            && let Some(line_map) = &parse_res.structure_line_map
+        {
+            let map = (**line_map).clone();
+            *self.cached_line_map.borrow_mut() = Some(map.clone());
+            return map;
+        }
+
         let map = if !self.has_custom_layout() {
             LineMap::Standard { total_size: self.total_size() }
         } else {
@@ -867,6 +898,7 @@ impl Editor {
                 layout_events.extend(custom_joins_guard.iter().copied());
                 layout_events.extend(empty_lines_guard.keys().copied());
                 if self.show_inline_structure_view
+                    && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
                 {
                     parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
@@ -878,6 +910,7 @@ impl Editor {
                 break_events.extend(custom_breaks_guard.iter().copied());
                 break_events.extend(empty_lines_guard.keys().copied());
                 if self.show_inline_structure_view
+                    && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
                 {
                     parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
@@ -1256,7 +1289,7 @@ impl Editor {
         !self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
             || !self.custom_joins.read().expect("custom_joins read lock").is_empty()
             || !self.empty_lines.read().expect("empty_lines read lock").is_empty()
-            || (self.show_inline_structure_view && self.parse_result.read().expect("parse_result read lock").is_some())
+            || (self.show_inline_structure_view && !self.is_parsing_structure && self.parse_result.read().expect("parse_result read lock").is_some())
     }
 
     pub fn toggle_struct_collapsed(&mut self, struct_id: &str) {
@@ -1301,8 +1334,7 @@ impl Editor {
     pub fn execute_command(&mut self, mut command: Box<dyn Command>) {
         command.execute(self);
         self.document.write().expect("document write lock").history.push(command);
-        self.cached_line_map.replace(None);
-        self.reparse_structure();
+        self.document_changed();
     }
 
     pub fn undo(&mut self) {
@@ -1322,8 +1354,7 @@ impl Editor {
 
             // Re-acquire lock to push redo
             self.document.write().expect("document write lock").history.push_redo(cmd);
-            self.cached_line_map.replace(None);
-            self.reparse_structure();
+            self.document_changed();
         }
     }
 
@@ -1338,24 +1369,64 @@ impl Editor {
 
             // Re-acquire lock to push undo
             self.document.write().expect("document write lock").history.push_undo(cmd);
-            self.cached_line_map.replace(None);
-            self.reparse_structure();
+            self.document_changed();
         }
     }
 
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
+        self.cancel_structure_parsing();
+        self.structure_parse_async = false;
+        self.structure_reparse_requested = false;
         *self.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy);
         self.reparse_structure();
     }
 
     pub fn set_parse_result(&mut self, result: ParseResult) {
         self.parse_progress_offset = result.total_parsed_bytes;
+        self.is_finalizing_structure = false;
         *self.parse_result.write().expect("parse_result write lock") = Some(Arc::new(result));
         self.cached_line_map.replace(None);
     }
 
+    /// Starts a new partial structure result that can receive parse batches.
+    pub fn begin_partial_parse_result(&mut self, definition_id: String) {
+        let old = self
+            .parse_result
+            .write()
+            .expect("parse_result write lock")
+            .replace(Arc::new(ParseResult::empty(definition_id)));
+        if let Some(old_res) = old {
+            std::thread::spawn(move || drop(old_res));
+        }
+        self.is_finalizing_structure = false;
+        self.cached_line_map.replace(None);
+    }
+
+    /// Appends a batch of parsed root fields without cloning earlier batches.
+    pub fn append_parse_fields(&mut self, definition_id: String, fields: Vec<ParsedField>, offset: usize, total_size: usize) {
+        let chunk: Arc<[ParsedField]> = Arc::from(fields.into_boxed_slice());
+        self.append_parse_chunks(definition_id, vec![chunk], offset, total_size);
+    }
+
+    /// Appends shared parse chunks without cloning their fields.
+    pub fn append_parse_chunks(&mut self, definition_id: String, chunks: Vec<Arc<[ParsedField]>>, offset: usize, total_size: usize) {
+        self.parse_progress_offset = offset;
+        self.parse_total_size = total_size;
+        if chunks.iter().all(|chunk| chunk.is_empty()) {
+            return;
+        }
+
+        let next = if let Some(current) = self.parse_result() {
+            Arc::new(current.append_shared_chunks_without_index(&chunks, offset))
+        } else {
+            Arc::new(ParseResult::empty(definition_id).append_shared_chunks_without_index(&chunks, offset))
+        };
+        *self.parse_result.write().expect("parse_result write lock") = Some(next);
+    }
+
     pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
         self.parse_progress_offset = result.total_parsed_bytes;
+        self.is_finalizing_structure = false;
         let old = self.parse_result.write().expect("parse_result write lock").replace(result);
         if let Some(old_res) = old {
             std::thread::spawn(move || drop(old_res));
@@ -1378,14 +1449,54 @@ impl Editor {
 
     pub fn reparse_structure(&mut self) {
         if let Some(ksy) = self.ksy_definition() {
-            let (bytes, ksy_clone) = {
+            let (buffer, ksy_clone) = {
                 let buffer_lock = self.document.read().expect("document read lock");
-                (buffer_lock.buffer.data().to_vec(), (*ksy).clone())
+                (buffer_lock.buffer.clone(), (*ksy).clone())
             };
-            let mut stream = crate::core::structure::KaitaiStream::new(&bytes);
+            let mut stream = crate::core::structure::KaitaiStream::new(buffer.data());
             let interpreter = crate::core::structure::KaitaiInterpreter::new(ksy_clone);
             let result = interpreter.parse(&mut stream);
             self.set_parse_result(result);
+        }
+    }
+
+    /// Returns the current deferred edit request without consuming it.
+    ///
+    /// The UI uses the generation as a debounce token. A request remains
+    /// pending until [`Self::take_structure_reparse_request`] starts it, so a
+    /// newer edit can invalidate an older timer without racing the parser.
+    pub fn pending_structure_reparse(&self) -> Option<(Arc<crate::core::structure::KsyDefinition>, usize)> {
+        self.structure_reparse_requested
+            .then(|| self.ksy_definition().map(|ksy| (ksy, self.parse_generation)))
+            .flatten()
+    }
+
+    /// Takes a deferred edit request if it still belongs to `generation`.
+    pub fn take_structure_reparse_request(&mut self, generation: usize) -> Option<Arc<crate::core::structure::KsyDefinition>> {
+        if !self.structure_reparse_requested || self.parse_generation != generation {
+            return None;
+        }
+
+        self.structure_reparse_requested = false;
+        self.ksy_definition()
+    }
+
+    fn document_changed(&mut self) {
+        self.cached_line_map.replace(None);
+
+        if self.structure_parse_async && self.ksy_definition().is_some() {
+            self.cancel_structure_parsing();
+            self.structure_reparse_requested = true;
+            self.is_parsing_structure = true;
+            self.is_finalizing_structure = false;
+            self.parse_progress_offset = 0;
+            self.parse_total_size = self.total_size();
+
+            if let Some(ksy) = self.ksy_definition() {
+                self.begin_partial_parse_result(ksy.meta.id.clone());
+            }
+        } else {
+            self.reparse_structure();
         }
     }
 
@@ -1393,14 +1504,25 @@ impl Editor {
         if let Some(token) = self.parse_cancel_token.take() {
             token.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+        // Invalidate callbacks that are already queued in the parser's
+        // mailbox, and cancel a debounce request that has not started yet.
+        self.parse_generation = self.parse_generation.wrapping_add(1);
+        self.structure_reparse_requested = false;
         self.is_parsing_structure = false;
+        self.is_finalizing_structure = false;
     }
 
     pub fn clear_structure_definition(&mut self) {
         self.cancel_structure_parsing();
+        self.structure_parse_async = false;
+        self.structure_reparse_requested = false;
         *self.ksy_definition.write().expect("ksy_definition write lock") = None;
-        *self.parse_result.write().expect("parse_result write lock") = None;
+        let old = self.parse_result.write().expect("parse_result write lock").take();
+        if let Some(old_res) = old {
+            std::thread::spawn(move || drop(old_res));
+        }
         self.is_parsing_structure = false;
+        self.is_finalizing_structure = false;
         self.parse_progress_offset = 0;
         self.parse_total_size = 0;
         self.cached_line_map.replace(None);

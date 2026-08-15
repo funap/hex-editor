@@ -96,7 +96,7 @@ impl HexView {
 
         let _editor_subscription = cx.observe(&editor, |this, editor_entity, cx| {
             this.cached_comment_content_width.set(None);
-            this.cached_desc_content_width.set(None);
+            this.clear_desc_content_width_cache();
             let ed = editor_entity.read(cx);
             let new_encoding = ed.encoding;
             let new_radix = ed.radix;
@@ -207,7 +207,7 @@ impl HexView {
         self.desc_scroll_x = state.desc_scroll_x;
         self.comment_scroll_x = state.comment_scroll_x;
         self.cached_comment_content_width.set(None);
-        self.cached_desc_content_width.set(None);
+        self.clear_desc_content_width_cache();
     }
 
     pub fn copy_layout_from(&mut self, source: &HexView) {
@@ -219,23 +219,21 @@ impl HexView {
         (self.hex_content_width - self.hex_col_width).max(0.0)
     }
 
+    fn clear_desc_content_width_cache(&mut self) {
+        self.cached_desc_content_width.set(None);
+    }
+
     pub fn max_desc_scroll(&self, cx: &App) -> f32 {
+        let _ = cx;
         if let Some(max_content_w) = self.cached_desc_content_width.get() {
             let max_w = (max_content_w + 32.0).max(self.desc_col_width);
             return (max_w - self.desc_col_width).max(0.0);
         }
 
-        let scan_range = self.auto_fit_scan_range(cx);
-        let editor = self.editor.read(cx);
-        let char_w = f32::from(self.font_size_prop) * 0.61;
-        let max_content_w = if let Some(parse_res) = editor.parse_result() {
-            Self::description_content_width_in_range(editor, &parse_res, &scan_range, char_w)
-        } else {
-            0.0
-        };
-        self.cached_desc_content_width.set(Some(max_content_w));
-        let max_w = (max_content_w + 32.0).max(self.desc_col_width);
-        (max_w - self.desc_col_width).max(0.0)
+        // Description measurement is an explicit user action. Until the
+        // header is double-clicked, avoid scanning the parse result from the
+        // render path altogether.
+        0.0
     }
 
     fn auto_fit_scan_range(&self, cx: &App) -> Range<usize> {
@@ -244,21 +242,38 @@ impl HexView {
         bounded_auto_fit_range(total_size, visible_start, visible_end)
     }
 
+    fn visible_auto_fit_scan_range(&self, cx: &App) -> Range<usize> {
+        let (visible_start, visible_end) = self.viewport_byte_range(cx);
+        let total_size = self.editor.read(cx).total_size();
+        let start = visible_start.min(total_size);
+        let end = visible_end.clamp(start, total_size);
+        start..end
+    }
+
     pub fn description_content_width_in_range(editor: &Editor, parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
+        let line_starts = editor.line_starts();
+        let total_size = editor.total_size();
+        Self::description_content_width_for_line_map(&line_starts, total_size, parse_result, scan_range, &editor.collapsed_struct_ids, char_w)
+    }
+
+    fn description_content_width_for_line_map(
+        line_starts: &crate::core::layout::LineMap,
+        total_size: usize,
+        parse_result: &ParseResult,
+        scan_range: &Range<usize>,
+        collapsed_structs: &std::collections::HashSet<String>,
+        char_w: f32,
+    ) -> f32 {
         let scan_len = scan_range.end.saturating_sub(scan_range.start);
         if scan_len == 0 {
             return 0.0;
         }
 
-        let line_starts = editor.line_starts();
-        let total_size = editor.total_size();
-        let collapsed_structs = &editor.collapsed_struct_ids;
-
-        let start_row = Editor::find_line_index(scan_range.start, &line_starts);
+        let start_row = Editor::find_line_index(scan_range.start, line_starts);
         let end_row = if scan_range.end >= total_size {
             line_starts.len()
         } else {
-            Editor::find_line_index(scan_range.end, &line_starts) + 1
+            Editor::find_line_index(scan_range.end, line_starts) + 1
         };
 
         let mut max_width: f32 = 0.0;
@@ -315,7 +330,7 @@ impl HexView {
             if !is_collapsed {
                 for f in leaf_fields {
                     let expr = f.format_expression();
-                    parts_width += weighted_text_width(&expr, char_w);
+                    parts_width += weighted_text_width(expr, char_w);
                     part_count += 1;
                 }
             }
@@ -513,7 +528,7 @@ impl HexView {
                 self.ascii_scroll_x = 0.0;
             }
             ResizingColumn::Description => {
-                let scan_range = self.auto_fit_scan_range(cx);
+                let scan_range = self.visible_auto_fit_scan_range(cx);
                 let editor = self.editor.read(cx);
                 if let Some(parse_res) = editor.parse_result() {
                     let char_w = f32::from(self.font_size_prop) * 0.61;
@@ -596,7 +611,6 @@ impl HexView {
                 if new_offset != self.scroll_offset {
                     self.scroll_offset = new_offset;
                     self.cached_comment_content_width.set(None);
-                    self.cached_desc_content_width.set(None);
                     cx.notify();
                     cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
                 }
@@ -652,7 +666,6 @@ impl HexView {
                 if new_offset != self.scroll_offset {
                     self.scroll_offset = new_offset;
                     self.cached_comment_content_width.set(None);
-                    self.cached_desc_content_width.set(None);
                     cx.notify();
                     cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
                 }
@@ -719,7 +732,7 @@ impl HexView {
         self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cached_comment_content_width.set(None);
-        self.cached_desc_content_width.set(None);
+        self.clear_desc_content_width_cache();
         self.cursor_reveal_pending = true;
         cx.notify();
     }
@@ -729,7 +742,7 @@ impl HexView {
         self.hex_cell_width = 0.0;
         self.hex_content_width = 0.0;
         self.cached_comment_content_width.set(None);
-        self.cached_desc_content_width.set(None);
+        self.clear_desc_content_width_cache();
         self.cursor_reveal_pending = true;
         cx.notify();
     }
@@ -833,7 +846,6 @@ impl HexView {
         if self.scroll_offset != new_offset {
             self.scroll_offset = new_offset;
             self.cached_comment_content_width.set(None);
-            self.cached_desc_content_width.set(None);
             self.accum_scroll_y = 0.0;
             cx.notify();
             cx.emit(HexViewEvent::Scrolled(self.scroll_offset));

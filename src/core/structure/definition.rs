@@ -72,6 +72,8 @@ pub struct KsyAttr {
     #[serde(skip)]
     pub compiled_size: Option<ExprAST>,
     #[serde(skip)]
+    pub compiled_pos: Option<ExprAST>,
+    #[serde(skip)]
     pub compiled_switch: Option<(String, HashMap<String, String>)>,
 }
 
@@ -112,6 +114,9 @@ impl KsyAttr {
         }
         if let Some(KsyValue::Expr(ref expr)) = self.size {
             self.compiled_size = ExprAST::compile(expr);
+        }
+        if let Some(KsyValue::Expr(ref expr)) = self.pos {
+            self.compiled_pos = ExprAST::compile(expr);
         }
         if let Some(ref val) = self.attr_type
             && let Some(map) = val.as_mapping()
@@ -159,22 +164,20 @@ impl KsyDefinition {
         for attr in self.instances.values_mut() {
             attr.compile_expressions();
         }
-        for t in self.types.values_mut() {
-            t.compile_expressions();
-        }
+        compile_type_expressions(&mut self.types);
     }
 }
 
-impl KsyType {
-    pub fn compile_expressions(&mut self) {
-        for attr in &mut self.seq {
+fn compile_type_expressions(types: &mut HashMap<String, KsyType>) {
+    let mut pending: Vec<&mut KsyType> = types.values_mut().collect();
+
+    while let Some(type_def) = pending.pop() {
+        for attr in &mut type_def.seq {
             attr.compile_expressions();
         }
-        for attr in self.instances.values_mut() {
+        for attr in type_def.instances.values_mut() {
             attr.compile_expressions();
         }
-        for t in self.types.values_mut() {
-            t.compile_expressions();
-        }
+        pending.extend(type_def.types.values_mut());
     }
 }

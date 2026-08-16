@@ -16,15 +16,18 @@ pub use types::*;
 
 use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray,
-    CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, ExportHighlights,
+    CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportHighlights,
     HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine,
-    LoadStructureDefinition, RemoveCustomBreakBackward, RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian, SetByteOrderLittleEndian,
-    SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8, SetRadixBin,
-    SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView, ToggleSearch,
+    LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian,
+    SetByteOrderLittleEndian, SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2, SetGroupSize4,
+    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView,
+    ToggleSearch, Undo,
 };
+use crate::app_state::InsertModeState;
+use crate::core::clipboard::parse_paste_bytes;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
-use crate::core::format::{CopyFormat, format_bytes};
+use crate::core::format::{CopyFormat, format_bytes, format_hex_spaces};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::ParseResult;
 use gpui::prelude::*;
@@ -34,10 +37,89 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, StyledExt, h_flex};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
+
+const HEX_CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+const HEX_CURSOR_PAUSE_DELAY: Duration = Duration::from_millis(300);
+
+/// Keeps the Insert Mode cursor in sync with the blinking behavior of
+/// `gpui-component`'s text inputs.
+struct HexCursorBlink {
+    visible: bool,
+    paused: bool,
+    epoch: usize,
+    _task: Task<()>,
+}
+
+impl HexCursorBlink {
+    fn new() -> Self {
+        Self {
+            visible: false,
+            paused: false,
+            epoch: 0,
+            _task: Task::ready(()),
+        }
+    }
+
+    fn start(&mut self, cx: &mut Context<Self>) {
+        self.blink(self.epoch, cx);
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        self.epoch = 0;
+        cx.notify();
+    }
+
+    fn next_epoch(&mut self) -> usize {
+        self.epoch += 1;
+        self.epoch
+    }
+
+    fn blink(&mut self, epoch: usize, cx: &mut Context<Self>) {
+        if self.paused || epoch != self.epoch {
+            self.visible = true;
+            return;
+        }
+
+        self.visible = !self.visible;
+        cx.notify();
+
+        let epoch = self.next_epoch();
+        self._task = cx.spawn(async move |this, cx| {
+            Timer::after(HEX_CURSOR_BLINK_INTERVAL).await;
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |this, cx| this.blink(epoch, cx)).ok();
+            }
+        });
+    }
+
+    fn visible(&self) -> bool {
+        self.paused || self.visible
+    }
+
+    fn pause(&mut self, cx: &mut Context<Self>) {
+        self.paused = true;
+        self.visible = true;
+        cx.notify();
+
+        let epoch = self.next_epoch();
+        self._task = cx.spawn(async move |this, cx| {
+            Timer::after(HEX_CURSOR_PAUSE_DELAY).await;
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |this, cx| {
+                    this.paused = false;
+                    this.blink(epoch, cx);
+                })
+                .ok();
+            }
+        });
+    }
+}
 
 pub struct HexView {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
+    cursor_blink: Entity<HexCursorBlink>,
     scroll_offset: usize,
     accum_scroll_y: f32,
     outer_scroll_x: f32,
@@ -54,6 +136,11 @@ pub struct HexView {
     last_scroll_time: Option<std::time::Instant>,
     scroll_lock_top_row: usize,
     is_selecting: bool,
+    mouse_selection_anchor: Option<usize>,
+    active_column: EditColumn,
+    pending_hex_digit: Option<(usize, u8)>,
+    pending_hex_range: Option<Range<usize>>,
+    hex_nibble: u8,
     bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     list_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     highlights: Arc<Vec<(Range<usize>, Hsla)>>,
@@ -80,6 +167,9 @@ pub struct HexView {
     last_cursor_offset: Option<usize>,
     cursor_reveal_pending: bool,
     _editor_subscription: Subscription,
+    _insert_mode_subscription: Subscription,
+    _cursor_blink_subscription: Subscription,
+    _window_activation_subscription: Subscription,
 }
 
 impl EventEmitter<HexViewEvent> for HexView {}
@@ -94,12 +184,27 @@ impl HexView {
         let font_size_prop = px(14.0);
         let hex_col_width = 0.0;
         let focus_handle = cx.focus_handle();
+        let cursor_blink = cx.new(|_| HexCursorBlink::new());
+        let _cursor_blink_subscription = cx.observe(&cursor_blink, |_, _, cx| cx.notify());
+        let _window_activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && this.focus_handle.is_focused(window) {
+                this.cursor_blink.update(cx, |cursor, cx| {
+                    cursor.start(cx);
+                });
+            }
+        });
 
-        cx.on_focus_in(&focus_handle, window, |_this, _, cx| {
+        cx.on_focus_in(&focus_handle, window, |this, _, cx| {
+            this.cursor_blink.update(cx, |cursor, cx| {
+                cursor.start(cx);
+            });
             cx.notify();
         })
         .detach();
-        cx.on_focus_out(&focus_handle, window, |_this, _, _, cx| {
+        cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
+            this.cursor_blink.update(cx, |cursor, cx| {
+                cursor.stop(cx);
+            });
             cx.notify();
         })
         .detach();
@@ -108,13 +213,24 @@ impl HexView {
             this.cached_comment_content_width.set(None);
             this.clear_desc_content_width_cache();
             let ed = editor_entity.read(cx);
+            if ed.is_read_only() {
+                this.clear_pending_hex_input();
+            }
             let new_encoding = ed.encoding;
             let new_radix = ed.radix;
             let new_group_size = ed.group_size;
             let new_endian = ed.is_big_endian;
-            let cursor_changed = this.last_cursor_offset != Some(ed.cursor_offset);
+            let cursor_offset = if InsertModeState::is_enabled(cx) {
+                ed.insert_cursor_offset()
+            } else {
+                ed.cursor_offset
+            };
+            let cursor_changed = this.last_cursor_offset != Some(cursor_offset);
             if cursor_changed {
                 this.cursor_reveal_pending = true;
+                this.cursor_blink.update(cx, |cursor, cx| {
+                    cursor.pause(cx);
+                });
             }
 
             if this.encoding != new_encoding {
@@ -134,9 +250,34 @@ impl HexView {
             cx.notify();
         });
 
+        let _insert_mode_subscription = cx.observe_global::<InsertModeState>(|this, cx| {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            this.pause_cursor_blink(cx);
+            this.clear_pending_hex_input();
+            this.cursor_reveal_pending = true;
+
+            if !insert_mode {
+                let should_clamp_cursor = {
+                    let editor = this.editor.read(cx);
+                    editor.cursor_offset >= editor.total_size()
+                };
+                if should_clamp_cursor {
+                    this.editor.update(cx, |editor, editor_cx| {
+                        let last_offset = editor.total_size().saturating_sub(1);
+                        editor.set_cursor_offset(last_offset);
+                        editor_cx.notify();
+                    });
+                }
+            }
+
+            this.ensure_cursor_visible(cx);
+            cx.notify();
+        });
+
         Self {
             editor,
             focus_handle,
+            cursor_blink,
             scroll_offset: 0,
             accum_scroll_y: 0.0,
             outer_scroll_x: 0.0,
@@ -153,6 +294,11 @@ impl HexView {
             last_scroll_time: None,
             scroll_lock_top_row: 0,
             is_selecting: false,
+            mouse_selection_anchor: None,
+            active_column: EditColumn::Hex,
+            pending_hex_digit: None,
+            pending_hex_range: None,
+            hex_nibble: 0,
             bounds: std::cell::Cell::new(None),
             list_bounds: std::cell::Cell::new(None),
             highlights: Arc::new(Vec::new()),
@@ -179,6 +325,9 @@ impl HexView {
             last_cursor_offset: None,
             cursor_reveal_pending: true,
             _editor_subscription,
+            _insert_mode_subscription,
+            _cursor_blink_subscription,
+            _window_activation_subscription,
         }
     }
 
@@ -716,10 +865,29 @@ impl HexView {
         }
         if self.is_selecting {
             self.is_selecting = false;
+            self.mouse_selection_anchor = None;
+            let collapsed_selection = {
+                let ed = self.editor.read(cx);
+                ed.selection().is_collapsed()
+            };
+            if collapsed_selection {
+                self.editor.update(cx, |editor, cx| {
+                    editor.clear_selection();
+                    cx.notify();
+                });
+            }
             let (start, end, cursor_offset) = {
                 let ed = self.editor.read(cx);
-                (ed.selection_start, ed.selection_end, ed.cursor_offset)
+                let range = ed.selection_range();
+                (
+                    range.as_ref().map(|range| range.start),
+                    range.as_ref().map(|range| range.end.saturating_sub(1)),
+                    ed.cursor_offset,
+                )
             };
+            if start.is_some() {
+                self.clear_pending_hex_input();
+            }
             cx.emit(HexViewEvent::SelectionChanged { start, end });
             cx.emit(HexViewEvent::CursorMoved(cursor_offset));
         }
@@ -870,8 +1038,9 @@ impl HexView {
     }
 
     fn ensure_cursor_visible(&mut self, cx: &mut Context<Self>) {
+        let insert_mode = InsertModeState::is_enabled(cx);
         let editor = self.editor.read(cx);
-        let cursor_offset = editor.cursor_offset;
+        let cursor_offset = if insert_mode { editor.insert_cursor_offset() } else { editor.cursor_offset };
         let line_starts = editor.line_starts();
         let cursor_row = Editor::find_line_index(cursor_offset, &line_starts);
 
@@ -890,8 +1059,429 @@ impl HexView {
         }
     }
 
+    fn clear_pending_hex_input(&mut self) {
+        self.pending_hex_digit = None;
+        self.pending_hex_range = None;
+        self.hex_nibble = 0;
+    }
+
+    fn edit_column_is_hex(&self) -> bool {
+        self.active_column == EditColumn::Hex
+    }
+
+    fn edit_column_is_ascii(&self) -> bool {
+        self.active_column == EditColumn::Ascii
+    }
+
+    fn edit_changed(&mut self, changed: bool, cx: &mut Context<Self>) {
+        if changed {
+            self.pause_cursor_blink(cx);
+            self.notify_document_changed(cx);
+        }
+        cx.notify();
+    }
+
+    fn pause_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.cursor_blink.update(cx, |cursor, cx| {
+            cursor.pause(cx);
+        });
+    }
+
+    fn handle_hex_digit(&mut self, digit: u8, window: &mut Window, cx: &mut Context<Self>) {
+        if self.radix != DisplayRadix::Hexadecimal || self.editor.read(cx).is_read_only() {
+            return;
+        }
+
+        cx.focus_self(window);
+        let selected_range = {
+            let editor = self.editor.read(cx);
+            editor.has_selection().then(|| editor.edit_range()).flatten()
+        };
+        if let Some(range) = selected_range {
+            self.editor.update(cx, |editor, _| {
+                editor.set_cursor_offset_exact(range.start);
+            });
+            self.pending_hex_range = Some(range);
+            self.pending_hex_digit = None;
+            self.hex_nibble = 0;
+        }
+
+        let position = self.editor.read(cx).cursor_offset;
+        if self.hex_nibble == 0 {
+            self.pending_hex_digit = Some((position, digit));
+            self.hex_nibble = 1;
+            cx.notify();
+            return;
+        }
+
+        let high = self
+            .pending_hex_digit
+            .filter(|(pending_position, _)| *pending_position == position)
+            .map(|(_, high)| high)
+            .unwrap_or_else(|| self.editor.read(cx).value_at_cursor().unwrap_or(0) >> 4);
+        let value = (high << 4) | digit;
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let replacement_range = self.pending_hex_range.take();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let changed = if let Some(range) = replacement_range {
+                if insert_mode {
+                    let cursor_after = range.start.saturating_add(1);
+                    editor.replace_range_with_cursor(range, vec![value], cursor_after)
+                } else {
+                    editor.replace_range(range, vec![value])
+                }
+            } else if insert_mode {
+                editor.insert_bytes(position, vec![value])
+            } else {
+                editor.replace_byte(position, value)
+            };
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.clear_pending_hex_input();
+        self.edit_changed(changed, cx);
+    }
+
+    fn handle_ascii_character(&mut self, character: char, window: &mut Window, cx: &mut Context<Self>) {
+        if character.is_control() || self.editor.read(cx).is_read_only() {
+            return;
+        }
+
+        let Some(replacement) = self.encoding.encode_char(character) else {
+            return;
+        };
+
+        cx.focus_self(window);
+        self.clear_pending_hex_input();
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let has_selection = editor.has_selection();
+            let changed = if insert_mode && !has_selection {
+                let position = editor.cursor_offset;
+                editor.insert_bytes(position, replacement)
+            } else if has_selection {
+                let range = editor.edit_range().expect("selection has an edit range");
+                if insert_mode {
+                    let cursor_after = range.start.saturating_add(replacement.len());
+                    editor.replace_range_with_cursor(range, replacement, cursor_after)
+                } else {
+                    editor.replace_range(range, replacement)
+                }
+            } else {
+                let position = editor.cursor_offset;
+                let existing_len = editor
+                    .document
+                    .read()
+                    .ok()
+                    .and_then(|document| editor.encoding.decode_char_at(document.buffer.data(), position).map(|(_, len)| len))
+                    .unwrap_or(1);
+                let range = position..position.saturating_add(existing_len).min(editor.total_size());
+                editor.replace_range(range, replacement)
+            };
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    fn delete_backward_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        self.clear_pending_hex_input();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let changed = editor.delete_backward();
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    fn delete_forward_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        self.clear_pending_hex_input();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let changed = editor.delete_forward();
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
+            return;
+        }
+
+        match event.keystroke.key.as_str() {
+            "backspace" => {
+                self.delete_backward_key(window, cx);
+                return;
+            }
+            "delete" => {
+                self.delete_forward_key(window, cx);
+                return;
+            }
+            "escape" => {
+                self.clear_pending_hex_input();
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
+
+        let Some(key_char) = event.keystroke.key_char.as_deref() else {
+            return;
+        };
+        let mut characters = key_char.chars();
+        let Some(character) = characters.next() else {
+            return;
+        };
+        if characters.next().is_some() {
+            return;
+        }
+
+        if self.edit_column_is_hex()
+            && let Some(digit) = hex_digit(character)
+        {
+            self.handle_hex_digit(digit, window, cx);
+        } else if self.edit_column_is_ascii() {
+            self.handle_ascii_character(character, window, cx);
+        }
+    }
+
+    pub fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        self.clear_pending_hex_input();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let changed = editor.undo();
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    pub fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        self.clear_pending_hex_input();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let changed = editor.redo();
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    pub fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        let (range, bytes) = {
+            let editor = self.editor.read(cx);
+            let Some(range) = editor.edit_range() else {
+                return;
+            };
+            let bytes = editor
+                .document
+                .read()
+                .expect("document read lock")
+                .buffer
+                .get_range(range.start, range.len())
+                .to_vec();
+            (range, bytes)
+        };
+        if bytes.is_empty() {
+            return;
+        }
+
+        let clipboard_text = format_hex_spaces(&bytes);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string_with_metadata(
+            clipboard_text.clone(),
+            format!("xvw-bytes:{clipboard_text}"),
+        ));
+
+        self.clear_pending_hex_input();
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let remaining = editor.total_size().saturating_sub(range.len());
+            let cursor_after = range.start.min(remaining.saturating_sub(1));
+            let changed = editor.replace_range_with_cursor(range, Vec::new(), cursor_after);
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    pub fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        if self.editor.read(cx).is_read_only() {
+            return;
+        }
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let bytes = item
+            .metadata()
+            .and_then(|metadata| metadata.strip_prefix("xvw-bytes:"))
+            .and_then(parse_paste_bytes)
+            .or_else(|| item.text().and_then(|text| parse_paste_bytes(&text)));
+        let Some(bytes) = bytes else {
+            return;
+        };
+        if bytes.is_empty() {
+            return;
+        }
+
+        self.clear_pending_hex_input();
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let changed = self.editor.update(cx, |editor, editor_cx| {
+            let has_selection = editor.has_selection();
+            let changed = if has_selection {
+                let range = editor.edit_range().expect("selection has an edit range");
+                if insert_mode {
+                    let cursor_after = range.start.saturating_add(bytes.len());
+                    editor.replace_range_with_cursor(range, bytes, cursor_after)
+                } else {
+                    editor.replace_range(range, bytes)
+                }
+            } else if insert_mode {
+                let position = editor.cursor_offset;
+                editor.insert_bytes(position, bytes)
+            } else {
+                let position = editor.cursor_offset;
+                let range = position..position.saturating_add(bytes.len()).min(editor.total_size());
+                editor.replace_range(range, bytes)
+            };
+            if changed {
+                editor_cx.notify();
+            }
+            changed
+        });
+        self.edit_changed(changed, cx);
+    }
+
+    fn vi_move_left(&mut self, _: &ViMoveLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            self.exec_move(window, cx, |editor| editor.move_left());
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_move_right(&mut self, _: &ViMoveRight, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_move(window, cx, move |editor| {
+                if insert_mode {
+                    editor.move_right_for_insert();
+                } else {
+                    editor.move_right();
+                }
+            });
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_move_up(&mut self, _: &ViMoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            self.exec_move(window, cx, |editor| editor.move_up());
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_move_down(&mut self, _: &ViMoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_move(window, cx, move |editor| {
+                if insert_mode {
+                    editor.move_down_for_insert();
+                } else {
+                    editor.move_down();
+                }
+            });
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_select_left(&mut self, _: &ViSelectLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_left_for_insert();
+                } else {
+                    editor.select_left();
+                }
+            });
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_select_right(&mut self, _: &ViSelectRight, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_right_for_insert();
+                } else {
+                    editor.select_right();
+                }
+            });
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_select_up(&mut self, _: &ViSelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            self.exec_select(window, cx, |editor| editor.select_up());
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn vi_select_down(&mut self, _: &ViSelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_column_is_hex() {
+            self.exec_select(window, cx, |editor| editor.select_down());
+        } else {
+            cx.propagate();
+        }
+    }
+
     fn exec_move(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Editor)) {
         cx.focus_self(window);
+        self.pause_cursor_blink(cx);
+        self.clear_pending_hex_input();
         self.editor.update(cx, |editor, cx| {
             f(editor);
             cx.notify();
@@ -902,13 +1492,16 @@ impl HexView {
 
     fn exec_select(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Editor)) {
         cx.focus_self(window);
+        self.pause_cursor_blink(cx);
+        self.clear_pending_hex_input();
         self.editor.update(cx, |editor, cx| {
             f(editor);
             cx.notify();
         });
         let (start, end) = {
             let editor = self.editor.read(cx);
-            (editor.selection_start, editor.selection_end)
+            let range = editor.selection_range();
+            (range.as_ref().map(|range| range.start), range.as_ref().map(|range| range.end.saturating_sub(1)))
         };
         cx.emit(HexViewEvent::SelectionChanged { start, end });
     }
@@ -918,7 +1511,14 @@ impl HexView {
     }
 
     fn move_right(&mut self, _: &MoveRight, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_move(window, cx, |e| e.move_right());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_move(window, cx, move |editor| {
+            if insert_mode {
+                editor.move_right_for_insert();
+            } else {
+                editor.move_right();
+            }
+        });
     }
 
     fn move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -926,15 +1526,36 @@ impl HexView {
     }
 
     fn move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_move(window, cx, |e| e.move_down());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_move(window, cx, move |editor| {
+            if insert_mode {
+                editor.move_down_for_insert();
+            } else {
+                editor.move_down();
+            }
+        });
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| e.select_left());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_left_for_insert();
+            } else {
+                editor.select_left();
+            }
+        });
     }
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| e.select_right());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_right_for_insert();
+            } else {
+                editor.select_right();
+            }
+        });
     }
 
     fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -970,9 +1591,14 @@ impl HexView {
             30
         };
         let count = visible_rows.saturating_sub(2).max(1);
+        let insert_mode = InsertModeState::is_enabled(cx);
         self.exec_move(window, cx, |e| {
             for _ in 0..count {
-                e.move_down();
+                if insert_mode {
+                    e.move_down_for_insert();
+                } else {
+                    e.move_down();
+                }
             }
         });
     }
@@ -982,9 +1608,14 @@ impl HexView {
     }
 
     fn end(&mut self, _: &End, window: &mut Window, cx: &mut Context<Self>) {
+        let insert_mode = InsertModeState::is_enabled(cx);
         self.exec_move(window, cx, |e| {
             let total = e.total_size();
-            e.set_cursor_offset(total.saturating_sub(1));
+            if insert_mode {
+                e.set_cursor_offset_exact(total);
+            } else {
+                e.set_cursor_offset(total.saturating_sub(1));
+            }
         });
     }
 
@@ -1017,26 +1648,17 @@ impl HexView {
     }
 
     fn select_home(&mut self, _: &SelectHome, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| {
-            let curr = e.cursor_offset;
-            if e.selection_start.is_none() {
-                e.selection_start = Some(curr);
-            }
-            e.selection_end = Some(0);
-            e.cursor_offset = 0;
-        });
+        self.exec_select(window, cx, |e| e.select_home());
     }
 
     fn select_end(&mut self, _: &SelectEnd, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| {
-            let total = e.total_size();
-            let end_pos = total.saturating_sub(1);
-            let curr = e.cursor_offset;
-            if e.selection_start.is_none() {
-                e.selection_start = Some(curr);
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_end_for_insert();
+            } else {
+                editor.select_end();
             }
-            e.selection_end = Some(end_pos);
-            e.cursor_offset = end_pos;
         });
     }
 
@@ -1108,13 +1730,13 @@ impl HexView {
     }
 
     fn copy_formatted(&self, format: CopyFormat, window: &mut Window, cx: &mut Context<Self>) {
-        let formatted = {
+        let (formatted, raw_bytes) = {
             let editor = self.editor.read(cx);
             let selected_range = editor.selected_range_or_cursor();
             let doc = editor.document.read().expect("document read lock");
             let total = doc.buffer.len();
             if total == 0 {
-                String::new()
+                (String::new(), Vec::new())
             } else {
                 let (start_offset, slice) = if let Some(range) = selected_range {
                     (range.start, doc.buffer.get_range(range.start, range.len()))
@@ -1122,35 +1744,51 @@ impl HexView {
                     let off = editor.cursor_offset.min(total.saturating_sub(1));
                     (off, doc.buffer.get_range(off, 1))
                 };
-                format_bytes(slice, start_offset, format)
+                (format_bytes(slice, start_offset, format), slice.to_vec())
             }
         };
 
         self.focus_handle.focus(window);
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(formatted));
+        let item = if raw_bytes.is_empty() {
+            gpui::ClipboardItem::new_string(formatted)
+        } else {
+            let raw = format_hex_spaces(&raw_bytes);
+            gpui::ClipboardItem::new_string_with_metadata(formatted, format!("xvw-bytes:{raw}"))
+        };
+        cx.write_to_clipboard(item);
     }
 
     pub fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
-        let formatted = {
+        let (formatted, raw_bytes) = {
             let editor = self.editor.read(cx);
             let selected_range = editor.selected_range_or_cursor();
             let doc = editor.document.read().expect("document read lock");
             let total = doc.buffer.len();
             if total == 0 {
-                String::new()
+                (String::new(), Vec::new())
             } else if let Some(range) = selected_range {
                 let radix = editor.radix;
                 let group_size = editor.group_size;
                 let is_big_endian = editor.is_big_endian;
                 let line_starts = editor.line_starts();
-                crate::core::radix::format_display_content_with_lines(doc.buffer.data(), range, &line_starts, radix, group_size, is_big_endian)
+                let slice = doc.buffer.get_range(range.start, range.len());
+                (
+                    crate::core::radix::format_display_content_with_lines(doc.buffer.data(), range, &line_starts, radix, group_size, is_big_endian),
+                    slice.to_vec(),
+                )
             } else {
-                String::new()
+                (String::new(), Vec::new())
             }
         };
 
         self.focus_handle.focus(window);
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(formatted));
+        let item = if raw_bytes.is_empty() {
+            gpui::ClipboardItem::new_string(formatted)
+        } else {
+            let raw = format_hex_spaces(&raw_bytes);
+            gpui::ClipboardItem::new_string_with_metadata(formatted, format!("xvw-bytes:{raw}"))
+        };
+        cx.write_to_clipboard(item);
     }
 
     pub fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
@@ -1360,7 +1998,136 @@ impl HexView {
         });
     }
 
+    fn edit_target_from_point(&self, point: Point<Pixels>, window: &Window, cx: &App) -> Option<EditTarget> {
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let offset = self.offset_from_point(point, window, cx)?;
+        let list_bounds = self.list_bounds.get()?;
+        let editor = self.editor.read(cx);
+        let doc = editor.document.read().ok()?;
+        let line_starts = editor.line_starts();
+        let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
+        let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
+        let row_idx = (self.scroll_offset + row_offset_in_view).min(line_starts.len().saturating_sub(1));
+        let line_offset = line_starts.get(row_idx)?;
+        let next_offset = line_starts.get(row_idx + 1).unwrap_or(doc.buffer.len());
+        let chunk_len = next_offset.saturating_sub(line_offset);
+        if chunk_len == 0 {
+            if insert_mode {
+                let parse_result = editor.parse_result();
+                let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+                let base_x = f32::from(list_bounds.left()) + 8.0;
+                let layout = self.current_layout(cx);
+                let relative_x = f32::from(point.x) - base_x;
+                if relative_x >= layout.fixed_width {
+                    let world_x = relative_x + self.outer_scroll_x;
+                    if !is_struct_mode
+                        && let Some(ascii_column) = layout.ascii
+                        && world_x >= ascii_column.start
+                        && world_x <= ascii_column.end()
+                    {
+                        return Some(EditTarget::Ascii { offset: line_offset });
+                    }
+                    if world_x >= layout.hex.start && world_x <= layout.hex.end() {
+                        return Some(EditTarget::Hex {
+                            offset: line_offset,
+                            nibble: 0,
+                        });
+                    }
+                }
+            }
+            return None;
+        }
+
+        let parse_result = editor.parse_result();
+        let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+        let base_x = f32::from(list_bounds.left()) + 8.0;
+        let layout = self.current_layout(cx);
+        let relative_x = f32::from(point.x) - base_x;
+        if relative_x < layout.fixed_width {
+            return None;
+        }
+        let world_x = relative_x + self.outer_scroll_x;
+
+        if !is_struct_mode
+            && let Some(ascii_column) = layout.ascii
+            && world_x >= ascii_column.start
+            && world_x < ascii_column.end()
+        {
+            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
+            if raw_idx < chunk_len {
+                return Some(EditTarget::Ascii { offset: line_offset + raw_idx });
+            }
+            if insert_mode && raw_idx >= chunk_len {
+                return Some(EditTarget::Ascii {
+                    offset: line_offset + chunk_len,
+                });
+            }
+            return None;
+        }
+
+        if world_x < layout.hex.start || world_x > layout.hex.end() {
+            return None;
+        }
+
+        let source = build_hex_text_source(
+            doc.buffer.get_range(line_offset, chunk_len),
+            line_offset,
+            self.radix,
+            self.group_size,
+            self.is_big_endian,
+        );
+        let cell_width = px(self.hex_cell_width.max(1.0));
+        let origin_x = px(base_x + layout.hex.start - self.outer_scroll_x - self.hex_scroll_x);
+        let mut selected_group = None;
+        for (index, group) in source.groups.iter().enumerate() {
+            let (group_start, group_end) = hex_group_x(*group, origin_x, cell_width);
+            let next_start = source
+                .groups
+                .get(index + 1)
+                .map(|next| origin_x + hex_grid_x(next.text_start, cell_width))
+                .unwrap_or(group_end);
+            if point.x >= group_start && point.x < next_start {
+                selected_group = Some(*group);
+                break;
+            }
+        }
+        if selected_group.is_none()
+            && insert_mode
+            && let Some(last_group) = source.groups.last().copied()
+        {
+            let (_, last_group_end) = hex_group_x(last_group, origin_x, cell_width);
+            if point.x >= last_group_end && world_x <= layout.hex.end() {
+                return Some(EditTarget::Hex {
+                    offset: line_offset + chunk_len,
+                    nibble: 0,
+                });
+            }
+        }
+        let group = selected_group.or_else(|| {
+            source
+                .groups
+                .iter()
+                .find(|group| group.chunk_start <= offset.saturating_sub(line_offset) && offset.saturating_sub(line_offset) < group.chunk_end)
+                .copied()
+        })?;
+
+        let (group_start, _) = hex_group_x(group, origin_x, cell_width);
+        let text_index = ((f32::from(point.x - group_start) / f32::from(cell_width)).floor() as usize)
+            .min(group.text_end.saturating_sub(group.text_start).saturating_sub(1));
+        let display_byte_index = if self.radix == DisplayRadix::Hexadecimal { text_index / 2 } else { 0 };
+        let group_len = group.chunk_end.saturating_sub(group.chunk_start);
+        let local_byte_index = if self.radix == DisplayRadix::Hexadecimal && !self.is_big_endian && group_len > 1 {
+            group_len.saturating_sub(display_byte_index + 1)
+        } else {
+            display_byte_index.min(group_len.saturating_sub(1))
+        };
+        let target_offset = line_offset + group.chunk_start + local_byte_index.min(group_len.saturating_sub(1));
+        let nibble = if self.radix == DisplayRadix::Hexadecimal { (text_index % 2) as u8 } else { 0 };
+        Some(EditTarget::Hex { offset: target_offset, nibble })
+    }
+
     fn offset_from_point(&self, point: Point<Pixels>, _window: &Window, cx: &App) -> Option<usize> {
+        let insert_mode = InsertModeState::is_enabled(cx);
         let root_bounds = self.bounds.get()?;
         let header_h = if self.show_header { HEADER_HEIGHT } else { 0.0 };
 
@@ -1422,6 +2189,9 @@ impl HexView {
             && world_x < ascii_column.end()
         {
             let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
+            if insert_mode && row_idx + 1 == line_starts.len() && raw_idx >= chunk_len {
+                return Some(buffer_len);
+            }
             let group_bytes = self.group_size.byte_count();
             let abs_offset = line_offset + raw_idx;
             let group_start_abs = (abs_offset / group_bytes) * group_bytes;
@@ -1454,6 +2224,16 @@ impl HexView {
                 }
             }
 
+            if insert_mode
+                && row_idx + 1 == line_starts.len()
+                && let Some(last_group) = source.groups.last().copied()
+            {
+                let (_, last_group_end) = hex_group_x(last_group, origin_x, cell_width);
+                if point.x >= last_group_end && world_x <= layout.hex.end() {
+                    return Some(buffer_len);
+                }
+            }
+
             let group = source.groups[target_group_idx];
             group.chunk_start
         };
@@ -1473,6 +2253,8 @@ impl Render for HexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().clone();
         let is_focused = self.focus_handle.is_focused(window);
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let cursor_visible = insert_mode && is_focused && window.is_window_active() && self.cursor_blink.read(cx).visible();
         let theme = cx.theme();
         let font_family = self.font_family_prop.clone();
         let font_size = self.font_size_prop;
@@ -1528,17 +2310,20 @@ impl Render for HexView {
         self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
 
         // Keep the cursor visible using the same fixed grid as the paint pass.
-        let cursor_offset = self.editor.read(cx).cursor_offset;
-        let should_reveal_cursor = self.cursor_reveal_pending || self.last_cursor_offset != Some(cursor_offset);
+        let (cursor_offset, insert_cursor_offset) = {
+            let editor = self.editor.read(cx);
+            (editor.cursor_offset, editor.insert_cursor_offset())
+        };
+        let reveal_cursor_offset = if insert_mode { insert_cursor_offset } else { cursor_offset };
+        let should_reveal_cursor = self.cursor_reveal_pending || self.last_cursor_offset != Some(reveal_cursor_offset);
         if should_reveal_cursor {
             let cursor_layout = {
                 let editor = self.editor.read(cx);
+                let total_size = editor.total_size();
                 let line_starts = editor.line_starts();
-                let row = Editor::find_line_index(editor.cursor_offset, &line_starts);
+                let row = Editor::find_line_index(reveal_cursor_offset, &line_starts);
                 let line_offset = line_starts.get(row).unwrap_or(0);
-                let next_offset = line_starts
-                    .get(row + 1)
-                    .unwrap_or_else(|| editor.document.read().map(|doc| doc.buffer.len()).unwrap_or(line_offset));
+                let next_offset = line_starts.get(row + 1).unwrap_or(total_size);
                 editor.document.read().ok().map(|doc| {
                     let source = build_hex_text_source(
                         doc.buffer.get_range(line_offset, next_offset.saturating_sub(line_offset)),
@@ -1547,34 +2332,52 @@ impl Render for HexView {
                         self.group_size,
                         self.is_big_endian,
                     );
-                    (editor.cursor_offset.saturating_sub(line_offset), source)
+                    (reveal_cursor_offset.saturating_sub(line_offset), source, total_size, next_offset)
                 })
             };
-            if let Some((cursor_in_row, source)) = cursor_layout
-                && let Some(group) = source
+            if let Some((cursor_in_row, source, total_size, next_offset)) = cursor_layout {
+                let cursor_range = source
                     .groups
                     .iter()
                     .find(|group| group.chunk_start <= cursor_in_row && cursor_in_row < group.chunk_end)
-            {
-                let cursor_left = f32::from(hex_grid_x(group.text_start, hex_cell_width));
-                let cursor_right = f32::from(hex_grid_x(group.text_end, hex_cell_width));
-                if cursor_left < self.hex_scroll_x {
-                    self.hex_scroll_x = cursor_left.clamp(0.0, max_hex_scroll);
-                } else if cursor_right > self.hex_scroll_x + self.hex_col_width {
-                    self.hex_scroll_x = (cursor_right - self.hex_col_width).clamp(0.0, max_hex_scroll);
-                }
+                    .map(|group| {
+                        (
+                            f32::from(hex_grid_x(group.text_start, hex_cell_width)),
+                            f32::from(hex_grid_x(group.text_end, hex_cell_width)),
+                        )
+                    })
+                    .or_else(|| {
+                        if cursor_in_row == source.groups.last().map(|group| group.chunk_end).unwrap_or(0)
+                            && reveal_cursor_offset == total_size
+                            && next_offset == total_size
+                        {
+                            let end = source.groups.last().map(|group| hex_grid_x(group.text_end, hex_cell_width))?;
+                            let end = f32::from(end);
+                            Some((end, end))
+                        } else {
+                            None
+                        }
+                    });
 
-                let visual_left = layout.hex.start + cursor_left - self.hex_scroll_x;
-                let visual_right = layout.hex.start + cursor_right - self.hex_scroll_x;
-                if visual_left - self.outer_scroll_x < layout.fixed_width {
-                    self.outer_scroll_x = (visual_left - layout.fixed_width).max(0.0);
-                } else if visual_right - self.outer_scroll_x > layout.fixed_width + layout.viewport_width {
-                    self.outer_scroll_x = (visual_right - layout.fixed_width - layout.viewport_width).max(0.0);
+                if let Some((cursor_left, cursor_right)) = cursor_range {
+                    if cursor_left < self.hex_scroll_x {
+                        self.hex_scroll_x = cursor_left.clamp(0.0, max_hex_scroll);
+                    } else if cursor_right > self.hex_scroll_x + self.hex_col_width {
+                        self.hex_scroll_x = (cursor_right - self.hex_col_width).clamp(0.0, max_hex_scroll);
+                    }
+
+                    let visual_left = layout.hex.start + cursor_left - self.hex_scroll_x;
+                    let visual_right = layout.hex.start + cursor_right - self.hex_scroll_x;
+                    if visual_left - self.outer_scroll_x < layout.fixed_width {
+                        self.outer_scroll_x = (visual_left - layout.fixed_width).max(0.0);
+                    } else if visual_right - self.outer_scroll_x > layout.fixed_width + layout.viewport_width {
+                        self.outer_scroll_x = (visual_right - layout.fixed_width - layout.viewport_width).max(0.0);
+                    }
+                    self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
+                    self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
                 }
-                self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
-                self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
             }
-            self.last_cursor_offset = Some(cursor_offset);
+            self.last_cursor_offset = Some(reveal_cursor_offset);
             self.cursor_reveal_pending = false;
         }
         let is_hex_clipped_left = self.hex_scroll_x > 1.0;
@@ -2031,10 +2834,18 @@ impl Render for HexView {
             .on_action(cx.listener(Self::move_right))
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::vi_move_left))
+            .on_action(cx.listener(Self::vi_move_right))
+            .on_action(cx.listener(Self::vi_move_up))
+            .on_action(cx.listener(Self::vi_move_down))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::vi_select_left))
+            .on_action(cx.listener(Self::vi_select_right))
+            .on_action(cx.listener(Self::vi_select_up))
+            .on_action(cx.listener(Self::vi_select_down))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(|this, _: &AppSelectAll, window, cx| {
                 this.select_all(&SelectAll, window, cx);
@@ -2061,6 +2872,10 @@ impl Render for HexView {
             .on_action(cx.listener(Self::copy_as_binary))
             .on_action(cx.listener(Self::copy_as_rust_array))
             .on_action(cx.listener(Self::copy_as_json_array))
+            .on_action(cx.listener(Self::cut))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::page_up))
             .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::home))
@@ -2085,10 +2900,12 @@ impl Render for HexView {
             .on_action(cx.listener(Self::highlight_pink))
             .on_action(cx.listener(Self::clear_highlight))
             .on_action(cx.listener(Self::clear_all_highlights))
+            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.focus_handle.focus(window);
+                    this.pause_cursor_blink(cx);
 
                     // スクロールバー領域（右端12px）でのクリック判定
                     if let Some(list_b) = this.list_bounds.get() {
@@ -2138,16 +2955,41 @@ impl Render for HexView {
                         }
                     }
 
-                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                    if let Some(edit_target) = this.edit_target_from_point(event.position, window, cx) {
+                        this.active_column = edit_target.column();
+                        this.hex_nibble = match edit_target {
+                            EditTarget::Hex { nibble, .. } => nibble,
+                            EditTarget::Ascii { .. } => 0,
+                        };
+                        this.pending_hex_digit = None;
+                        let target_pos = edit_target.offset();
+                        let selection_anchor = {
+                            let editor = this.editor.read(cx);
+                            editor.selection().anchor()
+                        };
+                        this.mouse_selection_anchor = if event.modifiers.shift { Some(selection_anchor) } else { Some(target_pos) };
                         this.is_selecting = true;
                         this.editor.update(cx, |editor, cx| {
                             if event.modifiers.shift {
-                                if editor.selection_start.is_none() {
-                                    editor.selection_start = Some(editor.cursor_offset);
-                                }
-                                editor.selection_end = Some(target_pos);
+                                editor.continue_drag(target_pos);
                             } else {
-                                editor.start_drag(target_pos);
+                                editor.set_cursor_offset_exact(target_pos);
+                            }
+                            cx.notify();
+                        });
+                    } else if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                        let selection_anchor = {
+                            let editor = this.editor.read(cx);
+                            editor.selection().anchor()
+                        };
+                        this.mouse_selection_anchor = if event.modifiers.shift { Some(selection_anchor) } else { Some(target_pos) };
+                        this.is_selecting = true;
+                        this.clear_pending_hex_input();
+                        this.editor.update(cx, |editor, cx| {
+                            if event.modifiers.shift {
+                                editor.continue_drag(target_pos);
+                            } else {
+                                editor.set_cursor_offset_exact(target_pos);
                             }
                             cx.notify();
                         });
@@ -2158,18 +3000,33 @@ impl Render for HexView {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.focus_handle.focus(window);
+                    this.pause_cursor_blink(cx);
                     if this.list_bounds.get().map(|bounds| event.position.y >= bounds.bottom()).unwrap_or(false) {
                         return;
                     }
-                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                    if let Some(edit_target) = this.edit_target_from_point(event.position, window, cx) {
+                        this.active_column = edit_target.column();
+                        this.hex_nibble = match edit_target {
+                            EditTarget::Hex { nibble, .. } => nibble,
+                            EditTarget::Ascii { .. } => 0,
+                        };
+                        this.pending_hex_digit = None;
+                        let target_pos = edit_target.offset();
                         this.editor.update(cx, |editor, cx| {
-                            let in_selection = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
-                                let min = s.min(e);
-                                let max = s.max(e);
-                                target_pos >= min && target_pos <= max
-                            } else {
-                                false
-                            };
+                            let in_selection = editor
+                                .selection_range()
+                                .is_some_and(|range| target_pos >= range.start && target_pos < range.end);
+                            if !in_selection {
+                                editor.set_cursor_offset_exact(target_pos);
+                                cx.notify();
+                            }
+                        });
+                    } else if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                        this.clear_pending_hex_input();
+                        this.editor.update(cx, |editor, cx| {
+                            let in_selection = editor
+                                .selection_range()
+                                .is_some_and(|range| target_pos >= range.start && target_pos < range.end);
                             if !in_selection {
                                 editor.set_cursor_offset(target_pos);
                                 cx.notify();
@@ -2216,7 +3073,7 @@ impl Render for HexView {
                     cx.notify();
                     return;
                 }
-                if this.is_selecting {
+                if this.is_selecting && event.dragging() {
                     if let Some(list_b) = this.list_bounds.get() {
                         let y = f32::from(event.position.y);
                         let list_top = f32::from(list_b.top());
@@ -2235,9 +3092,15 @@ impl Render for HexView {
                     }
 
                     if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                        let mouse_selection_anchor = this.mouse_selection_anchor;
                         this.editor.update(cx, |editor, cx| {
-                            let prev_end = editor.selection_end;
-                            if prev_end != Some(target_pos) {
+                            let anchor = mouse_selection_anchor.unwrap_or(editor.selection().anchor());
+                            let needs_drag_start = editor.selection().is_collapsed() && editor.selection().anchor() != anchor;
+                            let target_changed = editor.selection().active() != target_pos;
+                            if needs_drag_start || target_changed {
+                                if needs_drag_start {
+                                    editor.start_drag(anchor);
+                                }
                                 editor.continue_drag(target_pos);
                                 cx.notify();
                             }
@@ -2278,6 +3141,7 @@ impl Render for HexView {
                 let radix = self.radix;
                 let group_size = self.group_size;
                 let is_big_endian = self.is_big_endian;
+                let active_column = self.active_column;
                 let _max_highlight_len = self.max_highlight_len;
                 let highlights = self.highlights.clone();
                 let is_dragging_scrollbar = self.is_dragging_scrollbar;
@@ -2323,13 +3187,12 @@ impl Render for HexView {
                             }
                         });
 
-                        let (parse_result, collapsed_structs, highlight_items, doc_arc, line_starts, cursor_offset, min_sel, max_sel) = {
+                        let (parse_result, collapsed_structs, highlight_items, doc_arc, line_starts, cursor_offset, insert_cursor_offset, min_sel, max_sel) = {
                             let editor = editor_entity.read(cx);
-                            let (min_sel, max_sel) = if let (Some(s), Some(e)) = (editor.selection_start, editor.selection_end) {
-                                if s <= e { (s, e) } else { (e, s) }
-                            } else {
-                                (usize::MAX, usize::MIN)
-                            };
+                            let (min_sel, max_sel) = editor
+                                .selection_range()
+                                .map(|range| (range.start, range.end.saturating_sub(1)))
+                                .unwrap_or((usize::MAX, usize::MIN));
                             (
                                 if editor.show_inline_structure_view { editor.parse_result() } else { None },
                                 Arc::new(editor.collapsed_struct_ids.clone()),
@@ -2337,6 +3200,7 @@ impl Render for HexView {
                                 editor.document.clone(),
                                 editor.line_starts(),
                                 editor.cursor_offset,
+                                editor.insert_cursor_offset(),
                                 min_sel,
                                 max_sel,
                             )
@@ -2375,6 +3239,7 @@ impl Render for HexView {
                                     group_size,
                                     is_big_endian,
                                     cursor_offset,
+                                    insert_cursor_offset,
                                     min_sel,
                                     max_sel,
                                     highlights: effective_highlights.as_slice(),
@@ -2385,6 +3250,9 @@ impl Render for HexView {
                                     ascii_col_width,
                                     ascii_scroll_x,
                                     is_focused,
+                                    insert_mode,
+                                    active_column,
+                                    cursor_visible,
                                     outer_scroll_x,
                                     hex_scroll_x,
                                     desc_scroll_x,
@@ -2452,7 +3320,11 @@ impl Render for HexView {
                                 .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
                         })
                         .separator()
+                        .menu("Undo", Box::new(Undo))
+                        .menu("Redo", Box::new(Redo))
+                        .menu("Cut", Box::new(Cut))
                         .menu("Copy", Box::new(Copy))
+                        .menu("Paste", Box::new(Paste))
                         .submenu("Copy As", window, cx, move |menu, _window, _cx| {
                             menu.menu("as Hex Dump", Box::new(CopyAsHexDump))
                                 .menu("as C++ Array", Box::new(CopyAsCppArray))
@@ -2499,5 +3371,14 @@ impl Render for HexView {
                         .menu("Reset Layout", Box::new(ClearAllCustomBreaks))
                 }
             })
+    }
+}
+
+fn hex_digit(character: char) -> Option<u8> {
+    match character {
+        '0'..='9' => Some(character as u8 - b'0'),
+        'a'..='f' => Some(character as u8 - b'a' + 10),
+        'A'..='F' => Some(character as u8 - b'A' + 10),
+        _ => None,
     }
 }

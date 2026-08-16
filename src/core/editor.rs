@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use crate::core::command::Command;
+use crate::core::command::{Command, CursorState, ReplaceRangeCommand};
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
 use crate::core::highlight::{HighlightColor, HighlightFile, HighlightItem, generate_highlight_id};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
+use crate::core::selection::Selection;
 use crate::core::structure::{ParseResult, ParsedField};
 use gpui::Hsla;
 use std::cell::RefCell;
@@ -32,8 +33,7 @@ pub struct Editor {
     // Shared document containing buffer and history
     pub document: Arc<RwLock<Document>>,
     pub cursor_offset: usize,
-    pub selection_start: Option<usize>,
-    pub selection_end: Option<usize>,
+    selection: Selection,
     pub search_state: SearchState,
     pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
     /// 16バイト自然境界のうち、改行を抑制すべき位置を記録する。
@@ -85,8 +85,7 @@ impl Editor {
         Self {
             document,
             cursor_offset: 0,
-            selection_start: None,
-            selection_end: None,
+            selection: Selection::collapsed(0),
             search_state: SearchState::default(),
             custom_breaks,
             custom_joins,
@@ -114,6 +113,11 @@ impl Editor {
 
     pub fn total_size(&self) -> usize {
         self.document.read().expect("document read lock").buffer.len()
+    }
+
+    /// Returns whether this editor's document currently rejects edits.
+    pub fn is_read_only(&self) -> bool {
+        self.document.read().expect("document read lock").is_read_only()
     }
 
     /// line_starts の中から、指定オフセットが属するデータ行（空行でない行）のインデックスを返す。
@@ -196,15 +200,21 @@ impl Editor {
     }
 
     pub fn set_group_size(&mut self, group_size: ByteGroupSize) {
+        let has_selection = self.has_selection();
         self.group_size = group_size;
         let step = group_size.byte_count();
-        self.cursor_offset = (self.cursor_offset / step) * step;
-        if let Some(s) = self.selection_start {
-            self.selection_start = Some((s / step) * step);
-        }
-        if let Some(e) = self.selection_end {
-            self.selection_end = Some((e / step) * step);
-        }
+        let total = self.total_size();
+        self.cursor_offset = if self.cursor_offset >= total {
+            total
+        } else {
+            (self.cursor_offset / step) * step
+        };
+        let align_boundary = |offset: usize| if offset >= total { total } else { (offset / step) * step };
+        self.selection = if has_selection {
+            Selection::new(align_boundary(self.selection.anchor()), align_boundary(self.selection.active()))
+        } else {
+            Selection::collapsed(self.cursor_offset.min(total))
+        };
     }
 
     pub fn set_is_big_endian(&mut self, is_big_endian: bool) {
@@ -215,14 +225,62 @@ impl Editor {
         self.is_big_endian = !self.is_big_endian;
     }
 
+    /// Returns the selected half-open byte range.
     pub fn selection_range(&self) -> Option<Range<usize>> {
-        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
-            let min = cmp::min(start, end);
-            let max = cmp::max(start, end);
-            Some(min..max)
-        } else {
-            None
-        }
+        let total = self.total_size();
+        let selection = self.selection.clamped(total);
+        let range = selection.range()?;
+        (range.start < total).then_some(range.start..range.end.min(total))
+    }
+
+    /// Returns the current selection, including a collapsed selection that
+    /// only stores the caret/anchor for a possible Shift-selection.
+    pub fn selection(&self) -> Selection {
+        self.selection.clamped(self.total_size())
+    }
+
+    /// Returns whether at least one byte is selected.
+    pub fn has_selection(&self) -> bool {
+        self.selection_range().is_some()
+    }
+
+    /// Replaces the selection with two half-open buffer boundaries.
+    pub fn set_selection(&mut self, anchor: usize, active: usize) {
+        let total = self.total_size();
+        self.selection = Selection::new(anchor, active).clamped(total);
+    }
+
+    /// Selects `range` and places the overwrite cursor at its first byte.
+    pub fn set_selection_range(&mut self, range: Range<usize>) {
+        let total = self.total_size();
+        let start = range.start.min(total);
+        let end = range.end.min(total).max(start);
+        self.selection = Selection::new(start, end);
+        self.cursor_offset = start.min(total.saturating_sub(1));
+    }
+
+    /// Clears the selected bytes while preserving the current caret position.
+    pub fn clear_selection(&mut self) {
+        self.selection = Selection::collapsed(self.cursor_offset.min(self.total_size()));
+    }
+
+    /// Returns the insertion-boundary offset where a text-style caret should
+    /// be painted for the current selection.
+    ///
+    /// The active boundary is the caret position while a selection is active;
+    /// without a selection, the editor's current cursor position is used.
+    pub fn insert_cursor_offset(&self) -> usize {
+        let total = self.total_size();
+        self.selection_range()
+            .map_or(self.cursor_offset.min(total), |_| self.selection.active().min(total))
+    }
+
+    fn selection_right_boundary(&self) -> usize {
+        let total = self.total_size();
+        let Some(range) = self.selection_range() else {
+            return self.cursor_offset.min(total);
+        };
+        range.end.min(total)
     }
 
     pub fn selected_range_or_cursor(&self) -> Option<Range<usize>> {
@@ -231,12 +289,9 @@ impl Editor {
             return None;
         }
         let group_bytes = self.group_size.byte_count();
-        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
-            let min = cmp::min(start, end);
-            let max = cmp::max(start, end);
-            let s = ((min / group_bytes) * group_bytes).min(total);
-            let e_group = ((max / group_bytes) + 1) * group_bytes;
-            let e = e_group.min(total);
+        if let Some(range) = self.selection_range() {
+            let s = ((range.start / group_bytes) * group_bytes).min(total);
+            let e = range.end.div_ceil(group_bytes).saturating_mul(group_bytes).min(total);
             if s < e {
                 return Some(s..e);
             }
@@ -245,6 +300,26 @@ impl Editor {
         let group_start = (cur / group_bytes) * group_bytes;
         let group_end = (group_start + group_bytes).min(total);
         Some(group_start..group_end)
+    }
+
+    /// Returns the exact byte range affected by an edit.
+    ///
+    /// Returns the exact half-open byte range affected by an edit.
+    pub fn edit_range(&self) -> Option<Range<usize>> {
+        let total = self.total_size();
+        if total == 0 {
+            return None;
+        }
+
+        if let Some(range) = self.selection_range() {
+            return Some(range);
+        }
+
+        if self.cursor_offset >= total {
+            return None;
+        }
+        let start = self.cursor_offset.min(total.saturating_sub(1));
+        Some(start..start + 1)
     }
 
     pub fn highlights_snapshot(&self) -> Vec<HighlightItem> {
@@ -449,35 +524,268 @@ impl Editor {
 
     pub fn set_cursor_offset(&mut self, offset: usize) {
         let buffer_len = self.total_size();
-        self.selection_start = None;
-        self.selection_end = None;
         let step = self.group_size.byte_count();
-        let aligned = (offset / step) * step;
-        self.cursor_offset = aligned.min(buffer_len.saturating_sub(1));
+        self.cursor_offset = if offset >= buffer_len {
+            buffer_len
+        } else {
+            let aligned = (offset / step) * step;
+            aligned.min(buffer_len.saturating_sub(1))
+        };
+        self.clear_selection();
     }
 
-    pub fn move_left(&mut self) {
-        let step = self.group_size.byte_count();
-        if self.cursor_offset > 0 {
-            self.cursor_offset = (self.cursor_offset / step).saturating_sub(1) * step;
-            self.selection_start = None;
-            self.selection_end = None;
+    /// Sets the cursor to an exact byte without applying the current display
+    /// group alignment. This is used when a user clicks an individual byte in
+    /// a multi-byte display group.
+    pub fn set_cursor_offset_exact(&mut self, offset: usize) {
+        let buffer_len = self.total_size();
+        self.cursor_offset = offset.min(buffer_len);
+        self.clear_selection();
+    }
+
+    pub(crate) fn cursor_state(&self) -> CursorState {
+        CursorState {
+            cursor_offset: self.cursor_offset,
+            selection: self.selection,
         }
     }
 
+    pub(crate) fn restore_cursor_state(&mut self, state: CursorState) {
+        let total = self.total_size();
+        self.cursor_offset = state.cursor_offset.min(total);
+        self.selection = state.selection.clamped(total);
+    }
+
+    pub(crate) fn adjust_after_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
+        let old_end = start.saturating_add(old_len);
+        let shift = |offset: usize| {
+            if old_len == 0 {
+                if offset >= start { offset.saturating_add(new_len) } else { offset }
+            } else if offset <= start {
+                offset
+            } else if offset >= old_end {
+                if new_len >= old_len {
+                    offset.saturating_add(new_len - old_len)
+                } else {
+                    offset.saturating_sub(old_len - new_len)
+                }
+            } else {
+                start.saturating_add(new_len)
+            }
+        };
+
+        for breaks in [&self.custom_breaks, &self.custom_joins] {
+            let mut values = breaks.write().expect("custom layout write lock");
+            let shifted = values.iter().copied().map(shift).collect::<BTreeSet<_>>();
+            *values = shifted;
+        }
+        {
+            let mut lines = self.empty_lines.write().expect("empty_lines write lock");
+            let shifted = lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
+            *lines = shifted;
+        }
+        {
+            let mut highlights = self.highlights.write().expect("highlights write lock");
+            for item in highlights.iter_mut() {
+                let item_start = item.offset;
+                let item_end = item.offset.saturating_add(item.size);
+                if old_len == 0 {
+                    if item_start >= start {
+                        item.offset = item_start.saturating_add(new_len);
+                    } else if item_end > start {
+                        item.size = item.size.saturating_add(new_len);
+                    }
+                    continue;
+                }
+
+                if item_end <= start {
+                    continue;
+                }
+                if item_start >= old_end {
+                    item.offset = shift(item_start);
+                    continue;
+                }
+
+                let prefix = item_end.min(start).saturating_sub(item_start);
+                let suffix = item_end.saturating_sub(old_end.max(item_start));
+                item.offset = item_start.min(start);
+                item.size = prefix.saturating_add(new_len).saturating_add(suffix);
+            }
+            highlights.retain(|item| item.size > 0);
+            highlights.sort_by_key(|item| (item.offset, item.size));
+        }
+    }
+
+    /// Replaces `range` with `replacement` and places the cursor at the next
+    /// byte after the replacement.
+    pub fn replace_range(&mut self, range: Range<usize>, replacement: Vec<u8>) -> bool {
+        let total = self.total_size();
+        let start = range.start.min(total);
+        let end = range.end.min(total).max(start);
+        let old_len = end - start;
+        let new_total = total - old_len + replacement.len();
+        let cursor_after = if replacement.is_empty() {
+            start.saturating_sub(1)
+        } else {
+            let next = start.saturating_add(replacement.len());
+            if next < new_total { next } else { new_total.saturating_sub(1) }
+        };
+        self.replace_range_with_cursor(start..end, replacement, cursor_after)
+    }
+
+    /// Replaces a range and explicitly chooses the resulting cursor offset.
+    pub fn replace_range_with_cursor(&mut self, range: Range<usize>, replacement: Vec<u8>, cursor_after: usize) -> bool {
+        let total = self.total_size();
+        let start = range.start.min(total);
+        let end = range.end.min(total).max(start);
+        let old = self.document.read().expect("document read lock").buffer.get_range(start, end - start).to_vec();
+        if old == replacement {
+            return false;
+        }
+
+        let before = self.cursor_state();
+        let after = CursorState {
+            cursor_offset: cursor_after,
+            selection: Selection::collapsed(cursor_after),
+        };
+        self.execute_command(Box::new(ReplaceRangeCommand::new(start, old, replacement, before, after)))
+    }
+
+    /// Inserts bytes at `position` and advances the cursor after them.
+    pub fn insert_bytes(&mut self, position: usize, bytes: Vec<u8>) -> bool {
+        let position = position.min(self.total_size());
+        let cursor_after = position.saturating_add(bytes.len());
+        self.replace_range_with_cursor(position..position, bytes, cursor_after)
+    }
+
+    /// Replaces the byte at `position` without changing the buffer length.
+    pub fn replace_byte(&mut self, position: usize, byte: u8) -> bool {
+        let total = self.total_size();
+        if position >= total {
+            return false;
+        }
+        let cursor_after = if position + 1 < total { position + 1 } else { position };
+        self.replace_range_with_cursor(position..position + 1, vec![byte], cursor_after)
+    }
+
+    /// Deletes the selected bytes, or the byte at the cursor when there is no
+    /// selection.
+    pub fn delete_forward(&mut self) -> bool {
+        let Some(range) = self.edit_range() else {
+            return false;
+        };
+        let has_selection = self.has_selection();
+        let cursor_after = if has_selection {
+            range.start
+        } else {
+            range.start.min(self.total_size().saturating_sub(1))
+        };
+        self.replace_range_with_cursor(range, Vec::new(), cursor_after)
+    }
+
+    /// Deletes the selected bytes, or the byte immediately before the cursor
+    /// when there is no selection.
+    pub fn delete_backward(&mut self) -> bool {
+        let total = self.total_size();
+        if total == 0 {
+            return false;
+        }
+
+        let has_selection = self.has_selection();
+        let range = if has_selection {
+            self.selection_range().expect("a non-empty selection has a range")
+        } else if self.cursor_offset > 0 {
+            self.cursor_offset - 1..self.cursor_offset
+        } else {
+            return false;
+        };
+        // Backspace removes the byte immediately before the caret. The caret
+        // should remain at the deletion start, which is one position left of
+        // its original location—not one additional position to the left.
+        let cursor_after = range.start;
+        self.replace_range_with_cursor(range, Vec::new(), cursor_after)
+    }
+
+    fn previous_group_boundary(offset: usize, total: usize, step: usize) -> usize {
+        if offset == 0 {
+            return 0;
+        }
+
+        if offset >= total && total > 0 {
+            ((total - 1) / step) * step
+        } else {
+            (offset / step).saturating_sub(1) * step
+        }
+    }
+
+    fn next_group_boundary(offset: usize, total: usize, step: usize) -> usize {
+        if offset >= total {
+            return total;
+        }
+
+        ((offset / step) + 1).saturating_mul(step).min(total)
+    }
+
+    pub fn move_left(&mut self) {
+        if let Some(range) = self.selection_range() {
+            let start = range.start;
+            self.cursor_offset = start.min(self.total_size());
+            self.clear_selection();
+            return;
+        }
+
+        let step = self.group_size.byte_count();
+        let total = self.total_size();
+        if self.cursor_offset > 0 {
+            self.cursor_offset = Self::previous_group_boundary(self.cursor_offset, total, step);
+            self.clear_selection();
+        }
+    }
+
+    /// Moves right by one display group and allows the insertion caret to stop
+    /// at the end-of-file boundary.
+    pub fn move_right_for_insert(&mut self) {
+        if self.has_selection() {
+            self.cursor_offset = self.selection_right_boundary();
+            self.clear_selection();
+            return;
+        }
+
+        let step = self.group_size.byte_count();
+        let total = self.total_size();
+        if self.cursor_offset >= total {
+            return;
+        }
+
+        self.cursor_offset = Self::next_group_boundary(self.cursor_offset, total, step);
+        self.clear_selection();
+    }
+
     pub fn move_right(&mut self) {
+        if let Some(range) = self.selection_range() {
+            self.cursor_offset = range.end.saturating_sub(1).min(self.total_size().saturating_sub(1));
+            self.clear_selection();
+            return;
+        }
+
         let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
         let max_offset = buffer_len.saturating_sub(1);
-        let next = ((self.cursor_offset / step) + 1) * step;
+        let next = Self::next_group_boundary(self.cursor_offset, buffer_len, step);
         if next <= max_offset {
             self.cursor_offset = next;
-            self.selection_start = None;
-            self.selection_end = None;
+            self.clear_selection();
         }
     }
 
     pub fn move_up(&mut self) {
+        if let Some(range) = self.selection_range() {
+            let start = range.start;
+            self.cursor_offset = start.min(self.total_size().saturating_sub(1));
+            self.clear_selection();
+            return;
+        }
+
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
@@ -492,12 +800,17 @@ impl Editor {
             let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
             let aligned_offset = (target_offset / step) * step;
             self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
-            self.selection_start = None;
-            self.selection_end = None;
+            self.clear_selection();
         }
     }
 
     pub fn move_down(&mut self) {
+        if let Some(range) = self.selection_range() {
+            self.cursor_offset = range.end.saturating_sub(1).min(self.total_size().saturating_sub(1));
+            self.clear_selection();
+            return;
+        }
+
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let total_size = self.total_size();
@@ -521,50 +834,105 @@ impl Editor {
             } else {
                 self.cursor_offset = next_line_start;
             }
-            self.selection_start = None;
-            self.selection_end = None;
+            self.clear_selection();
         } else {
             let max_offset = total_size.saturating_sub(1);
             self.cursor_offset = (max_offset / step) * step;
-            self.selection_start = None;
-            self.selection_end = None;
+            self.clear_selection();
         }
+    }
+
+    /// Moves down while allowing a collapsed selection to end at EOF.
+    pub fn move_down_for_insert(&mut self) {
+        if self.has_selection() {
+            self.cursor_offset = self.selection_right_boundary();
+            self.clear_selection();
+            return;
+        }
+
+        if self.cursor_offset >= self.total_size() {
+            return;
+        }
+
+        self.move_down();
     }
 
     pub fn select_left(&mut self) {
         let step = self.group_size.byte_count();
         if self.cursor_offset > 0 {
-            if self.selection_start.is_none() {
-                self.selection_start = Some(self.cursor_offset);
-            }
-            self.cursor_offset = (self.cursor_offset / step).saturating_sub(1) * step;
-            self.selection_end = Some(self.cursor_offset);
+            let target = (self.cursor_offset / step).saturating_sub(1) * step;
+            let anchor = if self.has_selection() {
+                self.selection.anchor()
+            } else {
+                self.cursor_offset.saturating_add(1)
+            };
+            self.cursor_offset = target;
+            self.selection = Selection::new(anchor, target).clamped(self.total_size());
         }
+    }
+
+    /// Extends or contracts the Insert Mode selection by one display group to
+    /// the left.
+    pub fn select_left_for_insert(&mut self) {
+        let total = self.total_size();
+        let step = self.group_size.byte_count();
+        let caret = if self.has_selection() {
+            self.selection.active()
+        } else {
+            self.cursor_offset.min(total)
+        };
+        if caret == 0 {
+            return;
+        }
+
+        let active = Self::previous_group_boundary(caret, total, step);
+        let anchor = if self.has_selection() { self.selection.anchor() } else { caret };
+        self.selection = Selection::new(anchor, active);
+        self.cursor_offset = active;
     }
 
     pub fn select_right(&mut self) {
         let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
-        let max_offset = buffer_len.saturating_sub(1);
-        let next = ((self.cursor_offset / step) + 1) * step;
-        if next <= max_offset {
-            if self.selection_start.is_none() {
-                self.selection_start = Some(self.cursor_offset);
-            }
+        let next = ((self.cursor_offset / step).saturating_add(1)).saturating_mul(step).min(buffer_len);
+        if self.cursor_offset < next {
+            let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
             self.cursor_offset = next;
-            self.selection_end = Some(self.cursor_offset);
+            self.selection = Selection::new(anchor, next);
         }
+    }
+
+    /// Extends or contracts the Insert Mode selection by one display group to
+    /// the right.
+    pub fn select_right_for_insert(&mut self) {
+        let total = self.total_size();
+        let step = self.group_size.byte_count();
+        let caret = if self.has_selection() {
+            self.selection.active()
+        } else {
+            self.cursor_offset.min(total)
+        };
+        if caret >= total {
+            return;
+        }
+
+        let active = Self::next_group_boundary(caret, total, step);
+        let anchor = if self.has_selection() { self.selection.anchor() } else { caret };
+        self.selection = Selection::new(anchor, active);
+        self.cursor_offset = active;
     }
 
     pub fn select_up(&mut self) {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
+        let anchor = if self.has_selection() {
+            self.selection.anchor()
+        } else {
+            self.cursor_offset.saturating_add(1)
+        };
 
         if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
-            if self.selection_start.is_none() {
-                self.selection_start = Some(self.cursor_offset);
-            }
             let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = self.cursor_offset - current_line_start;
             let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
@@ -574,7 +942,7 @@ impl Editor {
             let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
             let aligned_offset = (target_offset / step) * step;
             self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
-            self.selection_end = Some(self.cursor_offset);
+            self.selection = Selection::new(anchor, self.cursor_offset);
         }
     }
 
@@ -583,10 +951,7 @@ impl Editor {
         let line_starts = self.line_starts();
         let total_size = self.total_size();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-
-        if self.selection_start.is_none() {
-            self.selection_start = Some(self.cursor_offset);
-        }
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
 
         if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
             let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
@@ -606,33 +971,30 @@ impl Editor {
             } else {
                 self.cursor_offset = next_line_start;
             }
-            self.selection_end = Some(self.cursor_offset);
+            self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
         } else {
             let max_offset = total_size.saturating_sub(1);
             self.cursor_offset = (max_offset / step) * step;
-            self.selection_end = Some(self.cursor_offset);
+            self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
         }
     }
 
     pub fn select_all(&mut self) {
         let buffer_len = self.total_size();
-        self.selection_start = Some(0);
-        self.selection_end = Some(buffer_len);
+        self.selection = Selection::new(0, buffer_len);
         self.cursor_offset = buffer_len;
     }
 
     pub fn go_to_beginning(&mut self) {
         self.cursor_offset = 0;
-        self.selection_start = None;
-        self.selection_end = None;
+        self.clear_selection();
     }
 
     pub fn go_to_end(&mut self) {
         let step = self.group_size.byte_count();
         let max_offset = self.total_size().saturating_sub(1);
         self.cursor_offset = (max_offset / step) * step;
-        self.selection_start = None;
-        self.selection_end = None;
+        self.clear_selection();
     }
 
     pub fn page_up(&mut self, visible_rows: usize) {
@@ -640,9 +1002,6 @@ impl Editor {
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
-        self.selection_start = None;
-        self.selection_end = None;
-
         let target_line_idx = current_line_idx.saturating_sub(visible_rows);
         let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
@@ -658,6 +1017,7 @@ impl Editor {
         let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
         let aligned_offset = (target_offset / step) * step;
         self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
+        self.clear_selection();
     }
 
     pub fn page_down(&mut self, visible_rows: usize) {
@@ -665,9 +1025,6 @@ impl Editor {
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
 
-        self.selection_start = None;
-        self.selection_end = None;
-
         let target_line_idx = cmp::min(current_line_idx + visible_rows, line_starts.len() - 1);
         let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
         let offset_in_line = self.cursor_offset - current_line_start;
@@ -688,31 +1045,31 @@ impl Editor {
             let aligned_offset = (target_offset / step) * step;
             self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
+        self.clear_selection();
     }
 
     pub fn home(&mut self) {
-        self.selection_start = None;
-        self.selection_end = None;
         self.cursor_offset = 0;
+        self.clear_selection();
     }
 
     pub fn end(&mut self) {
         let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
-        self.selection_start = None;
-        self.selection_end = None;
         let max_offset = buffer_len.saturating_sub(1);
         self.cursor_offset = (max_offset / step) * step;
+        self.clear_selection();
     }
 
     pub fn select_page_up(&mut self, visible_rows: usize) {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-
-        if self.selection_start.is_none() {
-            self.selection_start = Some(self.cursor_offset);
-        }
+        let anchor = if self.has_selection() {
+            self.selection.anchor()
+        } else {
+            self.cursor_offset.saturating_add(1)
+        };
 
         let target_line_idx = current_line_idx.saturating_sub(visible_rows);
         let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
@@ -729,17 +1086,14 @@ impl Editor {
         let target_offset = target_line_start + cmp::min(offset_in_line, target_line_len.saturating_sub(1));
         let aligned_offset = (target_offset / step) * step;
         self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
-        self.selection_end = Some(self.cursor_offset);
+        self.selection = Selection::new(anchor, self.cursor_offset);
     }
 
     pub fn select_page_down(&mut self, visible_rows: usize) {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-
-        if self.selection_start.is_none() {
-            self.selection_start = Some(self.cursor_offset);
-        }
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
 
         let target_line_idx = cmp::min(current_line_idx + visible_rows, line_starts.len() - 1);
         let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
@@ -761,40 +1115,61 @@ impl Editor {
             let aligned_offset = (target_offset / step) * step;
             self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
-        self.selection_end = Some(self.cursor_offset);
+        self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(self.total_size()));
     }
 
     pub fn select_home(&mut self) {
-        if self.selection_start.is_none() {
-            self.selection_start = Some(self.cursor_offset);
-        }
+        let anchor = if self.has_selection() {
+            self.selection.anchor()
+        } else {
+            self.cursor_offset.saturating_add(1)
+        };
         self.cursor_offset = 0;
-        self.selection_end = Some(self.cursor_offset);
+        self.selection = Selection::new(anchor, 0);
     }
 
     pub fn select_end(&mut self) {
         let step = self.group_size.byte_count();
         let buffer_len = self.total_size();
-        if self.selection_start.is_none() {
-            self.selection_start = Some(self.cursor_offset);
-        }
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
         let max_offset = buffer_len.saturating_sub(1);
         self.cursor_offset = (max_offset / step) * step;
-        self.selection_end = Some(self.cursor_offset);
+        self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(buffer_len));
+    }
+
+    /// Extends the selection to the EOF insertion boundary.
+    pub fn select_end_for_insert(&mut self) {
+        let buffer_len = self.total_size();
+        let anchor = if self.has_selection() {
+            self.selection.anchor()
+        } else {
+            self.cursor_offset.min(buffer_len)
+        };
+        self.cursor_offset = buffer_len;
+        self.selection = Selection::new(anchor, buffer_len);
     }
 
     pub fn start_drag(&mut self, byte_pos: usize) {
         let step = self.group_size.byte_count();
         let aligned = (byte_pos / step) * step;
         self.cursor_offset = aligned;
-        self.selection_start = Some(aligned);
-        self.selection_end = Some(aligned);
+        self.selection = Selection::collapsed(aligned);
     }
 
     pub fn continue_drag(&mut self, byte_pos: usize) {
         let step = self.group_size.byte_count();
-        let aligned = (byte_pos / step) * step;
-        self.selection_end = Some(aligned);
+        let total = self.total_size();
+        let cursor_offset = if byte_pos >= total { total } else { (byte_pos / step) * step };
+        let anchor = self.selection.anchor();
+        self.cursor_offset = cursor_offset;
+        let active = if cursor_offset == anchor {
+            anchor
+        } else if cursor_offset > anchor {
+            cursor_offset.saturating_add(1).min(total)
+        } else {
+            cursor_offset
+        };
+        self.selection = Selection::new(anchor, active);
     }
 
     pub fn search_pattern(&self) -> Option<Vec<crate::core::search::PatternByte>> {
@@ -1229,19 +1604,9 @@ impl Editor {
     /// 範囲選択中（複数バイト選択時）は、その選択範囲全体が1行になるように結合する。
     /// 選択がない場合は、現在行と次の行を結合する。
     pub fn join_line(&mut self) {
-        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end)
-            && start != end
-        {
-            let total = self.total_size();
-            let min = start.min(end).min(total);
-            let max = start.max(end).min(total);
-            let s = min;
-            let e = (max + 1).min(total);
-
-            if s < e {
-                self.join_range(s..e);
-                return;
-            }
+        if let Some(range) = self.selection_range() {
+            self.join_range(range);
+            return;
         }
 
         let line_starts = self.line_starts();
@@ -1390,13 +1755,24 @@ impl Editor {
         }
     }
 
-    pub fn execute_command(&mut self, mut command: Box<dyn Command>) {
+    pub fn execute_command(&mut self, mut command: Box<dyn Command>) -> bool {
+        if self.is_read_only() {
+            return false;
+        }
         command.execute(self);
+        if command.is_noop() {
+            return false;
+        }
         self.document.write().expect("document write lock").history.push(command);
         self.document_changed();
+        true
     }
 
-    pub fn undo(&mut self) {
+    pub fn undo(&mut self) -> bool {
+        if self.is_read_only() {
+            return false;
+        }
+
         // Need to acquire a write lock on the document to access history
         // And also we need to pop from history, then call command.undo(self)
         // command.undo might need to access document.buf, which is in the same lock if we are not careful
@@ -1414,10 +1790,17 @@ impl Editor {
             // Re-acquire lock to push redo
             self.document.write().expect("document write lock").history.push_redo(cmd);
             self.document_changed();
+            true
+        } else {
+            false
         }
     }
 
-    pub fn redo(&mut self) {
+    pub fn redo(&mut self) -> bool {
+        if self.is_read_only() {
+            return false;
+        }
+
         let command = {
             let mut doc = self.document.write().expect("document write lock");
             doc.history.pop_redo()
@@ -1426,10 +1809,27 @@ impl Editor {
         if let Some(mut cmd) = command {
             cmd.execute(self);
 
+            if cmd.is_noop() {
+                return false;
+            }
+
             // Re-acquire lock to push undo
             self.document.write().expect("document write lock").history.push_undo(cmd);
             self.document_changed();
+            true
+        } else {
+            false
         }
+    }
+
+    /// Returns whether this editor has an undoable command.
+    pub fn can_undo(&self) -> bool {
+        self.document.read().expect("document read lock").history.can_undo()
+    }
+
+    /// Returns whether this editor has a redoable command.
+    pub fn can_redo(&self) -> bool {
+        self.document.read().expect("document read lock").history.can_redo()
     }
 
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
@@ -1542,6 +1942,10 @@ impl Editor {
 
     fn document_changed(&mut self) {
         self.cached_line_map.replace(None);
+        self.search_state.results.clear();
+        self.search_state.current_result_index = None;
+        self.search_state.is_full_search_complete = false;
+        self.search_state.generation = self.search_state.generation.wrapping_add(1);
 
         if self.structure_parse_async && self.ksy_definition().is_some() {
             self.cancel_structure_parsing();
@@ -1605,7 +2009,7 @@ mod tests {
         let editor = create_editor_with_content(b"Hello");
         assert_eq!(editor.total_size(), 5);
         assert_eq!(editor.cursor_offset, 0);
-        assert!(editor.selection_start.is_none());
+        assert!(!editor.has_selection());
     }
 
     #[test]
@@ -1641,37 +2045,145 @@ mod tests {
 
         // Select Right
         editor.select_right();
-        assert_eq!(editor.selection_start, Some(0));
-        assert_eq!(editor.selection_end, Some(1));
+        assert_eq!(editor.selection(), Selection::new(0, 1));
         assert_eq!(editor.cursor_offset, 1);
-        assert_eq!(editor.selected_range_or_cursor(), Some(0..2));
+        assert_eq!(editor.insert_cursor_offset(), 1);
+        assert_eq!(editor.selected_range_or_cursor(), Some(0..1));
+        assert_eq!(editor.edit_range(), Some(0..1));
 
         // Clear selection on move
         editor.move_right();
-        assert!(editor.selection_start.is_none());
-        assert!(editor.selection_end.is_none());
+        assert!(!editor.has_selection());
 
         // Select All
         editor.select_all();
-        assert_eq!(editor.selection_start, Some(0));
-        assert_eq!(editor.selection_end, Some(5)); // Corrected expectation
+        assert_eq!(editor.selection(), Selection::new(0, 5));
+        assert_eq!(editor.insert_cursor_offset(), 5);
         assert_eq!(editor.selected_range_or_cursor(), Some(0..5));
+
+        editor.set_cursor_offset_exact(4);
+        editor.select_end_for_insert();
+        assert_eq!(editor.cursor_offset, 5);
+        assert_eq!(editor.selection(), Selection::new(4, 5));
+    }
+
+    #[test]
+    fn test_insert_selection_moves_by_one_display_group_and_collapses_at_anchor() {
+        let mut editor = create_editor_with_content(b"12345");
+        editor.set_cursor_offset_exact(2);
+
+        editor.select_left_for_insert();
+        assert_eq!(editor.edit_range(), Some(1..2));
+        assert_eq!(editor.selection(), Selection::new(2, 1));
+        assert_eq!(editor.cursor_offset, 1);
+        assert_eq!(editor.insert_cursor_offset(), 1);
+
+        editor.select_left_for_insert();
+        assert_eq!(editor.edit_range(), Some(0..2));
+        assert_eq!(editor.selection(), Selection::new(2, 0));
+        assert_eq!(editor.cursor_offset, 0);
+
+        editor.select_right_for_insert();
+        assert_eq!(editor.edit_range(), Some(1..2));
+        assert_eq!(editor.selection(), Selection::new(2, 1));
+        assert_eq!(editor.cursor_offset, 1);
+
+        editor.select_right_for_insert();
+        assert!(!editor.has_selection());
+        assert_eq!(editor.selection(), Selection::collapsed(2));
+        assert_eq!(editor.cursor_offset, 2);
+        assert_eq!(editor.edit_range(), Some(2..3));
+    }
+
+    #[test]
+    fn test_insert_selection_moves_by_four_byte_groups() {
+        let mut editor = create_editor_with_content(&[0u8; 10]);
+        editor.set_group_size(ByteGroupSize::Four);
+        editor.set_is_big_endian(true);
+
+        editor.select_right_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 4));
+        assert_eq!(editor.cursor_offset, 4);
+
+        editor.select_right_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 8));
+        assert_eq!(editor.cursor_offset, 8);
+
+        // The final partial group ends at EOF instead of jumping past it.
+        editor.select_right_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 10));
+        assert_eq!(editor.cursor_offset, 10);
+
+        editor.select_left_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 8));
+        assert_eq!(editor.cursor_offset, 8);
+
+        editor.select_left_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 4));
+        assert_eq!(editor.cursor_offset, 4);
+
+        editor.select_left_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 0));
+        assert_eq!(editor.cursor_offset, 0);
+
+        // A caret inside a group follows the same boundary as an unmodified
+        // left-arrow move, and Shift+Right uses the matching next boundary.
+        editor.set_cursor_offset_exact(5);
+        editor.select_left_for_insert();
+        assert_eq!(editor.selection(), Selection::new(5, 0));
+        assert_eq!(editor.cursor_offset, 0);
+
+        editor.select_right_for_insert();
+        assert_eq!(editor.selection(), Selection::new(5, 4));
+        assert_eq!(editor.cursor_offset, 4);
+    }
+
+    #[test]
+    fn test_selection_caret_direction_and_collapse() {
+        let mut editor = create_editor_with_content(b"12345");
+        editor.set_selection(3, 1);
+        editor.cursor_offset = 1;
+        assert_eq!(editor.insert_cursor_offset(), 1);
+
+        editor.move_right_for_insert();
+        assert_eq!(editor.cursor_offset, 3);
+        assert!(!editor.has_selection());
+
+        editor.set_selection(1, 3);
+        editor.cursor_offset = 3;
+        editor.move_left();
+        assert_eq!(editor.cursor_offset, 1);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_select_right_reaches_eof_and_drag_updates_caret() {
+        let mut editor = create_editor_with_content(b"12345");
+        editor.set_cursor_offset_exact(4);
+        editor.select_right();
+        assert_eq!(editor.selection(), Selection::new(4, 5));
+        assert_eq!(editor.cursor_offset, 5);
+        assert_eq!(editor.insert_cursor_offset(), 5);
+
+        editor.start_drag(1);
+        editor.continue_drag(3);
+        assert_eq!(editor.cursor_offset, 3);
+        assert_eq!(editor.selection_range(), Some(1..4));
     }
 
     #[test]
     fn test_selected_range_or_cursor_includes_selection_end() {
         let mut editor = create_editor_with_content(b"12345");
 
-        editor.selection_start = Some(1);
-        editor.selection_end = Some(3);
+        editor.set_selection(1, 4);
         assert_eq!(editor.selected_range_or_cursor(), Some(1..4));
 
-        editor.selection_start = Some(3);
-        editor.selection_end = Some(1);
+        editor.set_selection(4, 1);
         assert_eq!(editor.selected_range_or_cursor(), Some(1..4));
 
-        editor.selection_start = Some(4);
-        editor.selection_end = Some(4);
+        editor.set_cursor_offset_exact(4);
+        editor.set_selection(4, 4);
+        assert!(!editor.has_selection());
         assert_eq!(editor.selected_range_or_cursor(), Some(4..5));
     }
 
@@ -1793,6 +2305,24 @@ mod tests {
     }
 
     #[test]
+    fn test_read_only_rejects_edits_and_history_changes() {
+        let document = Arc::new(RwLock::new(Document::new_read_only(
+            std::path::PathBuf::from("read-only.bin"),
+            crate::core::buffer::Buffer::new(b"abc".to_vec()),
+        )));
+        let mut editor = Editor::new(document.clone());
+
+        assert!(editor.is_read_only());
+        assert!(!editor.replace_byte(0, b'X'));
+        assert!(!editor.insert_bytes(1, vec![b'Y']));
+        assert!(!editor.delete_forward());
+        assert!(!editor.undo());
+        assert!(!editor.redo());
+        assert_eq!(document.read().unwrap().buffer.data(), b"abc");
+        assert!(!document.read().unwrap().is_dirty());
+    }
+
+    #[test]
     fn test_shared_document_independent_cursors_and_offsets() {
         let data = (0..256).map(|i| i as u8).collect::<Vec<_>>();
         let buffer = crate::core::buffer::Buffer::new(data);
@@ -1802,20 +2332,16 @@ mod tests {
 
         // Set different offsets and selections (simulating vertical/horizontal split panes)
         editor1.set_cursor_offset(0x00);
-        editor1.selection_start = Some(0x00);
-        editor1.selection_end = Some(0x10);
+        editor1.set_selection(0x00, 0x10);
 
         editor2.set_cursor_offset(0x80);
-        editor2.selection_start = Some(0x80);
-        editor2.selection_end = Some(0xA0);
+        editor2.set_selection(0x80, 0xA0);
 
         assert_eq!(editor1.cursor_offset, 0x00);
-        assert_eq!(editor1.selection_start, Some(0x00));
-        assert_eq!(editor1.selection_end, Some(0x10));
+        assert_eq!(editor1.selection(), Selection::new(0x00, 0x10));
 
         assert_eq!(editor2.cursor_offset, 0x80);
-        assert_eq!(editor2.selection_start, Some(0x80));
-        assert_eq!(editor2.selection_end, Some(0xA0));
+        assert_eq!(editor2.selection(), Selection::new(0x80, 0xA0));
 
         // Both editors access identical underlying bytes
         assert_eq!(editor1.total_size(), 256);
@@ -1846,6 +2372,134 @@ mod tests {
         // Redo
         editor.redo();
         assert_eq!(editor.total_size(), 1);
+    }
+
+    #[test]
+    fn test_replace_range_selection_and_undo_redo() {
+        let mut editor = create_editor_with_content(b"abcdef");
+        editor.cursor_offset = 1;
+        editor.set_selection(4, 1);
+
+        assert_eq!(editor.edit_range(), Some(1..4));
+        assert!(editor.replace_range(editor.edit_range().expect("selection range"), b"XYZ".to_vec()));
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"aXYZef");
+        assert_eq!(editor.cursor_offset, 4);
+        assert!(!editor.has_selection());
+
+        assert!(editor.undo());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcdef");
+        assert_eq!(editor.cursor_offset, 1);
+        assert_eq!(editor.selection(), Selection::new(4, 1));
+
+        assert!(editor.redo());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"aXYZef");
+        assert_eq!(editor.cursor_offset, 4);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_insert_delete_and_selection_backspace_cursor() {
+        let mut editor = create_editor_with_content(b"abcd");
+        editor.set_cursor_offset(2);
+
+        assert!(editor.insert_bytes(2, b"XY".to_vec()));
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abXYcd");
+        assert_eq!(editor.cursor_offset, 4);
+
+        assert!(editor.undo());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcd");
+        assert_eq!(editor.cursor_offset, 2);
+
+        editor.set_selection(1, 3);
+        editor.cursor_offset = 2;
+        assert!(editor.delete_backward());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"ad");
+        assert_eq!(editor.cursor_offset, 1);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_backspace_moves_cursor_to_deletion_start() {
+        let mut editor = create_editor_with_content(b"abcd");
+        editor.set_cursor_offset_exact(2);
+
+        assert!(editor.delete_backward());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"acd");
+        assert_eq!(editor.cursor_offset, 1);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_insert_at_eof_keeps_the_insertion_cursor_at_eof() {
+        let mut editor = create_editor_with_content(b"abcd");
+        editor.set_cursor_offset_exact(editor.total_size());
+
+        assert!(editor.insert_bytes(editor.cursor_offset, vec![b'X']));
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcdX");
+        assert_eq!(editor.cursor_offset, 5);
+        assert!(editor.edit_range().is_none());
+
+        editor.move_left();
+        assert_eq!(editor.cursor_offset, 4);
+        editor.move_right_for_insert();
+        assert_eq!(editor.cursor_offset, 5);
+
+        assert!(editor.undo());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcd");
+        assert_eq!(editor.cursor_offset, 4);
+
+        assert!(editor.redo());
+        assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcdX");
+        assert_eq!(editor.cursor_offset, 5);
+    }
+
+    #[test]
+    fn test_edit_adjusts_layout_and_highlight_offsets() {
+        let mut editor = create_editor_with_content(&[0; 32]);
+        editor.add_custom_break(8);
+        editor.add_custom_highlight(4..12, gpui::hsla(0.0, 1.0, 0.5, 0.5));
+        let highlight_id = editor.highlights.read().unwrap()[0].id.clone();
+
+        assert!(editor.insert_bytes(4, vec![1, 2]));
+        assert!(editor.custom_breaks.read().unwrap().contains(&10));
+        let highlight_range = editor
+            .highlights
+            .read()
+            .unwrap()
+            .iter()
+            .find(|item| item.id == highlight_id)
+            .map(|item| item.range())
+            .expect("highlight remains after insertion");
+        assert_eq!(highlight_range, 6..14);
+
+        assert!(editor.undo());
+        assert!(editor.custom_breaks.read().unwrap().contains(&8));
+        let (highlight_range, highlight_color) = editor
+            .highlights
+            .read()
+            .unwrap()
+            .iter()
+            .find(|item| item.id == highlight_id)
+            .map(|item| (item.range(), item.color))
+            .expect("highlight remains after undo");
+        assert_eq!(highlight_range, 4..12);
+        assert_eq!(highlight_color, crate::core::highlight::HighlightColor::Red);
+    }
+
+    #[test]
+    fn test_dirty_state_survives_new_branch_after_undo() {
+        let mut editor = create_editor_with_content(b"ab");
+
+        assert!(editor.insert_bytes(1, vec![b'X']));
+        editor.document.write().unwrap().mark_as_saved();
+        assert!(!editor.document.read().unwrap().is_dirty());
+
+        assert!(editor.undo());
+        assert!(editor.document.read().unwrap().is_dirty());
+
+        assert!(editor.insert_bytes(1, vec![b'Y']));
+        assert!(editor.document.read().unwrap().is_dirty());
+        assert!(!editor.can_redo());
     }
 
     #[test]
@@ -2346,10 +3000,9 @@ mod tests {
 
         // Selection right by 4 bytes
         editor.select_right();
-        assert_eq!(editor.selection_start, Some(4));
-        assert_eq!(editor.selection_end, Some(8));
+        assert_eq!(editor.selection(), Selection::new(4, 8));
         assert_eq!(editor.cursor_offset, 8);
-        assert_eq!(editor.selected_range_or_cursor(), Some(4..12));
+        assert_eq!(editor.selected_range_or_cursor(), Some(4..8));
 
         // Selection left
         editor.select_left();
@@ -2377,8 +3030,7 @@ mod tests {
         assert_eq!(editor.line_starts().len(), 4); // 0, 16, 32, 48
 
         // Select 0..32 (first 2 lines: bytes 0..=31)
-        editor.selection_start = Some(0);
-        editor.selection_end = Some(31);
+        editor.set_selection(0, 32);
 
         editor.join_line();
 
@@ -2395,8 +3047,7 @@ mod tests {
         // Initially 16-byte chunks: 0, 16, 32, 48, 64, 80, 96
 
         // Select bytes 10..=49 (range 10..50, 40 bytes)
-        editor.selection_start = Some(10);
-        editor.selection_end = Some(49);
+        editor.set_selection(10, 50);
 
         editor.join_line();
 
@@ -2414,8 +3065,7 @@ mod tests {
         editor.add_custom_break(12);
 
         // Select bytes 0..=15 (0..16)
-        editor.selection_start = Some(0);
-        editor.selection_end = Some(15);
+        editor.set_selection(0, 16);
 
         editor.join_line();
 

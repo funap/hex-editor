@@ -290,11 +290,7 @@ impl HighlightPanel {
             ed.update(cx, |editor, cx| {
                 editor.set_cursor_offset(offset);
                 if size > 1 {
-                    editor.selection_start = Some(offset);
-                    editor.selection_end = Some(offset + size - 1);
-                } else {
-                    editor.selection_start = None;
-                    editor.selection_end = None;
+                    editor.set_selection_range(offset..offset.saturating_add(size));
                 }
                 cx.notify();
             });

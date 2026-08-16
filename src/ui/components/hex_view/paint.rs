@@ -4,12 +4,15 @@ use crate::core::document::Document;
 use crate::core::editor::LineMap;
 use crate::core::encoding::Encoding;
 use crate::core::highlight::HighlightItem;
-use crate::core::radix::{ByteGroupSize, DisplayRadix, is_group_zero};
+use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, is_group_zero};
 use crate::core::structure::ParseResult;
 use gpui::*;
 use gpui_component::ActiveTheme;
 use std::collections::HashSet;
 use std::ops::Range;
+
+const TEXT_INPUT_CURSOR_WIDTH: Pixels = px(1.5);
+const TEXT_INPUT_CURSOR_HEIGHT_RATIO: f32 = 0.85;
 
 #[inline]
 pub fn paint_border_box(window: &mut Window, bounds: Bounds<Pixels>, border_width: Pixels, color: Hsla) {
@@ -26,6 +29,112 @@ pub fn paint_cursor_border(window: &mut Window, bounds: Bounds<Pixels>, color: H
         size(bounds.size.width + padding_x + padding_x, bounds.size.height + padding_y + padding_y),
     );
     paint_border_box(window, padded_bounds, px(CURSOR_BORDER_WIDTH), color);
+}
+
+#[inline]
+fn paint_insert_cursor_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x: Pixels, color: Hsla) {
+    if bounds.size.height <= px(0.0) {
+        return;
+    }
+
+    // Match gpui-component's default TextInput cursor: a 1.5px vertical
+    // caret centered in the line and sized to 85% of its line height.
+    let cursor_height = px(ROW_HEIGHT * TEXT_INPUT_CURSOR_HEIGHT_RATIO);
+    let cursor_y = bounds.top() + (bounds.size.height - cursor_height) / 2.0;
+    window.paint_quad(gpui::fill(
+        Bounds::new(point(cursor_x, cursor_y), size(TEXT_INPUT_CURSOR_WIDTH, cursor_height)),
+        color,
+    ));
+}
+
+#[inline]
+fn paint_insert_cursor(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
+    paint_insert_cursor_at(window, bounds, bounds.left(), color);
+}
+
+#[inline]
+fn paint_insert_underscore_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x: Pixels, width: Pixels, color: Hsla) {
+    if bounds.size.height <= px(0.0) || width <= px(0.0) {
+        return;
+    }
+
+    const UNDERSCORE_HEIGHT: f32 = 1.5;
+    // Align the underscore's lower edge with the bottom edge of the
+    // overwrite-mode cursor box.
+    let underscore_y = bounds.bottom() - px(UNDERSCORE_HEIGHT);
+    window.paint_quad(gpui::fill(
+        Bounds::new(point(cursor_x, underscore_y), size(width, px(UNDERSCORE_HEIGHT))),
+        color,
+    ));
+}
+
+#[derive(Clone, Copy)]
+struct HexInsertCursorParams {
+    radix: DisplayRadix,
+    group_size: ByteGroupSize,
+    is_big_endian: bool,
+    selection_active: bool,
+    origin_x: Pixels,
+    cell_width: Pixels,
+}
+
+/// Returns the x-coordinate for the insertion boundary represented by the
+/// cursor within a rendered hex group and the width of its byte slot.
+fn hex_insert_cursor_geometry(group: HexGroupInfo, cursor_in_row: usize, params: HexInsertCursorParams) -> Option<(Pixels, Pixels)> {
+    if cursor_in_row < group.chunk_start || cursor_in_row >= group.chunk_end {
+        return None;
+    }
+
+    let group_len = group.chunk_end.saturating_sub(group.chunk_start);
+    let byte_index = cursor_in_row - group.chunk_start;
+    let expected_len = params.group_size.byte_count();
+    // While extending a selection, the caret represents the selection's
+    // active end and should advance through the visible byte slots just like
+    // a text editor. A collapsed caret still follows the rendered byte so a
+    // click in a little-endian group remains on the byte that was clicked.
+    let display_index = if params.selection_active {
+        group.start_slot + byte_index
+    } else if group.start_slot == 0 && cursor_in_row == group.chunk_start {
+        0
+    } else if group.start_slot == 0 && group_len == expected_len && !params.is_big_endian {
+        group_len.saturating_sub(byte_index + 1)
+    } else {
+        group.start_slot + byte_index
+    };
+    let slot_width = match params.radix {
+        DisplayRadix::Hexadecimal => 2.0,
+        DisplayRadix::Binary => 8.0,
+        // Decimal and octal groups do not have a fixed two-character byte
+        // cell, but their fixed-width group still provides a stable insertion
+        // column.
+        DisplayRadix::Decimal | DisplayRadix::Octal => (group.text_end.saturating_sub(group.text_start) as f32 / expected_len.max(1) as f32).max(1.0),
+    };
+    Some((
+        params.origin_x + px((group.text_start as f32 + display_index as f32 * slot_width) * f32::from(params.cell_width)),
+        px(slot_width * f32::from(params.cell_width)),
+    ))
+}
+
+/// Returns the x-coordinate immediately after the final data byte in a group
+/// and the width of the next byte slot.
+fn hex_insert_cursor_end_geometry(group: HexGroupInfo, origin_x: Pixels, cell_width: Pixels, group_size: ByteGroupSize) -> (Pixels, Pixels) {
+    let expected_len = group_size.byte_count();
+    let group_len = group.chunk_end.saturating_sub(group.chunk_start);
+    let data_end_slot = group.start_slot.saturating_add(group_len).min(expected_len);
+    let slot_width = (group.text_end.saturating_sub(group.text_start) as f32 / expected_len.max(1) as f32).max(1.0);
+    (
+        origin_x + px((group.text_start as f32 + data_end_slot as f32 * slot_width) * f32::from(cell_width)),
+        px(slot_width * f32::from(cell_width)),
+    )
+}
+
+#[inline]
+fn paint_cursor(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla, insert_mode: bool) {
+    if insert_mode {
+        paint_insert_cursor(window, bounds, color);
+    } else {
+        paint_cursor_border(window, bounds, color);
+    }
 }
 
 pub fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
@@ -186,6 +295,7 @@ pub struct RowPaintParams<'a> {
     pub group_size: ByteGroupSize,
     pub is_big_endian: bool,
     pub cursor_offset: usize,
+    pub insert_cursor_offset: usize,
     pub min_sel: usize,
     pub max_sel: usize,
     pub highlights: &'a [(Range<usize>, Hsla)],
@@ -196,6 +306,9 @@ pub struct RowPaintParams<'a> {
     pub ascii_col_width: f32,
     pub ascii_scroll_x: f32,
     pub is_focused: bool,
+    pub insert_mode: bool,
+    pub active_column: EditColumn,
+    pub cursor_visible: bool,
     pub outer_scroll_x: f32,
     pub hex_scroll_x: f32,
     pub desc_scroll_x: f32,
@@ -226,7 +339,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     let is_struct_mode = params.parse_result.is_some();
 
     let active_row_highlights = row_highlights(params.highlights, params.max_highlight_len, offset, next_offset);
-    let (selection_bg, cursor_bg, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
+    let (selection_bg, cursor_bg, caret_color, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
         let theme = cx.theme();
         (
             if params.is_focused {
@@ -235,6 +348,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                 theme.muted_foreground.opacity(0.3)
             },
             darken_cursor_color(theme.accent),
+            theme.caret,
             theme.muted_foreground,
             theme.foreground,
             theme.accent_foreground,
@@ -245,6 +359,8 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     };
     let line_height = px(ROW_HEIGHT);
     let font = gpui::font(params.font_family);
+    let insert_cursor_active = params.insert_mode && params.is_focused && window.is_window_active();
+    let insert_selection_active = params.min_sel <= params.max_sel;
 
     // 1. Draw Left Columns (Address OR Offset)
     let (offset_w, gap) = if is_struct_mode {
@@ -454,19 +570,22 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
                     }
 
-                    if is_cursor {
+                    if is_cursor && !params.insert_mode {
                         let cursor_border_color = if params.is_focused {
                             cursor_bg
                         } else {
                             darken_cursor_color(muted_color).opacity(0.8)
                         };
-                        let cursor_start_x = if bg_color.a > 0.0 { fill_start_x } else { group_start_x };
-                        let cursor_end_x = if bg_color.a > 0.0 { fill_end_x } else { group_end_x };
+                        let (cursor_start_x, cursor_end_x) = if bg_color.a > 0.0 {
+                            (fill_start_x, fill_end_x)
+                        } else {
+                            (group_start_x, group_end_x)
+                        };
                         let item_box_bounds = Bounds::new(
                             point(cursor_start_x, params.bounds.top() + px(1.0)),
                             size(cursor_end_x - cursor_start_x, px(ROW_HEIGHT - 2.0)),
                         );
-                        paint_cursor_border(window, item_box_bounds, cursor_border_color);
+                        paint_cursor(window, item_box_bounds, cursor_border_color, params.insert_mode);
                     }
                 }
 
@@ -481,6 +600,69 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         line_height,
                         window,
                     );
+                }
+
+                if insert_cursor_active {
+                    let insert_cursor_params = HexInsertCursorParams {
+                        radix: params.radix,
+                        group_size: params.group_size,
+                        is_big_endian: params.is_big_endian,
+                        selection_active: insert_selection_active,
+                        origin_x: text_origin_x,
+                        cell_width: params.hex_cell_width,
+                    };
+                    for (item_idx, group) in hex_source.groups.iter().enumerate() {
+                        let cursor_border_color = caret_color;
+                        let (group_start_x, group_end_x) = hex_group_x(*group, text_origin_x, params.hex_cell_width);
+                        let item_box_bounds = Bounds::new(
+                            point(group_start_x, params.bounds.top() + px(1.0)),
+                            size(group_end_x - group_start_x, px(ROW_HEIGHT - 2.0)),
+                        );
+                        let item_start_offset = offset + group.chunk_start;
+                        let item_end_offset = offset + group.chunk_end;
+                        let cursor_geometry = if params.insert_cursor_offset >= item_start_offset && params.insert_cursor_offset < item_end_offset {
+                            hex_insert_cursor_geometry(*group, params.insert_cursor_offset.saturating_sub(offset), insert_cursor_params)
+                        } else if params.insert_cursor_offset == params.doc.buffer.len()
+                            && item_idx + 1 == hex_source.groups.len()
+                            && item_end_offset == next_offset
+                            && next_offset == params.doc.buffer.len()
+                        {
+                            Some(hex_insert_cursor_end_geometry(*group, text_origin_x, params.hex_cell_width, params.group_size))
+                        } else {
+                            None
+                        };
+
+                        if let Some((cursor_x, cursor_width)) = cursor_geometry {
+                            match params.active_column {
+                                EditColumn::Hex if params.cursor_visible => {
+                                    paint_insert_cursor_at(window, item_box_bounds, cursor_x, cursor_border_color);
+                                }
+                                EditColumn::Ascii => {
+                                    paint_insert_underscore_at(window, item_box_bounds, cursor_x, cursor_width, cursor_border_color);
+                                }
+                                EditColumn::Hex => {}
+                            }
+                        }
+                    }
+
+                    if hex_source.groups.is_empty() && params.insert_cursor_offset == offset {
+                        let cursor_border_color = caret_color;
+                        let item_box_bounds = Bounds::new(
+                            point(text_origin_x, params.bounds.top() + px(1.0)),
+                            size(params.hex_cell_width, px(ROW_HEIGHT - 2.0)),
+                        );
+                        let empty_slot_width =
+                            px(digit_count(params.radix, params.group_size) as f32 / params.group_size.byte_count() as f32 * f32::from(params.hex_cell_width));
+                        match params.active_column {
+                            EditColumn::Hex if params.cursor_visible => {
+                                paint_insert_cursor_at(window, item_box_bounds, text_origin_x, cursor_border_color);
+                            }
+                            EditColumn::Ascii => {
+                                paint_insert_underscore_at(window, item_box_bounds, text_origin_x, empty_slot_width, cursor_border_color);
+                            }
+                            EditColumn::Hex => {}
+                        }
+                    }
                 }
 
                 // Left-edge subtle gradient fade when hex_scroll_x > 1.0
@@ -562,7 +744,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         let item_end_offset = offset + group.chunk_end;
                         let is_cursor = params.cursor_offset >= item_start_offset && params.cursor_offset < item_end_offset;
 
-                        if is_cursor {
+                        if is_cursor && !params.insert_mode {
                             let cursor_border_color = if params.is_focused {
                                 cursor_bg
                             } else {
@@ -571,7 +753,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                             let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
                             let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
                             let ascii_group_bounds = Bounds::new(point(group_start_x, params.bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
-                            paint_cursor_border(window, ascii_group_bounds, cursor_border_color);
+                            paint_cursor(window, ascii_group_bounds, cursor_border_color, false);
                         }
                     }
 
@@ -617,6 +799,36 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                             line_height,
                             window,
                         );
+                    }
+
+                    if insert_cursor_active {
+                        let cursor_x = if params.insert_cursor_offset >= offset && params.insert_cursor_offset < next_offset {
+                            Some(ascii_content_start_x + px((params.insert_cursor_offset - offset) as f32 * ASCII_CELL_WIDTH))
+                        } else if params.insert_cursor_offset == params.doc.buffer.len()
+                            && next_offset == params.doc.buffer.len()
+                            && params.insert_cursor_offset == next_offset
+                        {
+                            Some(ascii_content_start_x + px(chunk_len as f32 * ASCII_CELL_WIDTH))
+                        } else if chunk_len == 0 && params.insert_cursor_offset == offset {
+                            Some(ascii_content_start_x)
+                        } else {
+                            None
+                        };
+
+                        if let Some(cursor_x) = cursor_x {
+                            let cursor_border_color = caret_color;
+                            let ascii_cursor_bounds =
+                                Bounds::new(point(cursor_x, params.bounds.top() + px(1.0)), size(px(ASCII_CELL_WIDTH), px(ROW_HEIGHT - 2.0)));
+                            match params.active_column {
+                                EditColumn::Ascii if params.cursor_visible => {
+                                    paint_insert_cursor_at(window, ascii_cursor_bounds, cursor_x, cursor_border_color);
+                                }
+                                EditColumn::Hex => {
+                                    paint_insert_underscore_at(window, ascii_cursor_bounds, cursor_x, px(ASCII_CELL_WIDTH), cursor_border_color);
+                                }
+                                EditColumn::Ascii => {}
+                            }
+                        }
                     }
 
                     // Edge fades when the ASCII row is horizontally scrolled or clipped.
@@ -901,4 +1113,42 @@ pub fn paint_scrollbar(
     let mut quad = gpui::fill(thumb_bounds, thumb_color);
     quad.corner_radii = gpui::Corners::all(px(3.0));
     window.paint_quad(quad);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ByteGroupSize, DisplayRadix, HexGroupInfo, HexInsertCursorParams, hex_insert_cursor_geometry};
+    use gpui::px;
+
+    #[test]
+    fn insert_cursor_advances_through_four_byte_group() {
+        let group = HexGroupInfo {
+            chunk_start: 0,
+            chunk_end: 4,
+            start_slot: 0,
+            text_start: 0,
+            text_end: 8,
+        };
+
+        let positions: Vec<f32> = (0..4)
+            .map(|cursor| {
+                let (x, _) = hex_insert_cursor_geometry(
+                    group,
+                    cursor,
+                    HexInsertCursorParams {
+                        radix: DisplayRadix::Hexadecimal,
+                        group_size: ByteGroupSize::Four,
+                        is_big_endian: false,
+                        selection_active: true,
+                        origin_x: px(0.0),
+                        cell_width: px(1.0),
+                    },
+                )
+                .expect("cursor is inside the group");
+                f32::from(x)
+            })
+            .collect();
+
+        assert_eq!(positions, vec![0.0, 2.0, 4.0, 6.0]);
+    }
 }

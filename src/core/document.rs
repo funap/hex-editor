@@ -14,6 +14,7 @@ pub struct Document {
     pub buffer: Buffer,
     pub history: History,
     pub last_saved_version: usize,
+    read_only: bool,
     pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
     pub ksy_definition: Arc<RwLock<Option<Arc<KsyDefinition>>>>,
     pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
@@ -29,6 +30,7 @@ impl Document {
             buffer,
             history: History::new(),
             last_saved_version: 0,
+            read_only: false,
             highlights: Arc::new(RwLock::new(Vec::new())),
             ksy_definition: Arc::new(RwLock::new(None)),
             parse_result: Arc::new(RwLock::new(None)),
@@ -38,18 +40,46 @@ impl Document {
         }
     }
 
+    /// Creates a document that starts in read-only mode.
+    pub fn new_read_only(path: PathBuf, buffer: Buffer) -> Self {
+        let mut document = Self::new(path, buffer);
+        document.read_only = true;
+        document
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Changes the file path used by subsequent save operations.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     /// Returns true if the document has unsaved changes.
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.last_saved_version
+        self.history.state_id() != self.last_saved_version
+    }
+
+    /// Returns whether editing and normal saves are currently disabled.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Changes whether the document accepts edits and normal saves.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// Toggles read-only mode and returns the new state.
+    pub fn toggle_read_only(&mut self) -> bool {
+        self.read_only = !self.read_only;
+        self.read_only
     }
 
     /// Marks the document as saved, updating the last saved version.
     pub fn mark_as_saved(&mut self) {
-        self.last_saved_version = self.history.version();
+        self.last_saved_version = self.history.state_id();
     }
 }
 
@@ -89,5 +119,16 @@ mod tests {
         // Note: history.pop_undo() returns the command and removes it from undo stack
         doc.history.pop_undo();
         assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn test_read_only_state() {
+        let mut doc = Document::new_read_only(PathBuf::from("test"), Buffer::empty());
+        assert!(doc.is_read_only());
+
+        doc.set_read_only(false);
+        assert!(!doc.is_read_only());
+        assert!(doc.toggle_read_only());
+        assert!(doc.is_read_only());
     }
 }

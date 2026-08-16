@@ -10,7 +10,7 @@ use crate::ui::pane::{PaneTree, PaneTreeEvent, SplitDirection, TabContent};
 use crate::ui::panels::editor_panel::EditorPanel;
 use crate::ui::panels::left_panel::{LeftPanel, LeftPanelTab};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, InsertModeState};
 use crate::core::editor::Editor;
 use crate::ui::components::status_bar::StatusBar;
 use gpui_component::Root;
@@ -161,6 +161,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f4", crate::actions::CloseActivePanel, None),
+        KeyBinding::new("insert", crate::actions::ToggleInsertMode, None),
     ]);
 
     cx.on_action::<OpenFileDialog>(|_, cx| {
@@ -177,6 +178,9 @@ pub fn init(cx: &mut App) {
         defer_in_active_workspace(cx, |workspace, window, cx| {
             workspace.on_action_load_structure_definition(&LoadStructureDefinition, window, cx);
         });
+    });
+    cx.on_action::<ToggleInsertMode>(|_, cx| {
+        InsertModeState::toggle(cx);
     });
 
     cx.activate(true);
@@ -980,12 +984,16 @@ impl Workspace {
     fn on_action_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let file_path = action.path.clone();
         let path = std::path::PathBuf::from(&file_path);
+        let path = path.canonicalize().unwrap_or(path);
 
         // Check if path is already open in any group
         for group in self.pane_tree.read(cx).all_groups() {
             let tabs = group.read(cx).tabs.iter().enumerate().map(|(i, t)| (i, t.path(cx))).collect::<Vec<_>>();
             for (idx, tab_path) in tabs {
-                if tab_path.as_ref() == Some(&path) {
+                let is_same_file = tab_path
+                    .as_ref()
+                    .is_some_and(|tab_path| tab_path.canonicalize().unwrap_or_else(|_| tab_path.clone()) == path);
+                if is_same_file {
                     group.update(cx, |g, cx| {
                         g.activate_tab(idx, window, cx);
                     });
@@ -1321,6 +1329,187 @@ impl Workspace {
         });
     }
 
+    fn on_action_save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let (document, state_id, is_read_only) = {
+            let editor_read = editor.read(cx);
+            let document = editor_read.document.clone();
+            let document_read = document.read().expect("document read lock");
+            (document.clone(), document_read.history.state_id(), document_read.is_read_only())
+        };
+        if is_read_only {
+            return;
+        }
+        let service = AppState::global(cx).editor_service.clone();
+        let task = service.save_document(document.clone(), cx);
+        let workspace = cx.entity().clone();
+
+        cx.spawn(async move |_, cx| {
+            let result = task.await;
+            workspace
+                .update(cx, |_, cx| {
+                    match result {
+                        Ok(()) => {
+                            let should_mark_saved = document.read().map(|document| document.history.state_id() == state_id).unwrap_or(false);
+                            if should_mark_saved {
+                                document.write().expect("document write lock").mark_as_saved();
+                            }
+                            editor.update(cx, |_, cx| cx.notify());
+                        }
+                        Err(error) => {
+                            eprintln!("Failed to save document: {error}");
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    fn on_action_toggle_read_only(&mut self, _: &ToggleReadOnly, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let (document, is_read_only, is_dirty, state_id) = {
+            let editor_read = editor.read(cx);
+            let document = editor_read.document.clone();
+            let document_read = document.read().expect("document read lock");
+            (
+                document.clone(),
+                document_read.is_read_only(),
+                document_read.is_dirty(),
+                document_read.history.state_id(),
+            )
+        };
+
+        if is_read_only {
+            self.set_editor_read_only(&editor, false, cx);
+            return;
+        }
+
+        if !is_dirty {
+            self.set_editor_read_only(&editor, true, cx);
+            return;
+        }
+
+        let prompt = window.prompt(
+            gpui::PromptLevel::Warning,
+            "Unsaved Changes",
+            Some("Save changes before switching this file to read-only?"),
+            &["Save and Make Read-only", "Cancel"],
+            cx,
+        );
+        let workspace = cx.entity();
+        let service = AppState::global(cx).editor_service.clone();
+
+        cx.spawn_in(window, async move |_, window| {
+            let Ok(choice) = prompt.await else {
+                return;
+            };
+            if choice != 0 {
+                return;
+            }
+
+            let Some(save_task) = window.update(|_, cx| service.save_document(document.clone(), cx)).ok() else {
+                return;
+            };
+            let result = save_task.await;
+            let _ = window.update(|_, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    if let Err(error) = result {
+                        eprintln!("Failed to save document before making it read-only: {error}");
+                        return;
+                    }
+
+                    let unchanged_since_save = document.read().map(|document| document.history.state_id() == state_id).unwrap_or(false);
+                    if unchanged_since_save {
+                        document.write().expect("document write lock").mark_as_saved();
+                        workspace.set_editor_read_only(&editor, true, cx);
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn set_editor_read_only(&self, editor: &Entity<Editor>, read_only: bool, cx: &mut Context<Self>) {
+        let (path, changed) = editor.update(cx, |editor, _| {
+            let mut document = editor.document.write().expect("document write lock");
+            let changed = document.is_read_only() != read_only;
+            if changed {
+                document.set_read_only(read_only);
+            }
+            (document.path().to_path_buf(), changed)
+        });
+
+        if changed {
+            let service = AppState::global(cx).editor_service.clone();
+            service.notify_document_changed(&path, cx);
+            cx.notify();
+        }
+    }
+
+    fn on_action_save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let (document, state_id, default_name) = {
+            let editor_read = editor.read(cx);
+            let document = editor_read.document.clone();
+            let document_read = document.read().expect("document read lock");
+            let default_name = document_read
+                .path()
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "untitled.bin".to_string());
+            (document.clone(), document_read.history.state_id(), default_name)
+        };
+        let prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select destination file or directory".into()),
+        });
+        let workspace = cx.entity().clone();
+        let service = AppState::global(cx).editor_service.clone();
+
+        cx.spawn_in(window, async move |_, window| {
+            let Some(mut path) = prompt.await.ok().and_then(|result| result.ok()).flatten().and_then(|mut paths| paths.pop()) else {
+                return;
+            };
+            if path.is_dir() {
+                path = path.join(default_name);
+            }
+            let task = window.update(|_, cx| service.save_document_to_path(document.clone(), path.clone(), cx)).ok();
+            let Some(task) = task else {
+                return;
+            };
+            let result = task.await;
+            let _ = window.update(|_, cx| {
+                workspace.update(cx, |_, cx| {
+                    match result {
+                        Ok(()) => {
+                            let mut document_write = document.write().expect("document write lock");
+                            document_write.set_path(path);
+                            if document_write.history.state_id() == state_id {
+                                document_write.mark_as_saved();
+                            }
+                            editor.update(cx, |_, cx| cx.notify());
+                        }
+                        Err(error) => {
+                            eprintln!("Failed to save document as: {error}");
+                        }
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     fn on_action_close_active_panel(&mut self, _: &CloseActivePanel, window: &mut Window, cx: &mut Context<Self>) {
         self.pane_tree.update(cx, |tree, cx| {
             tree.close_active_tab(window, cx);
@@ -1552,6 +1741,9 @@ impl Render for Workspace {
         div()
             .id("workspace")
             .on_action(cx.listener(Self::on_action_open_file))
+            .on_action(cx.listener(Self::on_action_save))
+            .on_action(cx.listener(Self::on_action_save_as))
+            .on_action(cx.listener(Self::on_action_toggle_read_only))
             .on_action(cx.listener(Self::on_action_close_active_panel))
             .on_action(cx.listener(Self::on_action_open_file_dialog))
             .on_action(cx.listener(Self::on_action_quit))

@@ -16,11 +16,7 @@ pub enum CalculationRange {
 }
 
 fn selected_range_for_checksum(editor: &Editor) -> Option<Range<usize>> {
-    if editor.selection_start.is_some() && editor.selection_end.is_some() {
-        editor.selected_range_or_cursor()
-    } else {
-        None
-    }
+    if editor.has_selection() { editor.selected_range_or_cursor() } else { None }
 }
 
 #[derive(Clone, Debug)]

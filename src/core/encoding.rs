@@ -11,6 +11,28 @@ pub enum Encoding {
 }
 
 impl Encoding {
+    /// Encodes one Unicode scalar value using this display encoding.
+    pub fn encode_char(&self, character: char) -> Option<Vec<u8>> {
+        match self {
+            Encoding::Ascii if character.is_ascii() => Some(vec![character as u8]),
+            Encoding::Ascii => None,
+            Encoding::Utf8 => {
+                let mut encoded = [0u8; 4];
+                Some(character.encode_utf8(&mut encoded).as_bytes().to_vec())
+            }
+            Encoding::Utf16Le | Encoding::Utf16Be => {
+                let mut units = [0u16; 2];
+                let encoded = character.encode_utf16(&mut units);
+                let mut bytes = Vec::with_capacity(encoded.len() * 2);
+                for unit in encoded.iter().copied() {
+                    let pair = if *self == Encoding::Utf16Le { unit.to_le_bytes() } else { unit.to_be_bytes() };
+                    bytes.extend_from_slice(&pair);
+                }
+                Some(bytes)
+            }
+        }
+    }
+
     pub fn decode_char_at(&self, buffer: &[u8], offset: usize) -> Option<(char, usize)> {
         match self {
             Encoding::Ascii => {
@@ -201,6 +223,19 @@ mod tests {
         let utf16be = vec![0x00, 0x41, 0x00, 0x42];
         assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 0), Some(('A', 2)));
         assert_eq!(Encoding::Utf16Be.decode_char_at(&utf16be, 2), Some(('B', 2)));
+    }
+
+    #[test]
+    fn test_encoding_encode_char() {
+        use super::Encoding;
+
+        assert_eq!(Encoding::Ascii.encode_char('A'), Some(vec![0x41]));
+        assert_eq!(Encoding::Ascii.encode_char('あ'), None);
+        assert_eq!(Encoding::Utf8.encode_char('あ'), Some("あ".as_bytes().to_vec()));
+        assert_eq!(Encoding::Utf16Le.encode_char('A'), Some(vec![0x41, 0x00]));
+        assert_eq!(Encoding::Utf16Be.encode_char('A'), Some(vec![0x00, 0x41]));
+        assert_eq!(Encoding::Utf16Le.encode_char('😀'), Some(vec![0x3d, 0xd8, 0x00, 0xde]));
+        assert_eq!(Encoding::Utf16Be.encode_char('😀'), Some(vec![0xd8, 0x3d, 0xde, 0x00]));
     }
 
     #[test]

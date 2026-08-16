@@ -9,11 +9,11 @@ use gpui_component::{ActiveTheme, Sizable};
 
 use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
-    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, FocusHexView, GoToBeginning, GoToEnd,
-    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine,
-    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch,
+    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd,
+    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine, Paste, Redo,
+    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch, Undo,
 };
-use crate::app_state::AppState;
+use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::search::SearchMode;
@@ -212,7 +212,7 @@ impl EditorPanel {
 
     #[allow(dead_code)]
     pub fn create_split_clone(&self, window: &mut Window, cx: &mut App) -> Entity<EditorPanel> {
-        let (doc, encoding, radix, group_size, is_big_endian, show_inline_structure_view, collapsed_struct_ids, cursor_offset, selection_start, selection_end) = {
+        let (doc, encoding, radix, group_size, is_big_endian, show_inline_structure_view, collapsed_struct_ids, cursor_offset, selection) = {
             let ed = self.editor.read(cx);
             (
                 ed.document.clone(),
@@ -223,8 +223,7 @@ impl EditorPanel {
                 ed.show_inline_structure_view,
                 ed.collapsed_struct_ids.clone(),
                 ed.cursor_offset,
-                ed.selection_start,
-                ed.selection_end,
+                ed.selection(),
             )
         };
 
@@ -239,8 +238,7 @@ impl EditorPanel {
             editor.show_inline_structure_view = show_inline_structure_view;
             editor.collapsed_struct_ids = collapsed_struct_ids;
             editor.cursor_offset = cursor_offset;
-            editor.selection_start = selection_start;
-            editor.selection_end = selection_end;
+            editor.set_selection(selection.anchor(), selection.active());
             editor
         });
 
@@ -409,8 +407,13 @@ impl EditorPanel {
     }
 
     pub fn go_to_end(&mut self, _: &GoToEnd, window: &mut Window, cx: &mut Context<Self>) {
+        let insert_mode = InsertModeState::is_enabled(cx);
         self.editor.update(cx, |editor: &mut Editor, _| {
-            editor.go_to_end();
+            if insert_mode {
+                editor.set_cursor_offset_exact(editor.total_size());
+            } else {
+                editor.go_to_end();
+            }
         });
         let cursor_offset = self.editor.read(cx).cursor_offset;
         self.hex_view.update(cx, |view, cx| {
@@ -422,6 +425,22 @@ impl EditorPanel {
 
     pub fn copy(&mut self, action: &Copy, window: &mut Window, cx: &mut Context<Self>) {
         self.hex_view.update(cx, |hv, cx| hv.copy(action, window, cx));
+    }
+
+    pub fn cut(&mut self, action: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.cut(action, window, cx));
+    }
+
+    pub fn paste(&mut self, action: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.paste(action, window, cx));
+    }
+
+    pub fn undo(&mut self, action: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.undo(action, window, cx));
+    }
+
+    pub fn redo(&mut self, action: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.redo(action, window, cx));
     }
 
     pub fn copy_as_hexdump(&mut self, action: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
@@ -660,7 +679,11 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::go_to_beginning))
             .on_action(cx.listener(Self::go_to_end))
+            .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::copy_as_hexdump))
             .on_action(cx.listener(Self::copy_as_cpp_array))
             .on_action(cx.listener(Self::copy_as_hex_stream))

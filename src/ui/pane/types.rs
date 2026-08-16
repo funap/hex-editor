@@ -103,6 +103,13 @@ impl TabContent {
         }
     }
 
+    pub fn is_read_only(&self, cx: &App) -> bool {
+        match self {
+            TabContent::Editor(p) => p.read(cx).editor().read(cx).document.read().map(|d| d.is_read_only()).unwrap_or(false),
+            _ => false,
+        }
+    }
+
     pub fn render(&self) -> AnyElement {
         match self {
             TabContent::Editor(p) => p.clone().into_any_element(),
@@ -133,6 +140,10 @@ impl TabItem {
 
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.content.is_dirty(cx)
+    }
+
+    pub fn is_read_only(&self, cx: &App) -> bool {
+        self.content.is_read_only(cx)
     }
 
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {

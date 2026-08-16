@@ -22,6 +22,33 @@ pub const AUTO_FIT_SCAN_BYTES: usize = 64 * 1024;
 pub const AUTO_FIT_MAX_ITEMS: usize = 16 * 1024;
 pub const AUTO_FIT_MAX_TEXT_CHARS: usize = 4096;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditColumn {
+    Hex,
+    Ascii,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditTarget {
+    Hex { offset: usize, nibble: u8 },
+    Ascii { offset: usize },
+}
+
+impl EditTarget {
+    pub fn offset(self) -> usize {
+        match self {
+            Self::Hex { offset, .. } | Self::Ascii { offset } => offset,
+        }
+    }
+
+    pub fn column(self) -> EditColumn {
+        match self {
+            Self::Hex { .. } => EditColumn::Hex,
+            Self::Ascii { .. } => EditColumn::Ascii,
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub enum HexViewEvent {
     Scrolled(usize),

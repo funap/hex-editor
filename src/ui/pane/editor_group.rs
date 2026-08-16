@@ -4,8 +4,10 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme, Icon, Sizable};
+use std::collections::HashMap;
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
+use crate::app_state::AppState;
 use crate::core::editor::Editor;
 use crate::ui::panels::editor_panel::EditorPanel;
 
@@ -26,6 +28,9 @@ pub struct EditorGroup {
     pub active_index: usize,
     pub focus_handle: FocusHandle,
     pub is_active_group: bool,
+    editor_subscriptions: HashMap<usize, Subscription>,
+    dirty_states: HashMap<usize, bool>,
+    read_only_states: HashMap<usize, bool>,
 }
 
 #[allow(dead_code)]
@@ -38,6 +43,9 @@ impl EditorGroup {
             active_index: 0,
             focus_handle,
             is_active_group: false,
+            editor_subscriptions: HashMap::new(),
+            dirty_states: HashMap::new(),
+            read_only_states: HashMap::new(),
         }
     }
 
@@ -73,9 +81,38 @@ impl EditorGroup {
         self.active_content().and_then(|c| c.editor_panel())
     }
 
+    fn observe_tab_dirty_state(&mut self, tab: &TabItem, cx: &mut Context<Self>) {
+        let Some(editor) = tab.content.editor(cx) else {
+            return;
+        };
+
+        let tab_id = tab.id;
+        let is_dirty = tab.is_dirty(cx);
+        let is_read_only = tab.is_read_only(cx);
+        self.dirty_states.insert(tab_id, is_dirty);
+        self.read_only_states.insert(tab_id, is_read_only);
+        let subscription = cx.observe(&editor, move |this, editor, cx| {
+            let (is_dirty, is_read_only) = {
+                let editor = editor.read(cx);
+                let document = editor.document.read();
+                (
+                    document.as_ref().map(|document| document.is_dirty()).unwrap_or(false),
+                    document.as_ref().map(|document| document.is_read_only()).unwrap_or(false),
+                )
+            };
+            let dirty_changed = this.dirty_states.insert(tab_id, is_dirty) != Some(is_dirty);
+            let read_only_changed = this.read_only_states.insert(tab_id, is_read_only) != Some(is_read_only);
+            if dirty_changed || read_only_changed {
+                cx.notify();
+            }
+        });
+        self.editor_subscriptions.insert(tab_id, subscription);
+    }
+
     pub fn add_tab(&mut self, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let new_idx = self.tabs.len();
         let tab_id = tab.id;
+        self.observe_tab_dirty_state(&tab, cx);
         cx.on_focus_in(&tab.focus_handle(cx), window, move |this, _window, cx| {
             if let Some(idx) = this.tabs.iter().position(|t| t.id == tab_id)
                 && this.active_index != idx
@@ -103,6 +140,7 @@ impl EditorGroup {
     pub fn insert_tab(&mut self, index: usize, tab: TabItem, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let clamped = index.min(self.tabs.len());
         let tab_id = tab.id;
+        self.observe_tab_dirty_state(&tab, cx);
         cx.on_focus_in(&tab.focus_handle(cx), window, move |this, _window, cx| {
             if let Some(idx) = this.tabs.iter().position(|t| t.id == tab_id)
                 && this.active_index != idx
@@ -132,6 +170,9 @@ impl EditorGroup {
 
     pub fn remove_tab_by_id(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<TabItem> {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
+            self.editor_subscriptions.remove(&tab_id);
+            self.dirty_states.remove(&tab_id);
+            self.read_only_states.remove(&tab_id);
             let removed = self.tabs.remove(pos);
             if self.tabs.is_empty() {
                 self.active_index = 0;
@@ -175,12 +216,80 @@ impl EditorGroup {
         }
     }
 
-    pub fn close_tab(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn close_tab_now(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
         cx.emit(EditorGroupEvent::CloseTab(tab_id));
         self.remove_tab_by_id(tab_id, window, cx);
         if self.tabs.is_empty() {
             cx.emit(EditorGroupEvent::CloseGroup);
         }
+    }
+
+    pub fn close_tab(&mut self, tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return;
+        };
+
+        if !tab.is_dirty(cx) {
+            self.close_tab_now(tab_id, window, cx);
+            return;
+        }
+
+        let Some(document) = tab.content.document(cx) else {
+            self.close_tab_now(tab_id, window, cx);
+            return;
+        };
+        let (path, state_id) = {
+            let document_read = document.read().expect("document read lock");
+            (document_read.path().to_path_buf(), document_read.history.state_id())
+        };
+        let title = tab.title(cx);
+        let prompt = window.prompt(
+            gpui::PromptLevel::Warning,
+            "Unsaved Changes",
+            Some(&format!("Save changes to {title} before closing?")),
+            &["Save", "Don't Save", "Cancel"],
+            cx,
+        );
+        let group = cx.entity().downgrade();
+        let service = AppState::global(cx).editor_service.clone();
+
+        cx.spawn_in(window, async move |_, window| {
+            let Ok(choice) = prompt.await else {
+                return;
+            };
+
+            match choice {
+                0 => {
+                    let Some(save_task) = window.update(|_, cx| service.save_document(document.clone(), cx)).ok() else {
+                        return;
+                    };
+                    if let Err(error) = save_task.await {
+                        eprintln!("Failed to save document before closing: {error}");
+                        return;
+                    }
+
+                    let _ = window.update(|window, cx| {
+                        let unchanged_since_save = document.read().map(|document| document.history.state_id() == state_id).unwrap_or(false);
+                        if unchanged_since_save {
+                            document.write().expect("document write lock").mark_as_saved();
+                            let _ = group.update(cx, |group, cx| {
+                                group.close_tab_now(tab_id, window, cx);
+                            });
+                        }
+                    });
+                }
+                1 => {
+                    service.close_file(&path);
+                    let _ = window.update(|window, cx| {
+                        let _ = group.update(cx, |group, cx| {
+                            group.close_tab_now(tab_id, window, cx);
+                        });
+                    });
+                }
+                _ => {}
+            }
+        })
+        .detach();
     }
 
     pub fn close_other_tabs(&mut self, keep_tab_id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -324,8 +433,10 @@ impl Render for EditorGroup {
                                 let tab_id = tab.id;
                                 let is_active = idx == active_index;
                                 let is_dirty = tab.is_dirty(cx);
+                                let is_read_only = tab.is_read_only(cx);
                                 let title = tab.title(cx);
                                 let title_for_drag = title.clone();
+                                let close_group = format!("tab-close-hover-{tab_id}");
                                 let tab_focus_handle = tab.focus_handle(cx);
                                 let is_tab_focused = is_active && (tab_focus_handle.is_focused(window) || tab_focus_handle.contains_focused(window, cx));
 
@@ -426,17 +537,19 @@ impl Render for EditorGroup {
                                         }
                                     })
                                     .child(
-                                        Icon::new(IconName::File)
+                                        Icon::new(if is_read_only { IconName::Eye } else { IconName::File })
                                             .size(px(14.0))
                                             .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
                                     )
                                     .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
                                     .child(
                                         div()
+                                            .group(close_group.clone())
                                             .id(ElementId::NamedInteger("tab-close-btn".into(), tab_id as u64))
                                             .flex()
                                             .items_center()
                                             .justify_center()
+                                            .relative()
                                             .w(px(18.0))
                                             .h(px(18.0))
                                             .rounded_sm()
@@ -447,11 +560,28 @@ impl Render for EditorGroup {
                                                     this.close_tab(tab_id, window, cx);
                                                 }),
                                             )
-                                            .child(if is_dirty && !is_active {
-                                                div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent).into_any_element()
-                                            } else {
-                                                Icon::new(IconName::Close).size(px(12.0)).text_color(theme.muted_foreground).into_any_element()
-                                            }),
+                                            .when(is_dirty, |s| {
+                                                s.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .group_hover(close_group.clone(), |style| style.invisible())
+                                                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent)),
+                                                )
+                                            })
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .inset_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .when(is_dirty, |s| s.invisible().group_hover(close_group.clone(), |style| style.visible()))
+                                                    .child(Icon::new(IconName::Close).size(px(12.0)).text_color(theme.muted_foreground)),
+                                            ),
                                     )
                             })),
                     )

@@ -405,15 +405,12 @@ impl StructTreeView {
                 if total > 0 && item.size > 0 {
                     let start = item.offset.min(total.saturating_sub(1));
                     let end = (item.offset + item.size.saturating_sub(1)).min(total.saturating_sub(1));
-                    editor.selection_start = Some(start);
-                    editor.selection_end = Some(end);
+                    editor.set_selection_range(start..end.saturating_add(1));
                     editor.cursor_offset = start;
                     nav_offset = start;
                 } else {
-                    editor.selection_start = None;
-                    editor.selection_end = None;
                     let clamped = offset.min(total);
-                    editor.cursor_offset = clamped;
+                    editor.set_cursor_offset_exact(clamped);
                     nav_offset = clamped;
                 }
                 cx.notify();

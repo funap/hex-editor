@@ -230,6 +230,30 @@ pub struct CollapseAllStructure;
 pub struct Copy;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct Cut;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct Paste;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct Undo;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct Redo;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleInsertMode;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct Save;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SaveAs;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleReadOnly;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct CopyAsHexDump;
 
 #[derive(Clone, PartialEq, Action)]

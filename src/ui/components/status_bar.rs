@@ -1,4 +1,5 @@
 use crate::actions::*;
+use crate::app_state::InsertModeState;
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
@@ -7,7 +8,7 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
-use gpui_component::{ActiveTheme, Sizable as _, Size, StyledExt};
+use gpui_component::{ActiveTheme, Icon, Sizable as _, Size, StyledExt};
 
 pub enum StatusBarEvent {
     #[allow(dead_code)]
@@ -17,15 +18,20 @@ pub enum StatusBarEvent {
 pub struct StatusBar {
     active_editor: Option<WeakEntity<Editor>>,
     editor_subscription: Option<Subscription>,
+    _insert_mode_subscription: Subscription,
 }
 
 impl EventEmitter<StatusBarEvent> for StatusBar {}
 
 impl StatusBar {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let _insert_mode_subscription = cx.observe_global::<InsertModeState>(|_, cx| {
+            cx.notify();
+        });
         Self {
             active_editor: None,
             editor_subscription: None,
+            _insert_mode_subscription,
         }
     }
 
@@ -57,7 +63,7 @@ impl Render for StatusBar {
             let editor = editor.read(cx);
             let doc = editor.document.read().ok();
 
-            let target = if editor.selection_start.is_some() && editor.selection_end.is_some() {
+            let target = if editor.has_selection() {
                 if let Some(range) = editor.selected_range_or_cursor() {
                     let len = range.len();
                     if len <= 8 { Some((range.start, len)) } else { None }
@@ -89,7 +95,7 @@ impl Render for StatusBar {
 
         let (position_text, position_copy_val) = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            if editor.selection_start.is_some() && editor.selection_end.is_some() {
+            if editor.has_selection() {
                 if let Some(range) = editor.selected_range_or_cursor() {
                     let len = range.len();
                     let end_inclusive = range.end.saturating_sub(1);
@@ -119,6 +125,18 @@ impl Render for StatusBar {
         } else {
             false
         };
+
+        let is_read_only = if let Some(editor) = &active_editor {
+            editor.read(cx).is_read_only()
+        } else {
+            false
+        };
+        let file_mode_label = if is_read_only { "Read-only" } else { "Writable" };
+        let file_mode_icon = if is_read_only { IconName::Eye } else { IconName::File };
+        let file_mode_color = if is_read_only { theme.muted_foreground } else { theme.green };
+        let insert_mode = InsertModeState::is_enabled(cx);
+        let edit_mode_label = if insert_mode { "Insert" } else { "Overwrite" };
+        let edit_mode_color = if insert_mode { theme.accent } else { theme.muted_foreground };
 
         let radix_badge_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
@@ -164,6 +182,7 @@ impl Render for StatusBar {
             .px_3()
             .context_menu(move |menu, window, cx| {
                 menu.menu_with_icon("Find...", IconName::Search, Box::new(ToggleSearch))
+                    .menu_with_icon("Toggle Read-only", IconName::Eye, Box::new(ToggleReadOnly))
                     .separator()
                     .submenu("Radix", window, cx, move |menu, _window, _cx| {
                         menu.menu("Hexadecimal (16)", Box::new(SetRadixHex))
@@ -256,6 +275,62 @@ impl Render for StatusBar {
                     .items_center()
                     .gap_2()
                     .text_xs()
+                    .when(active_editor.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("status-file-mode")
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .text_color(file_mode_color)
+                                .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                                .tooltip(move |_window, cx| {
+                                    cx.new(|_| {
+                                        gpui_component::tooltip::Tooltip::new(if is_read_only {
+                                            "Read-only. Click to make this file writable"
+                                        } else {
+                                            "Writable. Click to make this file read-only"
+                                        })
+                                    })
+                                    .into()
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleReadOnly), cx);
+                                })
+                                .child(Icon::new(file_mode_icon).size(px(13.0)))
+                                .child(file_mode_label),
+                        )
+                    })
+                    .when(active_editor.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("status-edit-mode")
+                                .px_2()
+                                .py_0p5()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .text_color(edit_mode_color)
+                                .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                                .tooltip(move |_window, cx| {
+                                    cx.new(|_| {
+                                        gpui_component::tooltip::Tooltip::new(if insert_mode {
+                                            "Insert Mode. Click to switch to Overwrite Mode"
+                                        } else {
+                                            "Overwrite Mode. Click to switch to Insert Mode"
+                                        })
+                                    })
+                                    .into()
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleInsertMode), cx);
+                                })
+                                .child(edit_mode_label),
+                        )
+                    })
                     .when(is_dirty, |el| {
                         el.child(
                             div()

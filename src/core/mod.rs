@@ -1,6 +1,7 @@
 pub mod appearance;
 pub mod buffer;
 pub mod checksum;
+pub mod clipboard;
 pub mod command;
 pub mod diff;
 pub mod document;
@@ -12,4 +13,5 @@ pub mod history;
 pub mod layout;
 pub mod radix;
 pub mod search;
+pub mod selection;
 pub mod structure;

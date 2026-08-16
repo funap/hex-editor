@@ -83,6 +83,10 @@ fn setup_menus(cx: &mut App) {
                 gpui::MenuItem::action("Open Folder...", crate::actions::OpenFolder),
                 gpui::MenuItem::action("Close Folder", crate::actions::CloseFolder),
                 gpui::MenuItem::separator(),
+                gpui::MenuItem::action("Save", crate::actions::Save),
+                gpui::MenuItem::action("Save As...", crate::actions::SaveAs),
+                gpui::MenuItem::action("Toggle Read-only", crate::actions::ToggleReadOnly),
+                gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Close Tab", crate::actions::CloseActivePanel),
                 gpui::MenuItem::action("Close Other Tabs", crate::actions::CloseOtherTabs),
                 gpui::MenuItem::action("Close Tabs to Right", crate::actions::CloseTabsToRight),
@@ -101,7 +105,15 @@ fn setup_menus(cx: &mut App) {
         gpui::Menu {
             name: "Edit".into(),
             items: vec![
+                gpui::MenuItem::action("Undo", crate::actions::Undo),
+                gpui::MenuItem::action("Redo", crate::actions::Redo),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::action("Cut", crate::actions::Cut),
                 gpui::MenuItem::action("Copy", crate::actions::Copy),
+                gpui::MenuItem::action("Paste", crate::actions::Paste),
+                gpui::MenuItem::action("Toggle Insert Mode", crate::actions::ToggleInsertMode),
+                gpui::MenuItem::action("Toggle Read-only", crate::actions::ToggleReadOnly),
+                gpui::MenuItem::separator(),
                 gpui::MenuItem::submenu(gpui::Menu {
                     name: "Copy As".into(),
                     items: vec![
@@ -374,6 +386,11 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-shift-c", crate::actions::CopyAsHexDump, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-c", crate::actions::CopyAsHexDump, None),
+        // Editing
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-s", crate::actions::Save, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-s", crate::actions::Save, None),
         // Cursor movement
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-home", crate::actions::GoToBeginning, None),

@@ -1,8 +1,5 @@
 use super::types::CONTEXT;
-use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsHexDump, JoinLine, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev,
-    ToggleSearch,
-};
+use crate::actions::{ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, Paste, Redo, SearchNext, SearchPrev, ToggleSearch, Undo};
 use gpui::*;
 
 actions!(
@@ -27,7 +24,15 @@ actions!(
         SelectEnd,
         TriggerSearch,
         TriggerSearchNext,
-        TriggerSearchPrev
+        TriggerSearchPrev,
+        ViMoveLeft,
+        ViMoveRight,
+        ViMoveUp,
+        ViMoveDown,
+        ViSelectLeft,
+        ViSelectRight,
+        ViSelectUp,
+        ViSelectDown
     ]
 );
 
@@ -63,19 +68,34 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-c", CopyAsHexDump, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-c", CopyAsHexDump, Some(CONTEXT)),
-        // Vi-like navigation
-        KeyBinding::new("h", MoveLeft, Some(CONTEXT)),
-        KeyBinding::new("l", MoveRight, Some(CONTEXT)),
-        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("shift-h", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-l", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("shift-k", SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-j", SelectDown, Some(CONTEXT)),
-        // Vi-like search commands
-        KeyBinding::new("/", TriggerSearch, Some(CONTEXT)),
-        KeyBinding::new("n", TriggerSearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-n", TriggerSearchPrev, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-x", Cut, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-z", Undo, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-z", Redo, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-z", Redo, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
+        // Vi-like navigation remains available in the Hex column without
+        // stealing printable characters from the ASCII column.
+        KeyBinding::new("h", ViMoveLeft, Some(CONTEXT)),
+        KeyBinding::new("l", ViMoveRight, Some(CONTEXT)),
+        KeyBinding::new("k", ViMoveUp, Some(CONTEXT)),
+        KeyBinding::new("j", ViMoveDown, Some(CONTEXT)),
+        KeyBinding::new("shift-h", ViSelectLeft, Some(CONTEXT)),
+        KeyBinding::new("shift-l", ViSelectRight, Some(CONTEXT)),
+        KeyBinding::new("shift-k", ViSelectUp, Some(CONTEXT)),
+        KeyBinding::new("shift-j", ViSelectDown, Some(CONTEXT)),
         // Standard search shortcuts
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),
@@ -91,11 +111,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        // Custom breaks & layout
-        KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
-        KeyBinding::new("shift-j", JoinLine, Some(CONTEXT)),
-        KeyBinding::new("backspace", RemoveCustomBreakBackward, Some(CONTEXT)),
-        KeyBinding::new("delete", RemoveCustomBreakForward, Some(CONTEXT)),
+        // Custom breaks & layout are available from the menu and context menu.
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]

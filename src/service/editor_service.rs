@@ -76,7 +76,7 @@ impl EditorService {
             Ok(Buffer::from_mmap(mmap))
         })
         .await??;
-        let new_document = Arc::new(RwLock::new(Document::new(path.clone(), buffer)));
+        let new_document = Arc::new(RwLock::new(Document::new_read_only(path.clone(), buffer)));
 
         // Acquire a write lock to insert the new document into the cache.
         let mut documents = self.documents.write().expect("documents write lock");
@@ -95,6 +95,35 @@ impl EditorService {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut documents = self.documents.write().expect("documents write lock");
         documents.remove(&path);
+    }
+
+    /// Writes the current document snapshot to its path on a background
+    /// executor. The document lock is released before any filesystem await.
+    pub fn save_document(&self, document: Arc<RwLock<Document>>, cx: &App) -> Task<anyhow::Result<()>> {
+        let (path, contents) = {
+            let document = document.read().expect("document read lock");
+            if document.is_read_only() {
+                return cx.background_executor().spawn(async { Err(anyhow::anyhow!("document is read-only")) });
+            }
+            (document.path().to_path_buf(), document.buffer.data().to_vec())
+        };
+        cx.background_executor().spawn(async move {
+            std::fs::write(path, contents)?;
+            Ok(())
+        })
+    }
+
+    /// Writes a document snapshot to an explicit path on a background
+    /// executor. This is used by Save As workflows.
+    pub fn save_document_to_path(&self, document: Arc<RwLock<Document>>, path: PathBuf, cx: &App) -> Task<anyhow::Result<()>> {
+        let contents = {
+            let document = document.read().expect("document read lock");
+            document.buffer.data().to_vec()
+        };
+        cx.background_executor().spawn(async move {
+            std::fs::write(path, contents)?;
+            Ok(())
+        })
     }
 
     /// Searches for a query in the given buffer based on the search options.
@@ -254,6 +283,7 @@ mod tests {
         let service = EditorService::new();
         let first = service.open_file(file.path().to_path_buf()).await.expect("open test file");
         assert_eq!(first.read().unwrap().buffer.data(), &[0x10, 0x20, 0x30]);
+        assert!(first.read().unwrap().is_read_only());
 
         let second = service.open_file(file.path().to_path_buf()).await.expect("open cached file");
         assert!(Arc::ptr_eq(&first, &second), "opening a cached path must reuse its document");

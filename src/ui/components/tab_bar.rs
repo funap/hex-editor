@@ -12,6 +12,7 @@ pub struct TabItemInfo {
     pub id: usize,
     pub title: String,
     pub is_dirty: bool,
+    pub is_read_only: bool,
     pub is_active: bool,
     #[allow(dead_code)]
     pub path: Option<PathBuf>,
@@ -37,6 +38,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
             let tab_id = tab.id;
             let is_active = tab.is_active;
             let is_dirty = tab.is_dirty;
+            let is_read_only = tab.is_read_only;
             let title = tab.title.clone();
             let one_based_index = idx + 1;
 
@@ -102,7 +104,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                     }
                 })
                 .child(
-                    Icon::new(IconName::File)
+                    Icon::new(if is_read_only { IconName::Eye } else { IconName::File })
                         .size(px(14.0))
                         .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
                 )

@@ -528,8 +528,8 @@ impl EditorPanel {
 impl EventEmitter<PanelEvent> for EditorPanel {}
 
 impl Focusable for EditorPanel {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.hex_view.read(cx).focus_handle(cx)
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 

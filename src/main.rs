@@ -66,6 +66,7 @@ fn init_app_state(cx: &mut App) {
     ui::workspace::init(cx);
     ui::components::file_tree_view::init(cx);
     ui::components::search_bar::init(cx);
+    ui::components::search_panel::init(cx);
     ui::components::struct_tree_view::init(cx);
     ui::components::highlight_panel::init(cx);
     ui::panels::editor_panel::init(cx);
@@ -119,6 +120,7 @@ fn setup_menus(cx: &mut App) {
                 gpui::MenuItem::action("Select All", crate::actions::SelectAll),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Find", crate::actions::ToggleSearch),
+                gpui::MenuItem::action("Find in File (Scan All)", crate::actions::ToggleSearchPanel),
                 gpui::MenuItem::action("Find Next", crate::actions::SearchNext),
                 gpui::MenuItem::action("Find Previous", crate::actions::SearchPrev),
                 gpui::MenuItem::separator(),
@@ -343,6 +345,10 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-f", crate::actions::ToggleSearch, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-f", crate::actions::ToggleSearch, None),
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-shift-f", crate::actions::ToggleSearchPanel, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-shift-f", crate::actions::ToggleSearchPanel, None),
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-g", crate::actions::SearchNext, None),
         #[cfg(not(target_os = "macos"))]

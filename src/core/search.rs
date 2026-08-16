@@ -1,7 +1,8 @@
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SearchMode {
-    Text,
+    #[default]
     Hex,
+    Text,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,6 +224,158 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
     results
 }
 
+/// Helper to find a single occurrence scanning forward in range `start..end`.
+fn find_single_forward(data: &[u8], pattern: &[PatternByte], start: usize, end: usize) -> Option<usize> {
+    if pattern.is_empty() || pattern.len() > data.len() {
+        return None;
+    }
+    let data_len = data.len();
+    let start = start.min(data_len);
+    let end = end.min(data_len);
+    let pattern_len = pattern.len();
+
+    if start >= end || end < pattern_len {
+        return None;
+    }
+
+    use bstr::ByteSlice as _;
+    let search_end = end - pattern_len;
+    let mut i = start.min(search_end + 1);
+
+    while i <= search_end {
+        if pattern[0].mask == 0xFF {
+            let target = pattern[0].value;
+            match data[i..=search_end].find_byte(target) {
+                Some(pos) => {
+                    i += pos;
+                }
+                None => break,
+            }
+        } else if !pattern[0].matches(data[i]) {
+            i += 1;
+            continue;
+        }
+
+        let mut matched = true;
+        for j in 1..pattern_len {
+            if !pattern[j].matches(data[i + j]) {
+                matched = false;
+                break;
+            }
+        }
+
+        if matched {
+            return Some(i);
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+/// Helper to find a single occurrence scanning backward in range `start..end`.
+fn find_single_backward(data: &[u8], pattern: &[PatternByte], start: usize, end: usize) -> Option<usize> {
+    if pattern.is_empty() || pattern.len() > data.len() {
+        return None;
+    }
+    let data_len = data.len();
+    let start = start.min(data_len);
+    let end = end.min(data_len);
+    let pattern_len = pattern.len();
+
+    if start >= end || end < pattern_len {
+        return None;
+    }
+
+    use bstr::ByteSlice as _;
+    let search_end = end - pattern_len;
+    if start > search_end {
+        return None;
+    }
+
+    let mut i = search_end;
+    loop {
+        if pattern[0].mask == 0xFF {
+            let target = pattern[0].value;
+            match data[start..=i].rfind_byte(target) {
+                Some(pos) => {
+                    i = start + pos;
+                }
+                None => break,
+            }
+        } else if !pattern[0].matches(data[i]) {
+            if i <= start {
+                break;
+            }
+            i -= 1;
+            continue;
+        }
+
+        let mut matched = true;
+        for j in 1..pattern_len {
+            if !pattern[j].matches(data[i + j]) {
+                matched = false;
+                break;
+            }
+        }
+
+        if matched {
+            return Some(i);
+        }
+
+        if i <= start {
+            break;
+        }
+        i -= 1;
+    }
+
+    None
+}
+
+/// Finds the next occurrence of `pattern` starting at `from_offset`, wrapping around to 0 if needed.
+pub fn find_next_occurrence(data: &[u8], pattern: &[PatternByte], from_offset: usize) -> Option<usize> {
+    if data.is_empty() || pattern.is_empty() || pattern.len() > data.len() {
+        return None;
+    }
+
+    // 1. Search forward from `from_offset` to end of data
+    if let Some(pos) = find_single_forward(data, pattern, from_offset, data.len()) {
+        return Some(pos);
+    }
+
+    // 2. Wrap-around: search from 0 to `from_offset`
+    if from_offset > 0 {
+        let wrap_end = (from_offset + pattern.len().saturating_sub(1)).min(data.len());
+        return find_single_forward(data, pattern, 0, wrap_end);
+    }
+
+    None
+}
+
+/// Finds the previous occurrence of `pattern` strictly starting before `before_offset`, wrapping around to the end of data if needed.
+pub fn find_prev_occurrence(data: &[u8], pattern: &[PatternByte], before_offset: usize) -> Option<usize> {
+    if data.is_empty() || pattern.is_empty() || pattern.len() > data.len() {
+        return None;
+    }
+
+    // 1. Search backward strictly before `before_offset` if `before_offset > 0`
+    if before_offset > 0 {
+        let end = (before_offset + pattern.len().saturating_sub(1)).min(data.len());
+        if let Some(pos) = find_single_backward(data, pattern, 0, end) {
+            return Some(pos);
+        }
+    }
+
+    // 2. Wrap-around: search backward from end of data
+    find_single_backward(data, pattern, 0, data.len())
+}
+
+/// Finds all occurrences of `pattern` within the specified `range` of `data`.
+pub fn find_occurrences_in_range(data: &[u8], pattern: &[PatternByte], range: std::ops::Range<usize>) -> Vec<usize> {
+    find_occurrences(data, pattern, SearchLimit::Unlimited, Some(range))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,9 +404,6 @@ mod tests {
     fn test_find_occurrences_limit_range() {
         let data = b"AA..AA....AA";
         let pattern = to_exact_pattern(b"AA");
-        // First match at 0. Range limit 5 means look until index 0 + 5.
-        // Second match at 4. (4 < 5) should be found.
-        // Third match at 10. (10 >= 5) should be excluded.
         let results = find_occurrences(data, &pattern, SearchLimit::Range(5), None);
         assert_eq!(results, vec![0, 4]);
     }
@@ -263,15 +413,12 @@ mod tests {
         let data = b"0123456789";
         let pattern = to_exact_pattern(b"34");
 
-        // Range inclusive of match
         let results = find_occurrences(data, &pattern, SearchLimit::Unlimited, Some(2..6));
         assert_eq!(results, vec![3]);
 
-        // Range exclusive of match (start after)
         let results = find_occurrences(data, &pattern, SearchLimit::Unlimited, Some(5..8));
         assert!(results.is_empty());
 
-        // Range exclusive of match (end before)
         let results = find_occurrences(data, &pattern, SearchLimit::Unlimited, Some(0..3));
         assert!(results.is_empty());
     }
@@ -280,6 +427,39 @@ mod tests {
     fn test_empty_pattern_or_data() {
         assert!(find_occurrences(b"", &[], SearchLimit::Unlimited, None).is_empty());
         assert!(find_occurrences(b"data", &[], SearchLimit::Unlimited, None).is_empty());
+        assert_eq!(find_next_occurrence(b"", &[], 0), None);
+        assert_eq!(find_prev_occurrence(b"", &[], 0), None);
+    }
+
+    #[test]
+    fn test_find_next_and_prev_occurrence() {
+        let data = b"abc 123 abc 456 abc";
+        let pattern = to_exact_pattern(b"abc");
+
+        // Forward from 0 -> 0
+        assert_eq!(find_next_occurrence(data, &pattern, 0), Some(0));
+        // Forward from 1 -> 8
+        assert_eq!(find_next_occurrence(data, &pattern, 1), Some(8));
+        // Forward from 9 -> 16
+        assert_eq!(find_next_occurrence(data, &pattern, 9), Some(16));
+        // Forward from 17 -> wraps to 0
+        assert_eq!(find_next_occurrence(data, &pattern, 17), Some(0));
+
+        // Backward from 16 (matches at 0, 8, 16) -> strictly before 16 is 8
+        assert_eq!(find_prev_occurrence(data, &pattern, 16), Some(8));
+        // Backward before 8 is 0
+        assert_eq!(find_prev_occurrence(data, &pattern, 8), Some(0));
+        // Backward before 0 wraps to 16
+        assert_eq!(find_prev_occurrence(data, &pattern, 0), Some(16));
+    }
+
+    #[test]
+    fn test_find_occurrences_in_range() {
+        let data = b"XX--XX--XX--XX";
+        let pattern = to_exact_pattern(b"XX");
+
+        let matches = find_occurrences_in_range(data, &pattern, 4..11);
+        assert_eq!(matches, vec![4, 8]);
     }
 
     #[test]

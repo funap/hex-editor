@@ -257,6 +257,7 @@ impl Workspace {
             (
                 [
                     file_tree.read(cx).focus_handle(cx),
+                    left_read.search_panel.read(cx).focus_handle(cx),
                     left_read.struct_tree.read(cx).focus_handle(cx),
                     left_read.data_inspector.read(cx).focus_handle(cx),
                     left_read.visual_map.read(cx).focus_handle(cx),
@@ -312,7 +313,21 @@ impl Workspace {
         )
         .detach();
 
-        cx.subscribe(&left_panel, |_, _, event, cx| match event {
+        cx.subscribe(
+            &left_panel,
+            |this, _, event: &crate::ui::components::search_panel::SearchPanelEvent, cx| match event {
+                crate::ui::components::search_panel::SearchPanelEvent::NavigateTo { offset, .. } => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.scroll_to_byte(*offset, cx);
+                        });
+                    }
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(&left_panel, |_, _, event: &FileTreeViewEvent, cx| match event {
             FileTreeViewEvent::OpenFile(path) => {
                 cx.dispatch_action(&crate::actions::OpenFile {
                     path: path.to_string_lossy().to_string(),
@@ -1064,6 +1079,10 @@ impl Workspace {
         self.set_left_panel_visible(!self.is_left_panel_visible, window, cx);
     }
 
+    fn on_action_toggle_search_panel(&mut self, _: &crate::actions::ToggleSearchPanel, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_activity(Activity::Search, window, cx);
+    }
+
     fn on_action_show_files_tab(&mut self, _: &ShowFilesTab, window: &mut Window, cx: &mut Context<Self>) {
         self.select_activity(Activity::Files, window, cx);
     }
@@ -1158,6 +1177,7 @@ impl Workspace {
     fn select_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let tab = match activity {
             Activity::Files => LeftPanelTab::Files,
+            Activity::Search => LeftPanelTab::Search,
             Activity::Structure => LeftPanelTab::Structure,
             Activity::Inspector => LeftPanelTab::Inspector,
             Activity::Map => LeftPanelTab::Map,
@@ -1513,6 +1533,7 @@ impl Workspace {
             if is_visible {
                 match active_tab {
                     LeftPanelTab::Files => activity_bar.set_activity(Some(Activity::Files), cx),
+                    LeftPanelTab::Search => activity_bar.set_activity(Some(Activity::Search), cx),
                     LeftPanelTab::Structure => activity_bar.set_activity(Some(Activity::Structure), cx),
                     LeftPanelTab::Inspector => activity_bar.set_activity(Some(Activity::Inspector), cx),
                     LeftPanelTab::Map => activity_bar.set_activity(Some(Activity::Map), cx),
@@ -1538,6 +1559,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_go_to_beginning))
             .on_action(cx.listener(Self::on_action_go_to_end))
             .on_action(cx.listener(Self::on_action_toggle_search))
+            .on_action(cx.listener(Self::on_action_toggle_search_panel))
             .on_action(cx.listener(Self::on_action_search_next))
             .on_action(cx.listener(Self::on_action_search_prev))
             .on_action(cx.listener(Self::on_action_copy))

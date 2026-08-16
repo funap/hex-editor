@@ -39,6 +39,9 @@ pub struct LoadChildren {
 pub struct ToggleSearch;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct ToggleSearchPanel;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct SearchNext;
 
 #[derive(Clone, PartialEq, Action)]

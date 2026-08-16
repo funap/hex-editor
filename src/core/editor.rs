@@ -20,6 +20,7 @@ pub use crate::core::layout::{BYTES_PER_ROW, LayoutSegment, LineMap, SegmentKind
 #[derive(Default, Clone)]
 pub struct SearchState {
     pub query: String,
+    pub mode: crate::core::search::SearchMode,
     pub results: Vec<usize>,
     pub current_result_index: Option<usize>,
     pub is_full_search_complete: bool,
@@ -796,9 +797,37 @@ impl Editor {
         self.selection_end = Some(aligned);
     }
 
+    pub fn search_pattern(&self) -> Option<Vec<crate::core::search::PatternByte>> {
+        if self.search_state.query.is_empty() {
+            return None;
+        }
+        match self.search_state.mode {
+            crate::core::search::SearchMode::Text => Some(
+                self.search_state
+                    .query
+                    .as_bytes()
+                    .iter()
+                    .map(|&b| crate::core::search::PatternByte::new_exact(b))
+                    .collect(),
+            ),
+            crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&self.search_state.query),
+        }
+    }
+
     pub fn set_search_query(&mut self, query: String) {
         if self.search_state.query != query {
             self.search_state.query = query;
+            self.search_state.results.clear();
+            self.search_state.current_result_index = None;
+            self.search_state.is_full_search_complete = false;
+            self.search_state.generation += 1;
+        }
+    }
+
+    pub fn set_search_query_and_mode(&mut self, query: String, mode: crate::core::search::SearchMode) {
+        if self.search_state.query != query || self.search_state.mode != mode {
+            self.search_state.query = query;
+            self.search_state.mode = mode;
             self.search_state.results.clear();
             self.search_state.current_result_index = None;
             self.search_state.is_full_search_complete = false;
@@ -833,19 +862,43 @@ impl Editor {
         self.search_state.generation += 1;
     }
 
+    /// Finds and navigates to the next occurrence starting after the current cursor offset,
+    /// wrapping around if necessary. Updates cursor offset and returns the match offset.
+    pub fn find_and_navigate_next(&mut self) -> Option<usize> {
+        let pattern = self.search_pattern()?;
+        let doc = self.document.read().ok()?;
+        let data = doc.buffer.data();
+        let from_offset = self.cursor_offset.saturating_add(1);
+        let next_offset = crate::core::search::find_next_occurrence(data, &pattern, from_offset)?;
+        self.cursor_offset = next_offset;
+        Some(next_offset)
+    }
+
+    /// Finds and navigates to the previous occurrence starting before the current cursor offset,
+    /// wrapping around if necessary. Updates cursor offset and returns the match offset.
+    pub fn find_and_navigate_prev(&mut self) -> Option<usize> {
+        let pattern = self.search_pattern()?;
+        let doc = self.document.read().ok()?;
+        let data = doc.buffer.data();
+        let prev_offset = crate::core::search::find_prev_occurrence(data, &pattern, self.cursor_offset)?;
+        self.cursor_offset = prev_offset;
+        Some(prev_offset)
+    }
+
     pub fn next_search_result(&mut self) -> Option<usize> {
-        if self.search_state.results.is_empty() {
-            return None;
-        }
-
-        let next_index = if let Some(index) = self.search_state.current_result_index {
-            (index + 1) % self.search_state.results.len()
+        if !self.search_state.results.is_empty() {
+            let next_index = if let Some(index) = self.search_state.current_result_index {
+                (index + 1) % self.search_state.results.len()
+            } else {
+                0
+            };
+            self.search_state.current_result_index = Some(next_index);
+            let offset = self.search_state.results[next_index];
+            self.cursor_offset = offset;
+            Some(offset)
         } else {
-            0
-        };
-
-        self.search_state.current_result_index = Some(next_index);
-        Some(self.search_state.results[next_index])
+            self.find_and_navigate_next()
+        }
     }
 
     pub fn line_starts(&self) -> LineMap {
@@ -1313,22 +1366,28 @@ impl Editor {
     }
 
     pub fn prev_search_result(&mut self) -> Option<usize> {
-        if self.search_state.results.is_empty() {
-            return None;
-        }
+        if !self.search_state.results.is_empty() {
+            let prev_index = if let Some(index) = self.search_state.current_result_index {
+                if index == 0 { self.search_state.results.len() - 1 } else { index - 1 }
+            } else {
+                self.search_state.results.len() - 1
+            };
 
-        let prev_index = if let Some(index) = self.search_state.current_result_index {
-            if index == 0 { self.search_state.results.len() - 1 } else { index - 1 }
+            self.search_state.current_result_index = Some(prev_index);
+            let offset = self.search_state.results[prev_index];
+            self.cursor_offset = offset;
+            Some(offset)
         } else {
-            self.search_state.results.len() - 1
-        };
-
-        self.search_state.current_result_index = Some(prev_index);
-        Some(self.search_state.results[prev_index])
+            self.find_and_navigate_prev()
+        }
     }
 
     pub fn current_search_result(&self) -> Option<usize> {
-        self.search_state.current_result_index.and_then(|i| self.search_state.results.get(i).copied())
+        if let Some(i) = self.search_state.current_result_index {
+            self.search_state.results.get(i).copied()
+        } else {
+            None
+        }
     }
 
     pub fn execute_command(&mut self, mut command: Box<dyn Command>) {
@@ -1639,6 +1698,35 @@ mod tests {
         // Prev
         editor.prev_search_result();
         assert_eq!(editor.current_search_result(), Some(11));
+    }
+
+    #[test]
+    fn test_search_on_demand_navigation() {
+        let mut editor = create_editor_with_content(b"test match test");
+        editor.set_search_query_and_mode("test".to_string(), crate::core::search::SearchMode::Text);
+        // results is empty because inline search does not scan the whole file
+        assert!(editor.search_state.results.is_empty());
+
+        // Next from offset 0 finds next match at offset 11
+        editor.cursor_offset = 0;
+        let next = editor.find_and_navigate_next();
+        assert_eq!(next, Some(11));
+        assert_eq!(editor.cursor_offset, 11);
+
+        // Next from offset 11 wraps to offset 0
+        let next = editor.find_and_navigate_next();
+        assert_eq!(next, Some(0));
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Prev from offset 0 wraps to offset 11
+        let prev = editor.find_and_navigate_prev();
+        assert_eq!(prev, Some(11));
+        assert_eq!(editor.cursor_offset, 11);
+
+        // Prev from offset 11 finds offset 0
+        let prev = editor.find_and_navigate_prev();
+        assert_eq!(prev, Some(0));
+        assert_eq!(editor.cursor_offset, 0);
     }
 
     #[test]

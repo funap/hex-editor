@@ -5,6 +5,7 @@ pub mod file_tree_view;
 pub mod hex_view;
 pub mod highlight_panel;
 pub mod search_bar;
+pub mod search_panel;
 pub mod status_bar;
 pub mod struct_tree_view;
 pub mod tab_bar;

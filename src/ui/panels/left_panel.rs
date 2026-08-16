@@ -5,12 +5,14 @@ use crate::ui::components::checksum_panel::ChecksumPanel;
 use crate::ui::components::data_inspector::DataInspector;
 use crate::ui::components::file_tree_view::{FileTreeView, FileTreeViewEvent};
 use crate::ui::components::highlight_panel::HighlightPanel;
+use crate::ui::components::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::ui::components::struct_tree_view::StructTreeView;
 use crate::ui::panels::visual_map_panel::VisualMapPanel;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum LeftPanelTab {
     Files,
+    Search,
     Structure,
     Inspector,
     Map,
@@ -20,6 +22,7 @@ pub enum LeftPanelTab {
 
 pub struct LeftPanel {
     pub file_tree: Entity<FileTreeView>,
+    pub search_panel: Entity<SearchPanel>,
     pub struct_tree: Entity<StructTreeView>,
     pub data_inspector: Entity<DataInspector>,
     pub visual_map: Entity<VisualMapPanel>,
@@ -29,9 +32,11 @@ pub struct LeftPanel {
 }
 
 impl EventEmitter<FileTreeViewEvent> for LeftPanel {}
+impl EventEmitter<SearchPanelEvent> for LeftPanel {}
 
 impl LeftPanel {
     pub fn new(file_tree: Entity<FileTreeView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search_panel = cx.new(|cx| SearchPanel::new(None, window, cx));
         let struct_tree = cx.new(|cx| StructTreeView::new(None, None, cx));
         let data_inspector = cx.new(|cx| DataInspector::new(None, cx));
         let visual_map = cx.new(|cx| VisualMapPanel::new(None, cx));
@@ -43,8 +48,16 @@ impl LeftPanel {
         })
         .detach();
 
+        cx.subscribe(&search_panel, |_, _, event: &SearchPanelEvent, cx| match event {
+            SearchPanelEvent::NavigateTo { offset, len } => {
+                cx.emit(SearchPanelEvent::NavigateTo { offset: *offset, len: *len });
+            }
+        })
+        .detach();
+
         Self {
             file_tree,
+            search_panel,
             struct_tree,
             data_inspector,
             visual_map,
@@ -55,6 +68,9 @@ impl LeftPanel {
     }
 
     pub fn set_editor(&mut self, editor: Option<Entity<Editor>>, cx: &mut Context<Self>) {
+        self.search_panel.update(cx, |panel, cx| {
+            panel.set_editor(editor.clone(), cx);
+        });
         self.struct_tree.update(cx, |panel, cx| {
             panel.set_editor(editor.clone(), cx);
         });
@@ -89,6 +105,7 @@ impl Render for LeftPanel {
             .min_h_0()
             .child(match self.active_tab {
                 LeftPanelTab::Files => self.file_tree.clone().into_any_element(),
+                LeftPanelTab::Search => self.search_panel.clone().into_any_element(),
                 LeftPanelTab::Structure => self.struct_tree.clone().into_any_element(),
                 LeftPanelTab::Inspector => self.data_inspector.clone().into_any_element(),
                 LeftPanelTab::Map => self.visual_map.clone().into_any_element(),
@@ -102,6 +119,7 @@ impl Focusable for LeftPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match self.active_tab {
             LeftPanelTab::Files => self.file_tree.read(cx).focus_handle(cx),
+            LeftPanelTab::Search => self.search_panel.read(cx).focus_handle(cx),
             LeftPanelTab::Structure => self.struct_tree.read(cx).focus_handle(cx),
             LeftPanelTab::Inspector => self.data_inspector.read(cx).focus_handle(cx),
             LeftPanelTab::Map => self.visual_map.read(cx).focus_handle(cx),

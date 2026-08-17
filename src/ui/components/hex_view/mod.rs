@@ -2971,7 +2971,7 @@ impl Render for HexView {
                         this.is_selecting = true;
                         this.editor.update(cx, |editor, cx| {
                             if event.modifiers.shift {
-                                editor.continue_drag(target_pos);
+                                editor.continue_drag(selection_anchor, target_pos);
                             } else {
                                 editor.set_cursor_offset_exact(target_pos);
                             }
@@ -2987,7 +2987,7 @@ impl Render for HexView {
                         this.clear_pending_hex_input();
                         this.editor.update(cx, |editor, cx| {
                             if event.modifiers.shift {
-                                editor.continue_drag(target_pos);
+                                editor.continue_drag(selection_anchor, target_pos);
                             } else {
                                 editor.set_cursor_offset_exact(target_pos);
                             }
@@ -3094,14 +3094,11 @@ impl Render for HexView {
                     if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
                         let mouse_selection_anchor = this.mouse_selection_anchor;
                         this.editor.update(cx, |editor, cx| {
-                            let anchor = mouse_selection_anchor.unwrap_or(editor.selection().anchor());
-                            let needs_drag_start = editor.selection().is_collapsed() && editor.selection().anchor() != anchor;
-                            let target_changed = editor.selection().active() != target_pos;
-                            if needs_drag_start || target_changed {
-                                if needs_drag_start {
-                                    editor.start_drag(anchor);
-                                }
-                                editor.continue_drag(target_pos);
+                            let anchor = mouse_selection_anchor.unwrap_or(editor.cursor_offset);
+                            let prev_selection = editor.selection();
+                            let prev_cursor = editor.cursor_offset;
+                            editor.continue_drag(anchor, target_pos);
+                            if editor.selection() != prev_selection || editor.cursor_offset != prev_cursor {
                                 cx.notify();
                             }
                         });

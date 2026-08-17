@@ -1156,18 +1156,17 @@ impl Editor {
         self.selection = Selection::collapsed(aligned);
     }
 
-    pub fn continue_drag(&mut self, byte_pos: usize) {
+    pub fn continue_drag(&mut self, anchor_pos: usize, byte_pos: usize) {
         let step = self.group_size.byte_count();
         let total = self.total_size();
+        let aligned_anchor = (anchor_pos / step) * step;
         let cursor_offset = if byte_pos >= total { total } else { (byte_pos / step) * step };
-        let anchor = self.selection.anchor();
         self.cursor_offset = cursor_offset;
-        let active = if cursor_offset == anchor {
-            anchor
-        } else if cursor_offset > anchor {
-            cursor_offset.saturating_add(1).min(total)
+
+        let (anchor, active) = if cursor_offset >= aligned_anchor {
+            (aligned_anchor.min(total), cursor_offset.saturating_add(step).min(total))
         } else {
-            cursor_offset
+            (aligned_anchor.saturating_add(step).min(total), cursor_offset.min(total))
         };
         self.selection = Selection::new(anchor, active);
     }
@@ -2166,9 +2165,63 @@ mod tests {
         assert_eq!(editor.insert_cursor_offset(), 5);
 
         editor.start_drag(1);
-        editor.continue_drag(3);
+        editor.continue_drag(1, 3);
         assert_eq!(editor.cursor_offset, 3);
         assert_eq!(editor.selection_range(), Some(1..4));
+    }
+
+    #[test]
+    fn test_drag_selection_step_by_step_forward_and_backward() {
+        let mut editor = create_editor_with_content(b"0123456789");
+
+        // Forward dragging from offset 0
+        editor.continue_drag(0, 0);
+        assert_eq!(editor.selection_range(), Some(0..1));
+        assert_eq!(editor.cursor_offset, 0);
+
+        editor.continue_drag(0, 1);
+        assert_eq!(editor.selection_range(), Some(0..2));
+        assert_eq!(editor.cursor_offset, 1);
+
+        editor.continue_drag(0, 2);
+        assert_eq!(editor.selection_range(), Some(0..3));
+        assert_eq!(editor.cursor_offset, 2);
+
+        editor.continue_drag(0, 3);
+        assert_eq!(editor.selection_range(), Some(0..4));
+        assert_eq!(editor.cursor_offset, 3);
+
+        // Backward dragging from offset 5
+        editor.continue_drag(5, 5);
+        assert_eq!(editor.selection_range(), Some(5..6));
+        assert_eq!(editor.cursor_offset, 5);
+
+        editor.continue_drag(5, 4);
+        assert_eq!(editor.selection_range(), Some(4..6));
+        assert_eq!(editor.cursor_offset, 4);
+
+        editor.continue_drag(5, 3);
+        assert_eq!(editor.selection_range(), Some(3..6));
+        assert_eq!(editor.cursor_offset, 3);
+
+        // Reversing direction from anchor 5 to offset 7
+        editor.continue_drag(5, 7);
+        assert_eq!(editor.selection_range(), Some(5..8));
+        assert_eq!(editor.cursor_offset, 7);
+
+        // Multi-byte group size (Two bytes)
+        editor.set_group_size(crate::core::radix::ByteGroupSize::Two);
+        editor.continue_drag(0, 0);
+        assert_eq!(editor.selection_range(), Some(0..2));
+        assert_eq!(editor.cursor_offset, 0);
+
+        editor.continue_drag(0, 2);
+        assert_eq!(editor.selection_range(), Some(0..4));
+        assert_eq!(editor.cursor_offset, 2);
+
+        editor.continue_drag(4, 2);
+        assert_eq!(editor.selection_range(), Some(2..6));
+        assert_eq!(editor.cursor_offset, 2);
     }
 
     #[test]

@@ -886,11 +886,7 @@ impl Editor {
         let step = self.group_size.byte_count();
         if self.cursor_offset > 0 {
             let target = (self.cursor_offset / step).saturating_sub(1) * step;
-            let anchor = if self.has_selection() {
-                self.selection.anchor()
-            } else {
-                self.cursor_offset.saturating_add(1)
-            };
+            let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
             self.cursor_offset = target;
             self.selection = Selection::new(anchor, target).clamped(self.total_size());
         }
@@ -963,11 +959,7 @@ impl Editor {
     }
 
     pub fn select_up(&mut self) {
-        let anchor = if self.has_selection() {
-            self.selection.anchor()
-        } else {
-            self.cursor_offset.saturating_add(1)
-        };
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
 
         self.cursor_offset = self.calculate_up_offset(self.cursor_offset, false);
         self.selection = Selection::new(anchor, self.cursor_offset);
@@ -992,7 +984,7 @@ impl Editor {
         let total_size = self.total_size();
         let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
         self.cursor_offset = self.calculate_down_offset(self.cursor_offset, false);
-        self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
+        self.selection = Selection::new(anchor, self.cursor_offset.min(total_size));
     }
 
     pub fn select_all(&mut self) {
@@ -1081,11 +1073,7 @@ impl Editor {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-        let anchor = if self.has_selection() {
-            self.selection.anchor()
-        } else {
-            self.cursor_offset.saturating_add(1)
-        };
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
 
         let target_line_idx = current_line_idx.saturating_sub(visible_rows);
         let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
@@ -1131,7 +1119,7 @@ impl Editor {
             let aligned_offset = (target_offset / step) * step;
             self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
-        self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(self.total_size()));
+        self.selection = Selection::new(anchor, self.cursor_offset.min(self.total_size()));
     }
 
     /// Extends the selection to the beginning of the buffer for Insert Mode.
@@ -1147,11 +1135,7 @@ impl Editor {
     }
 
     pub fn select_home(&mut self) {
-        let anchor = if self.has_selection() {
-            self.selection.anchor()
-        } else {
-            self.cursor_offset.saturating_add(1)
-        };
+        let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
         self.cursor_offset = 0;
         self.selection = Selection::new(anchor, 0);
     }
@@ -2092,6 +2076,53 @@ mod tests {
         editor.select_end_for_insert();
         assert_eq!(editor.cursor_offset, 5);
         assert_eq!(editor.selection(), Selection::new(4, 5));
+    }
+
+    #[test]
+    fn test_overwrite_selection_select_down_and_up() {
+        let mut editor = create_editor_with_content(&[0u8; 48]);
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Shift+Down from offset 0 selects exactly 16 bytes (one row) to cursor offset 16
+        editor.select_down();
+        assert_eq!(editor.cursor_offset, 16);
+        assert_eq!(editor.selection(), Selection::new(0, 16));
+        assert_eq!(editor.edit_range(), Some(0..16));
+
+        // Shift+Down again selects 32 bytes (two rows) to cursor offset 32
+        editor.select_down();
+        assert_eq!(editor.cursor_offset, 32);
+        assert_eq!(editor.selection(), Selection::new(0, 32));
+        assert_eq!(editor.edit_range(), Some(0..32));
+
+        // Shift+Up shrinks the selection back to 16 bytes
+        editor.select_up();
+        assert_eq!(editor.cursor_offset, 16);
+        assert_eq!(editor.selection(), Selection::new(0, 16));
+        assert_eq!(editor.edit_range(), Some(0..16));
+
+        // Shift+Up collapses the selection
+        editor.select_up();
+        assert_eq!(editor.cursor_offset, 0);
+        assert_eq!(editor.selection(), Selection::new(0, 0));
+        assert_eq!(editor.edit_range(), Some(0..1));
+    }
+
+    #[test]
+    fn test_overwrite_selection_select_left_and_right() {
+        let mut editor = create_editor_with_content(&[0u8; 10]);
+        editor.set_cursor_offset_exact(5);
+
+        // Shift+Left from offset 5 selects 1 byte (4..5) with cursor at 4
+        editor.select_left();
+        assert_eq!(editor.cursor_offset, 4);
+        assert_eq!(editor.selection(), Selection::new(5, 4));
+        assert_eq!(editor.edit_range(), Some(4..5));
+
+        // Shift+Right shrinks back
+        editor.select_right();
+        assert_eq!(editor.cursor_offset, 5);
+        assert_eq!(editor.selection(), Selection::new(5, 5));
     }
 
     #[test]

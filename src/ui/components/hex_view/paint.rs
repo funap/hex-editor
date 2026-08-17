@@ -48,12 +48,7 @@ fn paint_insert_cursor_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x:
 }
 
 #[inline]
-fn paint_insert_cursor(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
-    paint_insert_cursor_at(window, bounds, bounds.left(), color);
-}
-
-#[inline]
-fn paint_insert_underscore_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x: Pixels, width: Pixels, color: Hsla) {
+fn paint_underscore_cursor_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x: Pixels, width: Pixels, color: Hsla) {
     if bounds.size.height <= px(0.0) || width <= px(0.0) {
         return;
     }
@@ -126,15 +121,6 @@ fn hex_insert_cursor_end_geometry(group: HexGroupInfo, origin_x: Pixels, cell_wi
         origin_x + px((group.text_start as f32 + data_end_slot as f32 * slot_width) * f32::from(cell_width)),
         px(slot_width * f32::from(cell_width)),
     )
-}
-
-#[inline]
-fn paint_cursor(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla, insert_mode: bool) {
-    if insert_mode {
-        paint_insert_cursor(window, bounds, color);
-    } else {
-        paint_cursor_border(window, bounds, color);
-    }
 }
 
 pub fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offset: usize, next_offset: usize) -> &[(Range<usize>, Hsla)] {
@@ -339,7 +325,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     let is_struct_mode = params.parse_result.is_some();
 
     let active_row_highlights = row_highlights(params.highlights, params.max_highlight_len, offset, next_offset);
-    let (selection_bg, cursor_bg, caret_color, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
+    let (selection_bg, caret_color, muted_color, fg_color, accent_fg_color, border_color, _sidebar_bg, bg_color_theme) = {
         let theme = cx.theme();
         (
             if params.is_focused {
@@ -347,7 +333,6 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
             } else {
                 theme.muted_foreground.opacity(0.3)
             },
-            darken_cursor_color(theme.accent),
             theme.caret,
             theme.muted_foreground,
             theme.foreground,
@@ -572,7 +557,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
 
                     if is_cursor && !params.insert_mode {
                         let cursor_border_color = if params.is_focused {
-                            cursor_bg
+                            caret_color
                         } else {
                             darken_cursor_color(muted_color).opacity(0.8)
                         };
@@ -581,11 +566,13 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         } else {
                             (group_start_x, group_end_x)
                         };
-                        let item_box_bounds = Bounds::new(
-                            point(cursor_start_x, params.bounds.top() + px(1.0)),
-                            size(cursor_end_x - cursor_start_x, px(ROW_HEIGHT - 2.0)),
-                        );
-                        paint_cursor(window, item_box_bounds, cursor_border_color, params.insert_mode);
+                        let cursor_width = cursor_end_x - cursor_start_x;
+                        let item_box_bounds = Bounds::new(point(cursor_start_x, params.bounds.top() + px(1.0)), size(cursor_width, px(ROW_HEIGHT - 2.0)));
+                        if params.active_column == EditColumn::Hex {
+                            paint_cursor_border(window, item_box_bounds, cursor_border_color);
+                        } else {
+                            paint_underscore_cursor_at(window, item_box_bounds, cursor_start_x, cursor_width, cursor_border_color);
+                        }
                     }
                 }
 
@@ -638,7 +625,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                                     paint_insert_cursor_at(window, item_box_bounds, cursor_x, cursor_border_color);
                                 }
                                 EditColumn::Ascii => {
-                                    paint_insert_underscore_at(window, item_box_bounds, cursor_x, cursor_width, cursor_border_color);
+                                    paint_underscore_cursor_at(window, item_box_bounds, cursor_x, cursor_width, cursor_border_color);
                                 }
                                 EditColumn::Hex => {}
                             }
@@ -658,7 +645,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                                 paint_insert_cursor_at(window, item_box_bounds, text_origin_x, cursor_border_color);
                             }
                             EditColumn::Ascii => {
-                                paint_insert_underscore_at(window, item_box_bounds, text_origin_x, empty_slot_width, cursor_border_color);
+                                paint_underscore_cursor_at(window, item_box_bounds, text_origin_x, empty_slot_width, cursor_border_color);
                             }
                             EditColumn::Hex => {}
                         }
@@ -746,14 +733,18 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
 
                         if is_cursor && !params.insert_mode {
                             let cursor_border_color = if params.is_focused {
-                                cursor_bg
+                                caret_color
                             } else {
                                 darken_cursor_color(muted_color).opacity(0.8)
                             };
                             let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
                             let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
                             let ascii_group_bounds = Bounds::new(point(group_start_x, params.bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
-                            paint_cursor(window, ascii_group_bounds, cursor_border_color, false);
+                            if params.active_column == EditColumn::Ascii {
+                                paint_cursor_border(window, ascii_group_bounds, cursor_border_color);
+                            } else {
+                                paint_underscore_cursor_at(window, ascii_group_bounds, group_start_x, group_width, cursor_border_color);
+                            }
                         }
                     }
 
@@ -824,7 +815,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                                     paint_insert_cursor_at(window, ascii_cursor_bounds, cursor_x, cursor_border_color);
                                 }
                                 EditColumn::Hex => {
-                                    paint_insert_underscore_at(window, ascii_cursor_bounds, cursor_x, px(ASCII_CELL_WIDTH), cursor_border_color);
+                                    paint_underscore_cursor_at(window, ascii_cursor_bounds, cursor_x, px(ASCII_CELL_WIDTH), cursor_border_color);
                                 }
                                 EditColumn::Ascii => {}
                             }

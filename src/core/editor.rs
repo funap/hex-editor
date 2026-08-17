@@ -778,6 +778,72 @@ impl Editor {
         }
     }
 
+    /// Calculates the target vertical offset when moving down one data row from `offset`.
+    /// When `is_insert_mode` is true, clamps to line-end insertion boundaries (`0..=len`);
+    /// otherwise clamps to byte cells (`0..len-1`).
+    fn calculate_down_offset(&self, offset: usize, is_insert_mode: bool) -> usize {
+        let step = self.group_size.byte_count();
+        let total_size = self.total_size();
+        let line_starts = self.line_starts();
+        let current_line_idx = Self::find_line_index(offset, &line_starts);
+
+        if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
+            let offset_in_line = offset - current_line_start;
+            let next_line_start = line_starts.get(next_idx).expect("valid next line start");
+            let next_line_end = if next_idx + 1 < line_starts.len() {
+                line_starts.get(next_idx + 1).expect("valid next line end")
+            } else {
+                total_size
+            };
+            let next_line_len = next_line_end - next_line_start;
+
+            if is_insert_mode {
+                let col = (cmp::min(offset_in_line, next_line_len) / step) * step;
+                (next_line_start + col).min(next_line_end)
+            } else if next_line_len > 0 {
+                let target_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
+                let aligned_offset = (target_offset / step) * step;
+                aligned_offset.min(next_line_end.saturating_sub(1))
+            } else {
+                next_line_start
+            }
+        } else if is_insert_mode {
+            total_size
+        } else {
+            let max_offset = total_size.saturating_sub(1);
+            (max_offset / step) * step
+        }
+    }
+
+    /// Calculates the target vertical offset when moving up one data row from `offset`.
+    /// When `is_insert_mode` is true, clamps to line-end insertion boundaries (`0..=len`);
+    /// otherwise clamps to byte cells (`0..len-1`).
+    fn calculate_up_offset(&self, offset: usize, is_insert_mode: bool) -> usize {
+        let step = self.group_size.byte_count();
+        let line_starts = self.line_starts();
+        let current_line_idx = Self::find_line_index(offset, &line_starts);
+
+        if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
+            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
+            let offset_in_line = offset - current_line_start;
+            let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
+            let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
+            let prev_line_len = prev_line_end - prev_line_start;
+
+            if is_insert_mode {
+                let col = (cmp::min(offset_in_line, prev_line_len) / step) * step;
+                (prev_line_start + col).min(prev_line_end)
+            } else {
+                let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
+                let aligned_offset = (target_offset / step) * step;
+                aligned_offset.min(prev_line_end.saturating_sub(1))
+            }
+        } else {
+            0
+        }
+    }
+
     pub fn move_up(&mut self) {
         if let Some(range) = self.selection_range() {
             let start = range.start;
@@ -786,22 +852,8 @@ impl Editor {
             return;
         }
 
-        let step = self.group_size.byte_count();
-        let line_starts = self.line_starts();
-        let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-
-        if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
-            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
-            let offset_in_line = self.cursor_offset - current_line_start;
-            let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
-            let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
-            let prev_line_len = prev_line_end - prev_line_start;
-
-            let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
-            let aligned_offset = (target_offset / step) * step;
-            self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
-            self.clear_selection();
-        }
+        self.cursor_offset = self.calculate_up_offset(self.cursor_offset, false);
+        self.clear_selection();
     }
 
     pub fn move_down(&mut self) {
@@ -811,35 +863,8 @@ impl Editor {
             return;
         }
 
-        let step = self.group_size.byte_count();
-        let line_starts = self.line_starts();
-        let total_size = self.total_size();
-        let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
-
-        if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
-            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
-            let offset_in_line = self.cursor_offset - current_line_start;
-            let next_line_start = line_starts.get(next_idx).expect("valid next line start");
-            let next_line_end = if next_idx + 1 < line_starts.len() {
-                line_starts.get(next_idx + 1).expect("valid next line end")
-            } else {
-                total_size
-            };
-            let next_line_len = next_line_end - next_line_start;
-
-            if next_line_len > 0 {
-                let target_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
-                let aligned_offset = (target_offset / step) * step;
-                self.cursor_offset = aligned_offset.min(next_line_end.saturating_sub(1));
-            } else {
-                self.cursor_offset = next_line_start;
-            }
-            self.clear_selection();
-        } else {
-            let max_offset = total_size.saturating_sub(1);
-            self.cursor_offset = (max_offset / step) * step;
-            self.clear_selection();
-        }
+        self.cursor_offset = self.calculate_down_offset(self.cursor_offset, false);
+        self.clear_selection();
     }
 
     /// Moves down while allowing a collapsed selection to end at EOF.
@@ -922,61 +947,52 @@ impl Editor {
         self.cursor_offset = active;
     }
 
+    /// Extends or contracts the Insert Mode selection upward by one data row.
+    pub fn select_up_for_insert(&mut self) {
+        let total_size = self.total_size();
+        let caret = if self.has_selection() {
+            self.selection.active().min(total_size)
+        } else {
+            self.cursor_offset.min(total_size)
+        };
+        let anchor = if self.has_selection() { self.selection.anchor() } else { caret };
+
+        let active = self.calculate_up_offset(caret, true);
+        self.cursor_offset = active;
+        self.selection = Selection::new(anchor, active);
+    }
+
     pub fn select_up(&mut self) {
-        let step = self.group_size.byte_count();
-        let line_starts = self.line_starts();
-        let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
         let anchor = if self.has_selection() {
             self.selection.anchor()
         } else {
             self.cursor_offset.saturating_add(1)
         };
 
-        if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
-            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
-            let offset_in_line = self.cursor_offset - current_line_start;
-            let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
-            let prev_line_end = line_starts.get(prev_idx + 1).expect("valid prev line end");
-            let prev_line_len = prev_line_end - prev_line_start;
+        self.cursor_offset = self.calculate_up_offset(self.cursor_offset, false);
+        self.selection = Selection::new(anchor, self.cursor_offset);
+    }
 
-            let target_offset = prev_line_start + cmp::min(offset_in_line, prev_line_len.saturating_sub(1));
-            let aligned_offset = (target_offset / step) * step;
-            self.cursor_offset = aligned_offset.min(prev_line_end.saturating_sub(1));
-            self.selection = Selection::new(anchor, self.cursor_offset);
-        }
+    /// Extends or contracts the Insert Mode selection downward by one data row.
+    pub fn select_down_for_insert(&mut self) {
+        let total_size = self.total_size();
+        let caret = if self.has_selection() {
+            self.selection.active().min(total_size)
+        } else {
+            self.cursor_offset.min(total_size)
+        };
+        let anchor = if self.has_selection() { self.selection.anchor() } else { caret };
+
+        let active = self.calculate_down_offset(caret, true);
+        self.cursor_offset = active;
+        self.selection = Selection::new(anchor, active);
     }
 
     pub fn select_down(&mut self) {
-        let step = self.group_size.byte_count();
-        let line_starts = self.line_starts();
         let total_size = self.total_size();
-        let current_line_idx = Self::find_line_index(self.cursor_offset, &line_starts);
         let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
-
-        if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
-            let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
-            let offset_in_line = self.cursor_offset - current_line_start;
-            let next_line_start = line_starts.get(next_idx).expect("valid next line start");
-            let next_line_end = if next_idx + 1 < line_starts.len() {
-                line_starts.get(next_idx + 1).expect("valid next line end")
-            } else {
-                total_size
-            };
-            let next_line_len = next_line_end - next_line_start;
-
-            if next_line_len > 0 {
-                let target_offset = next_line_start + cmp::min(offset_in_line, next_line_len - 1);
-                let aligned_offset = (target_offset / step) * step;
-                self.cursor_offset = aligned_offset.min(next_line_end.saturating_sub(1));
-            } else {
-                self.cursor_offset = next_line_start;
-            }
-            self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
-        } else {
-            let max_offset = total_size.saturating_sub(1);
-            self.cursor_offset = (max_offset / step) * step;
-            self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
-        }
+        self.cursor_offset = self.calculate_down_offset(self.cursor_offset, false);
+        self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(total_size));
     }
 
     pub fn select_all(&mut self) {
@@ -1116,6 +1132,18 @@ impl Editor {
             self.cursor_offset = aligned_offset.min(target_line_end.saturating_sub(1));
         }
         self.selection = Selection::new(anchor, self.cursor_offset.saturating_add(1).min(self.total_size()));
+    }
+
+    /// Extends the selection to the beginning of the buffer for Insert Mode.
+    pub fn select_home_for_insert(&mut self) {
+        let total_size = self.total_size();
+        let anchor = if self.has_selection() {
+            self.selection.anchor()
+        } else {
+            self.cursor_offset.min(total_size)
+        };
+        self.cursor_offset = 0;
+        self.selection = Selection::new(anchor, 0);
     }
 
     pub fn select_home(&mut self) {
@@ -2135,6 +2163,141 @@ mod tests {
         editor.select_right_for_insert();
         assert_eq!(editor.selection(), Selection::new(5, 4));
         assert_eq!(editor.cursor_offset, 4);
+    }
+
+    #[test]
+    fn test_insert_selection_select_down_and_up_standard_lines() {
+        let mut editor = create_editor_with_content(&[0u8; 48]);
+        // Default 16-byte lines: [0..16], [16..32], [32..48]
+        assert_eq!(editor.line_starts(), vec![0, 16, 32]);
+
+        // Start at offset 0 (beginning of line 0)
+        editor.set_cursor_offset_exact(0);
+        editor.select_down_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 16));
+        assert_eq!(editor.cursor_offset, 16);
+        assert_eq!(editor.insert_cursor_offset(), 16);
+        assert_eq!(editor.selection_range(), Some(0..16));
+
+        // Select down again to line 2 (offset 32)
+        editor.select_down_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 32));
+        assert_eq!(editor.cursor_offset, 32);
+        assert_eq!(editor.insert_cursor_offset(), 32);
+        assert_eq!(editor.selection_range(), Some(0..32));
+
+        // Select down at last line reaches EOF (48)
+        editor.select_down_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 48));
+        assert_eq!(editor.cursor_offset, 48);
+        assert_eq!(editor.insert_cursor_offset(), 48);
+
+        // Select up contracts selection back to line 2 (32)
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 32));
+        assert_eq!(editor.cursor_offset, 32);
+
+        // Select up contracts back to line 1 (16)
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 16));
+        assert_eq!(editor.cursor_offset, 16);
+
+        // Select up contracts back to anchor (0) -> collapsed
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 0));
+        assert_eq!(editor.cursor_offset, 0);
+        assert!(!editor.has_selection());
+
+        // Select up at first line stays at 0
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(0, 0));
+        assert_eq!(editor.cursor_offset, 0);
+    }
+
+    #[test]
+    fn test_insert_selection_select_down_with_join_line() {
+        let mut editor = create_editor_with_content(&[0u8; 64]);
+        // Join line 0 and line 1 -> line 0 is 32 bytes (0..32), line 1 is 16 bytes (32..48), line 2 is 16 bytes (48..64)
+        editor.set_cursor_offset_exact(5);
+        editor.join_line();
+        assert_eq!(editor.line_starts(), vec![0, 32, 48]);
+
+        // Start at offset 5 (column 5 of 32-byte line 0)
+        editor.select_down_for_insert();
+        // Cursor moves straight down to column 5 of line 1 (offset 32 + 5 = 37)
+        assert_eq!(editor.selection(), Selection::new(5, 37));
+        assert_eq!(editor.cursor_offset, 37);
+        assert_eq!(editor.insert_cursor_offset(), 37);
+        assert_eq!(editor.selection_range(), Some(5..37));
+
+        // Start at offset 20 (column 20 of 32-byte line 0)
+        editor.clear_selection();
+        editor.set_cursor_offset_exact(20);
+        editor.select_down_for_insert();
+        // Line 1 is 16 bytes (32..48). Column 20 clamps to line 1 length 16 -> offset 32 + 16 = 48
+        assert_eq!(editor.selection(), Selection::new(20, 48));
+        assert_eq!(editor.cursor_offset, 48);
+        assert_eq!(editor.insert_cursor_offset(), 48);
+        assert_eq!(editor.selection_range(), Some(20..48));
+
+        // When line 0 is 16 bytes and line 1 is joined to be 32 bytes (48 total bytes)
+        let mut editor2 = create_editor_with_content(&[0u8; 48]);
+        editor2.set_cursor_offset_exact(16);
+        editor2.join_line(); // lines: [0..16], [16..48]
+        assert_eq!(editor2.line_starts(), vec![0, 16]);
+
+        // Caret at offset 10 in line 0 (16 bytes) moving down to joined line 1 (32 bytes)
+        editor2.set_cursor_offset_exact(10);
+        editor2.select_down_for_insert();
+        // Moves straight down to column 10 of line 1 (16 + 10 = 26)
+        assert_eq!(editor2.selection(), Selection::new(10, 26));
+        assert_eq!(editor2.cursor_offset, 26);
+        assert_eq!(editor2.insert_cursor_offset(), 26);
+        assert_eq!(editor2.selection_range(), Some(10..26));
+
+        // Select up from 26 moves back up to line 0 column 10 (0 + 10 = 10)
+        editor2.select_up_for_insert();
+        assert_eq!(editor2.selection(), Selection::new(10, 10));
+        assert_eq!(editor2.cursor_offset, 10);
+        assert!(!editor2.has_selection());
+    }
+
+    #[test]
+    fn test_insert_selection_select_down_and_up_with_custom_breaks() {
+        let mut editor = create_editor_with_content(&[0u8; 32]);
+        editor.add_custom_break(10); // Lines: [0..10], [10..26], [26..32]
+        assert_eq!(editor.line_starts(), vec![0, 10, 26]);
+
+        editor.set_cursor_offset_exact(4);
+        editor.select_down_for_insert();
+        // Line 1 start is 10, offset_in_line is 4 -> active = 14
+        assert_eq!(editor.selection(), Selection::new(4, 14));
+        assert_eq!(editor.cursor_offset, 14);
+
+        editor.select_down_for_insert();
+        // Line 2 start is 26, offset_in_line is 4 -> active = 30
+        assert_eq!(editor.selection(), Selection::new(4, 30));
+        assert_eq!(editor.cursor_offset, 30);
+
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(4, 14));
+        assert_eq!(editor.cursor_offset, 14);
+
+        editor.select_up_for_insert();
+        assert_eq!(editor.selection(), Selection::new(4, 4));
+        assert_eq!(editor.cursor_offset, 4);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_insert_selection_select_home() {
+        let mut editor = create_editor_with_content(&[0u8; 32]);
+        editor.set_cursor_offset_exact(18);
+        editor.select_home_for_insert();
+        assert_eq!(editor.selection(), Selection::new(18, 0));
+        assert_eq!(editor.cursor_offset, 0);
+        assert_eq!(editor.insert_cursor_offset(), 0);
+        assert_eq!(editor.selection_range(), Some(0..18));
     }
 
     #[test]

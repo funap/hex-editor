@@ -1464,7 +1464,14 @@ impl HexView {
 
     fn vi_select_up(&mut self, _: &ViSelectUp, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_column_is_hex() {
-            self.exec_select(window, cx, |editor| editor.select_up());
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_up_for_insert();
+                } else {
+                    editor.select_up();
+                }
+            });
         } else {
             cx.propagate();
         }
@@ -1472,7 +1479,14 @@ impl HexView {
 
     fn vi_select_down(&mut self, _: &ViSelectDown, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_column_is_hex() {
-            self.exec_select(window, cx, |editor| editor.select_down());
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_down_for_insert();
+                } else {
+                    editor.select_down();
+                }
+            });
         } else {
             cx.propagate();
         }
@@ -1559,11 +1573,25 @@ impl HexView {
     }
 
     fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| e.select_up());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_up_for_insert();
+            } else {
+                editor.select_up();
+            }
+        });
     }
 
     fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| e.select_down());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_down_for_insert();
+            } else {
+                editor.select_down();
+            }
+        });
     }
 
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
@@ -1626,9 +1654,14 @@ impl HexView {
             30
         };
         let count = visible_rows.saturating_sub(2).max(1);
-        self.exec_select(window, cx, |e| {
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
             for _ in 0..count {
-                e.select_up();
+                if insert_mode {
+                    editor.select_up_for_insert();
+                } else {
+                    editor.select_up();
+                }
             }
         });
     }
@@ -1640,15 +1673,27 @@ impl HexView {
             30
         };
         let count = visible_rows.saturating_sub(2).max(1);
-        self.exec_select(window, cx, |e| {
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
             for _ in 0..count {
-                e.select_down();
+                if insert_mode {
+                    editor.select_down_for_insert();
+                } else {
+                    editor.select_down();
+                }
             }
         });
     }
 
     fn select_home(&mut self, _: &SelectHome, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_select(window, cx, |e| e.select_home());
+        let insert_mode = InsertModeState::is_enabled(cx);
+        self.exec_select(window, cx, move |editor| {
+            if insert_mode {
+                editor.select_home_for_insert();
+            } else {
+                editor.select_home();
+            }
+        });
     }
 
     fn select_end(&mut self, _: &SelectEnd, window: &mut Window, cx: &mut Context<Self>) {

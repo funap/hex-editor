@@ -2,8 +2,11 @@ use crate::core::appearance::Appearance;
 use gpui::prelude::*;
 use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div};
 use gpui_component::{
+    ActiveTheme,
     dock::{Panel, PanelEvent},
     input::{self, Input, InputState},
+    switch::Switch,
+    theme::{Theme, ThemeMode},
 };
 
 #[derive(Clone, PartialEq, Action)]
@@ -42,6 +45,10 @@ impl SettingsPanel {
 
         subscriptions.push(cx.observe_global::<Appearance>(|_, cx| {
             cx.dispatch_action(&UpdateSettingInput);
+        }));
+
+        subscriptions.push(cx.observe_global::<Theme>(|_, cx| {
+            cx.notify();
         }));
 
         subscriptions.push(cx.subscribe(&font_family_input, |_, input: Entity<InputState>, event: &input::InputEvent, cx| {
@@ -93,10 +100,18 @@ impl SettingsPanel {
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container = div().p_4().flex().flex_col().gap_4();
+        let is_dark_mode = cx.theme().is_dark();
 
         container
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_action_update_setting_input))
+            .child(div().child("Appearance").font_weight(gpui::FontWeight::BOLD).mb_2())
+            .child(div().flex().items_center().justify_between().child(div().child("Dark Mode")).child(
+                Switch::new("dark-mode").checked(is_dark_mode).on_click(|checked, window, cx| {
+                    let mode = if *checked { ThemeMode::Dark } else { ThemeMode::Light };
+                    crate::theme::set_mode(mode, Some(window), cx);
+                }),
+            ))
             .child(div().child("Editor").font_weight(gpui::FontWeight::BOLD).mb_2())
             .child(
                 div()

@@ -238,9 +238,9 @@ impl EditorGroup {
             self.close_tab_now(tab_id, window, cx);
             return;
         };
-        let (path, state_id) = {
+        let state_id = {
             let document_read = document.read().expect("document read lock");
-            (document_read.path().to_path_buf(), document_read.history.state_id())
+            document_read.history.state_id()
         };
         let title = tab.title(cx);
         let prompt = window.prompt(
@@ -279,7 +279,6 @@ impl EditorGroup {
                     });
                 }
                 1 => {
-                    service.close_file(&path);
                     let _ = window.update(|window, cx| {
                         let _ = group.update(cx, |group, cx| {
                             group.close_tab_now(tab_id, window, cx);

@@ -1331,23 +1331,26 @@ impl Editor {
                 let custom_breaks_guard = self.custom_breaks.read().expect("custom_breaks read lock");
                 let custom_joins_guard = self.custom_joins.read().expect("custom_joins read lock");
                 let empty_lines_guard = self.empty_lines.read().expect("empty_lines read lock");
+                let mut empty_line_counts = empty_lines_guard.clone();
 
                 let mut layout_events: Vec<usize> = Vec::new();
                 layout_events.extend(custom_breaks_guard.iter().copied());
                 layout_events.extend(custom_joins_guard.iter().copied());
-                layout_events.extend(empty_lines_guard.keys().copied());
+                layout_events.extend(empty_line_counts.keys().copied());
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
                 {
                     parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
+                    parse_res.collect_structure_header_lines(&mut empty_line_counts, &self.collapsed_struct_ids);
                 }
+                layout_events.extend(empty_line_counts.keys().copied());
                 layout_events.sort_unstable();
                 layout_events.dedup();
 
                 let mut break_events: Vec<usize> = Vec::new();
                 break_events.extend(custom_breaks_guard.iter().copied());
-                break_events.extend(empty_lines_guard.keys().copied());
+                break_events.extend(empty_line_counts.keys().copied());
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
@@ -1437,7 +1440,7 @@ impl Editor {
                         }
 
                         // Process empty lines at current
-                        if let Some(&count) = empty_lines_guard.get(&current) {
+                        if let Some(&count) = empty_line_counts.get(&current) {
                             for _ in 0..count {
                                 starts.push(current);
                             }
@@ -1990,10 +1993,12 @@ impl Editor {
         self.cancel_structure_parsing();
         self.structure_parse_async = false;
         self.structure_reparse_requested = false;
-        *self.ksy_definition.write().expect("ksy_definition write lock") = None;
+        let old_definition = self.ksy_definition.write().expect("ksy_definition write lock").take();
         let old = self.parse_result.write().expect("parse_result write lock").take();
-        if let Some(old_res) = old {
-            std::thread::spawn(move || drop(old_res));
+        if old_definition.is_some() || old.is_some() {
+            std::thread::spawn(move || {
+                drop((old_definition, old));
+            });
         }
         self.is_parsing_structure = false;
         self.is_finalizing_structure = false;

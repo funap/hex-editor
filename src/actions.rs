@@ -250,6 +250,30 @@ pub struct ExpandAllStructure;
 #[derive(Clone, PartialEq, Action)]
 pub struct CollapseAllStructure;
 
+/// Toggles the Address column in the structure tree.
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleStructureAddressColumn;
+
+/// Toggles the TYPE column in the structure tree.
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleStructureTypeColumn;
+
+/// Toggles the SIZE column in the structure tree.
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleStructureSizeColumn;
+
+/// Toggles the VALUE column in the structure tree.
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleStructureValueColumn;
+
+/// Copies the current structure analysis in a human-readable text format.
+#[derive(Clone, PartialEq, Action)]
+pub struct CopyStructureResult;
+
+/// Exports the current structure analysis as a TOML document.
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportStructureToml;
+
 #[derive(Clone, PartialEq, Action)]
 pub struct Copy;
 

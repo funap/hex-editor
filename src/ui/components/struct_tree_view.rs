@@ -1,22 +1,108 @@
 use crate::core::editor::Editor;
-use crate::core::structure::ParsedField;
+use crate::core::radix::DisplayRadix;
+use crate::core::structure::{ParseResult, ParsedField, format_parse_result_as_text, format_parse_result_as_toml};
 use crate::ui::icon::IconName;
+use crate::ui::style::{format_size_friendly, format_with_commas};
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex};
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
 
 const CONTEXT: &str = "StructTreeView";
+const TREE_INDICATOR_WIDTH: f32 = 12.0;
+const TREE_INDENT_WIDTH: f32 = 14.0;
+const COLUMN_GAP: f32 = 4.0;
+const STRUCTURE_ROW_HEIGHT: f32 = 28.0;
+const FIELD_COLUMN_WIDTH: f32 = 150.0;
+const ADDRESS_COLUMN_WIDTH: f32 = 78.0;
+const TYPE_COLUMN_WIDTH: f32 = 108.0;
+const SIZE_COLUMN_WIDTH: f32 = 58.0;
+const AUTOFIT_HORIZONTAL_PADDING: f32 = 16.0;
+const AUTOFIT_MIN_WIDTH: f32 = 52.0;
+const AUTOFIT_MAX_WIDTH: f32 = 360.0;
+const AUTOFIT_CHAR_WIDTH: f32 = 7.2;
+const AUTOFIT_WIDE_CHAR_WIDTH: f32 = 13.0;
+const AUTOFIT_MAX_TEXT_CHARS: usize = 128;
+
+#[derive(Clone, Copy)]
+struct StructureColumnVisibility {
+    address: bool,
+    type_name: bool,
+    size: bool,
+    value: bool,
+}
+
+impl Default for StructureColumnVisibility {
+    fn default() -> Self {
+        Self {
+            address: true,
+            type_name: false,
+            size: false,
+            value: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StructureColumnWidths {
+    field: Option<f32>,
+    address: f32,
+    type_name: f32,
+    size: f32,
+    value: Option<f32>,
+}
+
+impl Default for StructureColumnWidths {
+    fn default() -> Self {
+        Self {
+            field: Some(FIELD_COLUMN_WIDTH),
+            address: ADDRESS_COLUMN_WIDTH,
+            type_name: TYPE_COLUMN_WIDTH,
+            size: SIZE_COLUMN_WIDTH,
+            value: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StructureColumn {
+    Field,
+    Address,
+    Type,
+    Size,
+    Value,
+}
 
 fn path_from_string_file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".to_string())
+}
+
+fn default_toml_file_name(definition_id: &str) -> String {
+    let mut name: String = definition_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() || name == "." || name == ".." {
+        name = "structure".to_string();
+    }
+    if !name.ends_with(".toml") {
+        name.push_str(".toml");
+    }
+    name
 }
 
 pub fn init(cx: &mut App) {
@@ -40,7 +126,7 @@ pub enum StructTreeViewEvent {
 }
 
 pub struct StructTreeView {
-    pub parse_result: Option<std::sync::Arc<crate::core::structure::types::ParseResult>>,
+    pub parse_result: Option<std::sync::Arc<ParseResult>>,
     pub flattened_fields: Vec<FlattenedField>,
     pub expanded_paths: HashSet<Vec<usize>>,
     pub editor: Option<Entity<Editor>>,
@@ -48,10 +134,25 @@ pub struct StructTreeView {
     pub focus_handle: FocusHandle,
     pub selected_index: Option<usize>,
     pub recent_definition_paths: Vec<PathBuf>,
+    column_visibility: StructureColumnVisibility,
+    column_widths: StructureColumnWidths,
+    value_radix: DisplayRadix,
     last_parse_id: Option<(String, usize, usize, usize, usize, bool)>,
     last_selection_cursor: Option<usize>,
     last_selection_scan_len: usize,
+    export_status: StructureExportStatus,
+    export_request_id: u64,
     _editor_subscription: Option<Subscription>,
+}
+
+#[derive(Clone, Default)]
+enum StructureExportStatus {
+    #[default]
+    Idle,
+    Copying,
+    Exporting,
+    Success(String),
+    Error(String),
 }
 
 #[derive(Clone)]
@@ -89,9 +190,14 @@ impl StructTreeView {
             focus_handle,
             selected_index: None,
             recent_definition_paths: Vec::new(),
+            column_visibility: StructureColumnVisibility::default(),
+            column_widths: StructureColumnWidths::default(),
+            value_radix: DisplayRadix::Decimal,
             last_parse_id: None,
             last_selection_cursor: None,
             last_selection_scan_len: 0,
+            export_status: StructureExportStatus::default(),
+            export_request_id: 0,
             _editor_subscription: None,
         };
 
@@ -167,16 +273,9 @@ impl StructTreeView {
             };
             if can_append {
                 let previous_field_count = self.last_parse_id.as_ref().map(|parse_id| parse_id.2).unwrap_or(0);
-                let is_finishing =
-                    self.last_parse_id.as_ref().is_some_and(|parse_id| parse_id.5) && current_parse_id.as_ref().is_some_and(|parse_id| !parse_id.5);
-                if is_finishing {
-                    let old = self.parse_result.take();
-                    self.parse_result = parse_res;
-                    if let Some(old) = old {
-                        std::thread::spawn(move || drop(old));
-                    }
-                } else {
-                    self.parse_result = parse_res;
+                let old = std::mem::replace(&mut self.parse_result, parse_res);
+                if let Some(old) = old {
+                    Self::release_parse_result_in_background(old, cx);
                 }
                 if let Some(ref res) = self.parse_result
                     && current_parse_id.as_ref().map(|parse_id| parse_id.2).unwrap_or(0) > previous_field_count
@@ -276,10 +375,23 @@ impl StructTreeView {
     }
 
     pub fn set_parse_result(&mut self, parse_result: Option<std::sync::Arc<crate::core::structure::types::ParseResult>>, cx: &mut Context<Self>) {
-        self.expanded_paths.clear();
-        let old = std::mem::replace(&mut self.parse_result, parse_result);
-        if let Some(old) = old {
-            std::thread::spawn(move || drop(old));
+        let old_expanded_paths = std::mem::take(&mut self.expanded_paths);
+        let old_flattened_fields = std::mem::take(&mut self.flattened_fields);
+        let old_parse_result = std::mem::replace(&mut self.parse_result, parse_result);
+        self.export_status = StructureExportStatus::default();
+        self.export_request_id = self.export_request_id.wrapping_add(1);
+
+        // Replacing a completed parse can release a very large tree and a
+        // large flattened panel cache. Keep the UI thread responsible only
+        // for the cheap state swap; the old snapshot and panel caches are
+        // owned by this detached background task until they are fully
+        // released.
+        if old_parse_result.is_some() || !old_flattened_fields.is_empty() || !old_expanded_paths.is_empty() {
+            cx.background_executor()
+                .spawn(async move {
+                    drop((old_parse_result, old_flattened_fields, old_expanded_paths));
+                })
+                .detach();
         }
         self.rebuild_flattened();
         self.selected_index = None;
@@ -287,6 +399,151 @@ impl StructTreeView {
         self.last_selection_scan_len = 0;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
+    }
+
+    fn release_parse_result_in_background(result: std::sync::Arc<crate::core::structure::types::ParseResult>, cx: &mut Context<Self>) {
+        cx.background_executor()
+            .spawn(async move {
+                drop(result);
+            })
+            .detach();
+    }
+
+    fn can_export_result(&self) -> bool {
+        self.parse_result.as_ref().is_some_and(|result| !result.fields.is_empty())
+    }
+
+    fn export_is_busy(&self) -> bool {
+        matches!(self.export_status, StructureExportStatus::Copying | StructureExportStatus::Exporting)
+    }
+
+    fn copy_structure_result(&mut self, _: &crate::actions::CopyStructureResult, window: &mut Window, cx: &mut Context<Self>) {
+        if self.export_is_busy() || !self.can_export_result() {
+            return;
+        }
+
+        let Some(parse_result) = self.parse_result.clone() else {
+            return;
+        };
+        let request_id = self.export_request_id.wrapping_add(1);
+        self.export_request_id = request_id;
+        self.export_status = StructureExportStatus::Copying;
+        cx.notify();
+
+        let field_count = parse_result.fields.len();
+        let task = cx.background_executor().spawn(async move { format_parse_result_as_text(&parse_result) });
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            let text = task.await;
+            let _ = window.update(|window, cx| {
+                let applied = view.update(cx, |this, cx| {
+                    if this.export_request_id != request_id {
+                        return false;
+                    }
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    this.export_status = StructureExportStatus::Success(format!("Copied {field_count} root fields to clipboard"));
+                    cx.notify();
+                    true
+                });
+                if applied {
+                    window.push_notification(
+                        gpui_component::notification::Notification::success("Structure analysis copied to clipboard"),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn export_structure_toml(&mut self, _: &crate::actions::ExportStructureToml, window: &mut Window, cx: &mut Context<Self>) {
+        if self.export_is_busy() || !self.can_export_result() {
+            return;
+        }
+
+        let Some(parse_result) = self.parse_result.clone() else {
+            return;
+        };
+        let default_file_name = default_toml_file_name(&parse_result.definition_id);
+        let prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select a destination TOML file or directory".into()),
+        });
+
+        let request_id = self.export_request_id.wrapping_add(1);
+        self.export_request_id = request_id;
+        self.export_status = StructureExportStatus::Exporting;
+        cx.notify();
+
+        let executor = cx.background_executor().clone();
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            let selected_path = prompt.await.ok().and_then(|result| result.ok()).flatten().and_then(|mut paths| paths.pop());
+            let Some(selected_path) = selected_path else {
+                let _ = window.update(|_, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.export_request_id == request_id {
+                            this.export_status = StructureExportStatus::Idle;
+                            cx.notify();
+                        }
+                    });
+                });
+                return;
+            };
+
+            let export_task = executor.spawn(async move {
+                let mut path = selected_path;
+                if path.is_dir() {
+                    path = path.join(default_file_name);
+                } else if path.extension().is_none() {
+                    path.set_extension("toml");
+                }
+
+                let toml = format_parse_result_as_toml(&parse_result).map_err(|error| error.to_string())?;
+                std::fs::write(&path, toml).map_err(|error| format!("{}: {error}", path.display()))?;
+                Ok::<PathBuf, String>(path)
+            });
+            let result = export_task.await;
+
+            let _ = window.update(|window, cx| {
+                let applied = view.update(cx, |this, cx| {
+                    if this.export_request_id != request_id {
+                        return false;
+                    }
+                    match &result {
+                        Ok(path) => {
+                            this.export_status = StructureExportStatus::Success(format!("Exported TOML to {}", path.display()));
+                        }
+                        Err(error) => {
+                            this.export_status = StructureExportStatus::Error(format!("TOML export failed: {error}"));
+                        }
+                    }
+                    cx.notify();
+                    true
+                });
+
+                if applied {
+                    match &result {
+                        Ok(path) => window.push_notification(
+                            gpui_component::notification::Notification::success(format!("Structure TOML exported to {}", path.display())),
+                            cx,
+                        ),
+                        Err(error) => window.push_notification(gpui_component::notification::Notification::error(error.clone()), cx),
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn on_action_copy_structure_result(&mut self, action: &crate::actions::CopyStructureResult, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_structure_result(action, window, cx);
+    }
+
+    fn on_action_export_structure_toml(&mut self, action: &crate::actions::ExportStructureToml, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_structure_toml(action, window, cx);
     }
 
     fn rebuild_flattened(&mut self) {
@@ -565,6 +822,178 @@ impl StructTreeView {
         self.collapse_all(cx);
     }
 
+    fn on_action_toggle_structure_address_column(&mut self, _: &crate::actions::ToggleStructureAddressColumn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.column_visibility.address = !self.column_visibility.address;
+        cx.notify();
+    }
+
+    fn on_action_toggle_structure_type_column(&mut self, _: &crate::actions::ToggleStructureTypeColumn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.column_visibility.type_name = !self.column_visibility.type_name;
+        cx.notify();
+    }
+
+    fn on_action_toggle_structure_size_column(&mut self, _: &crate::actions::ToggleStructureSizeColumn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.column_visibility.size = !self.column_visibility.size;
+        cx.notify();
+    }
+
+    fn on_action_toggle_structure_value_column(&mut self, _: &crate::actions::ToggleStructureValueColumn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.column_visibility.value = !self.column_visibility.value;
+        cx.notify();
+    }
+
+    fn set_value_radix(&mut self, radix: DisplayRadix, cx: &mut Context<Self>) {
+        if self.value_radix == radix {
+            return;
+        }
+
+        self.value_radix = radix;
+        cx.notify();
+    }
+
+    fn on_action_set_value_radix_hex(&mut self, _: &crate::actions::SetRadixHex, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_value_radix(DisplayRadix::Hexadecimal, cx);
+    }
+
+    fn on_action_set_value_radix_dec(&mut self, _: &crate::actions::SetRadixDec, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_value_radix(DisplayRadix::Decimal, cx);
+    }
+
+    fn on_action_set_value_radix_oct(&mut self, _: &crate::actions::SetRadixOct, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_value_radix(DisplayRadix::Octal, cx);
+    }
+
+    fn on_action_set_value_radix_bin(&mut self, _: &crate::actions::SetRadixBin, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_value_radix(DisplayRadix::Binary, cx);
+    }
+
+    fn visible_field_range(&self) -> Range<usize> {
+        let field_count = self.flattened_fields.len();
+        if field_count == 0 {
+            return 0..0;
+        }
+
+        let (start, end) = {
+            let scroll_state = self.scroll_handle.0.borrow();
+            let Some(item_size) = scroll_state.last_item_size else {
+                return 0..field_count.min(64);
+            };
+            let scroll_top = (-f32::from(scroll_state.base_handle.offset().y)).max(0.0);
+            let viewport_height = f32::from(item_size.item.height);
+            let start = (scroll_top / STRUCTURE_ROW_HEIGHT).floor() as usize;
+            let end = ((scroll_top + viewport_height) / STRUCTURE_ROW_HEIGHT).ceil() as usize;
+            (start.min(field_count), end.min(field_count))
+        };
+
+        if start < end { start..end } else { 0..field_count.min(1) }
+    }
+
+    fn estimated_text_width(text: &str) -> f32 {
+        text.chars()
+            .take(AUTOFIT_MAX_TEXT_CHARS)
+            .map(|character| if character.is_ascii() { AUTOFIT_CHAR_WIDTH } else { AUTOFIT_WIDE_CHAR_WIDTH })
+            .sum()
+    }
+
+    fn value_text(parsed_field: &ParsedField, radix: DisplayRadix) -> String {
+        if parsed_field.is_struct() {
+            format!(
+                "{} child{}",
+                parsed_field.children.len(),
+                if parsed_field.children.len() == 1 { "" } else { "ren" }
+            )
+        } else if let Some(label) = &parsed_field.enum_label {
+            format!("{} ({})", parsed_field.value.format_with_radix(radix), label)
+        } else {
+            parsed_field.value.format_with_radix(radix)
+        }
+    }
+
+    fn column_text(column: StructureColumn, field: &FlattenedField, parsed_field: &ParsedField, value_radix: DisplayRadix) -> String {
+        match column {
+            StructureColumn::Field => parsed_field.id.clone(),
+            StructureColumn::Address => format!("0x{:X}", parsed_field.offset),
+            StructureColumn::Type => {
+                if parsed_field.field_type.is_empty() {
+                    if field.has_children { "struct".to_string() } else { "value".to_string() }
+                } else {
+                    parsed_field.field_type.clone()
+                }
+            }
+            StructureColumn::Size => format!("{} B", format_with_commas(field.size)),
+            StructureColumn::Value => Self::value_text(parsed_field, value_radix),
+        }
+    }
+
+    fn auto_fit_column(&mut self, column: StructureColumn, cx: &mut Context<Self>) {
+        let header = match column {
+            StructureColumn::Field => "FIELD",
+            StructureColumn::Address => "Address",
+            StructureColumn::Type => "TYPE",
+            StructureColumn::Size => "SIZE",
+            StructureColumn::Value => "VALUE",
+        };
+        let mut max_width = Self::estimated_text_width(header);
+        if matches!(column, StructureColumn::Field) {
+            max_width += TREE_INDICATOR_WIDTH + COLUMN_GAP;
+        }
+
+        for ix in self.visible_field_range() {
+            let Some(field) = self.flattened_fields.get(ix) else {
+                continue;
+            };
+            let Some(parsed_field) = self.field_at_path(&field.path) else {
+                continue;
+            };
+
+            let text = Self::column_text(column, field, parsed_field, self.value_radix);
+            let mut text_width = Self::estimated_text_width(&text);
+            if matches!(column, StructureColumn::Field) {
+                text_width += field.depth as f32 * TREE_INDENT_WIDTH + TREE_INDICATOR_WIDTH + COLUMN_GAP;
+            }
+            max_width = max_width.max(text_width);
+        }
+
+        let width = (max_width + AUTOFIT_HORIZONTAL_PADDING).clamp(AUTOFIT_MIN_WIDTH, AUTOFIT_MAX_WIDTH);
+        match column {
+            StructureColumn::Field => self.column_widths.field = Some(width),
+            StructureColumn::Address => self.column_widths.address = width,
+            StructureColumn::Type => self.column_widths.type_name = width,
+            StructureColumn::Size => self.column_widths.size = width,
+            StructureColumn::Value => self.column_widths.value = Some(width),
+        }
+        cx.notify();
+    }
+
+    fn tree_cell(width: Option<f32>) -> Div {
+        let mut cell = h_flex().min_w_0();
+        if let Some(width) = width {
+            cell = cell.flex_shrink_0().w(px(width));
+        } else {
+            cell = cell.flex_1();
+        }
+        cell
+    }
+
+    fn table_cell(width: Option<f32>, border_color: Hsla) -> Div {
+        let mut cell = div()
+            .items_center()
+            .min_w_0()
+            .border_l_1()
+            .border_color(border_color)
+            .pl_1()
+            .truncate()
+            .whitespace_nowrap();
+
+        if let Some(width) = width {
+            cell = cell.flex_shrink_0().w(px(width));
+        } else {
+            cell = cell.flex_1();
+        }
+
+        cell
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_list_item(
         ix: usize,
@@ -572,27 +1001,36 @@ impl StructTreeView {
         parsed_field: &ParsedField,
         is_selected: bool,
         is_focused: bool,
+        column_visibility: StructureColumnVisibility,
+        column_widths: StructureColumnWidths,
+        value_radix: DisplayRadix,
         view: Entity<Self>,
         focus_handle: &FocusHandle,
         window: &mut Window,
         cx: &App,
     ) -> AnyElement {
-        let padding_left = px(14.0 * field.depth as f32 + 8.0);
         let theme = cx.theme();
         let bg_color = if is_selected {
             if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) }
         } else {
             hsla(0.0, 0.0, 0.0, 0.0)
         };
+        let hover_color = if is_selected {
+            theme.selection.opacity(0.82)
+        } else {
+            theme.muted.opacity(0.42)
+        };
 
         let focus_handle_left = focus_handle.clone();
         let focus_handle_right = focus_handle.clone();
         let id = SharedString::from(parsed_field.id.clone());
-        let value = if let Some(label) = &parsed_field.enum_label {
-            SharedString::from(format!("{} ({})", parsed_field.value, label))
+        let type_name = if parsed_field.field_type.is_empty() {
+            if field.has_children { "struct" } else { "value" }
         } else {
-            SharedString::from(format!("{}", parsed_field.value))
+            parsed_field.field_type.as_str()
         };
+        let type_label = SharedString::from(type_name.to_string());
+        let value = SharedString::from(Self::value_text(parsed_field, value_radix));
         let chevron_symbol = if field.has_children {
             if field.is_collapsed { "▶" } else { "▼" }
         } else {
@@ -600,8 +1038,6 @@ impl StructTreeView {
         };
 
         let field_offset = parsed_field.offset;
-        let field_id = parsed_field.id.clone();
-        let field_val = value.to_string();
 
         div()
             .id(ix)
@@ -609,11 +1045,11 @@ impl StructTreeView {
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(24.0))
+            .h(px(STRUCTURE_ROW_HEIGHT))
             .bg(bg_color)
             .px_2()
-            .pl(padding_left)
             .gap_1()
+            .hover(|style| style.bg(hover_color))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
@@ -628,46 +1064,86 @@ impl StructTreeView {
                     this.select_item(ix, cx);
                 }),
             )
-            .context_menu({
-                let val_copy = field_val.clone();
-                let id_copy = field_id.clone();
-                let offset_hex = format!("0x{:08X}", field_offset);
-                move |menu, _window, _cx| {
-                    let off_h = offset_hex.clone();
-                    let v_val = val_copy.clone();
-                    let v_id = id_copy.clone();
-
-                    menu.menu(format!("Go to Offset ({})", off_h), Box::new(crate::actions::GoToBeginning))
-                        .separator()
-                        .menu(format!("Copy Value ({})", v_val), Box::new(crate::actions::Copy))
-                        .menu(format!("Copy Field Name ({})", v_id), Box::new(crate::actions::Copy))
-                        .menu(format!("Copy Offset ({})", off_h), Box::new(crate::actions::Copy))
-                        .separator()
-                        .menu("Expand All", Box::new(crate::actions::ExpandAllStructure))
-                        .menu("Collapse All", Box::new(crate::actions::CollapseAllStructure))
-                }
-            })
             .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(12.0))
-                    .h(px(12.0))
-                    .flex()
+                Self::tree_cell(column_widths.field)
                     .items_center()
-                    .justify_center()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .cursor_pointer()
-                    .child(chevron_symbol)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, _window, cx| {
-                            this.toggle_collapse_at(ix, cx);
-                        }),
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .w(px(TREE_INDENT_WIDTH * field.depth as f32 + TREE_INDICATOR_WIDTH))
+                            .h(px(TREE_INDICATOR_WIDTH))
+                            .items_center()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .w(px(TREE_INDICATOR_WIDTH))
+                                    .h(px(TREE_INDICATOR_WIDTH))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .cursor_pointer()
+                                    .child(chevron_symbol)
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, _window, cx| {
+                                            this.toggle_collapse_at(ix, cx);
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .font_medium()
+                            .text_color(theme.foreground)
+                            .child(id),
                     ),
             )
-            .child(div().text_sm().text_color(theme.foreground).child(id))
-            .child(div().text_sm().ml_auto().text_color(theme.muted_foreground).child(value))
+            .when(column_visibility.address, |this| {
+                this.child(
+                    Self::table_cell(Some(column_widths.address), theme.border.opacity(0.35))
+                        .text_xs()
+                        .font_family("Courier New")
+                        .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
+                        .child(format!("0x{:X}", field_offset)),
+                )
+            })
+            .when(column_visibility.type_name, |this| {
+                this.child(
+                    Self::table_cell(Some(column_widths.type_name), theme.border.opacity(0.35))
+                        .rounded_sm()
+                        .bg(theme.accent.opacity(0.14))
+                        .text_xs()
+                        .font_family("Courier New")
+                        .text_color(theme.accent)
+                        .child(type_label),
+                )
+            })
+            .when(column_visibility.size, |this| {
+                this.child(
+                    Self::table_cell(Some(column_widths.size), theme.border.opacity(0.35))
+                        .text_xs()
+                        .font_family("Courier New")
+                        .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
+                        .child(format!("{} B", format_with_commas(field.size))),
+                )
+            })
+            .when(column_visibility.value, |this| {
+                this.child(
+                    Self::table_cell(column_widths.value, theme.border.opacity(0.35))
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(value),
+                )
+            })
             .into_any_element()
     }
 }
@@ -676,7 +1152,7 @@ impl Render for StructTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().clone();
         let is_parsing = self.editor.as_ref().is_some_and(|ed| ed.read(cx).is_parsing_structure);
-        let is_empty = self.flattened_fields.is_empty() && self.parse_result.is_none();
+        let is_empty = self.flattened_fields.is_empty() && self.parse_result.as_ref().is_none_or(|result| result.fields.is_empty());
         let show_parsing_placeholder = is_parsing && self.flattened_fields.is_empty();
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
@@ -697,46 +1173,29 @@ impl Render for StructTreeView {
             } else {
                 0.0
             };
-            Some((progress, editor.is_finalizing_structure))
+            Some((progress, editor.parse_progress_offset, total_bytes, editor.is_finalizing_structure))
         });
 
-        let has_structure = self.parse_result.is_some() || !self.flattened_fields.is_empty();
+        let has_structure = self.parse_result.as_ref().is_some_and(|result| !result.fields.is_empty()) || !self.flattened_fields.is_empty();
+        let export_is_busy = self.export_is_busy();
+        let definition_badge = self.parse_result.as_ref().map(|result| {
+            crate::ui::style::panel_badge(result.definition_id.clone(), theme)
+                .max_w(px(110.0))
+                .truncate()
+                .into_any_element()
+        });
 
         let header_actions = if has_structure {
             Some(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        gpui_component::button::Button::new("expand-all-struct-btn")
-                            .ghost()
-                            .icon(IconName::ListTree)
-                            .with_size(gpui_component::Size::XSmall)
-                            .tooltip("Expand All")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.expand_all(cx);
-                            })),
-                    )
-                    .child(
-                        gpui_component::button::Button::new("collapse-all-struct-btn")
-                            .ghost()
-                            .icon(IconName::Minimize)
-                            .with_size(gpui_component::Size::XSmall)
-                            .tooltip("Collapse All")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.collapse_all(cx);
-                            })),
-                    )
-                    .child(
-                        gpui_component::button::Button::new("clear-structure-btn")
-                            .ghost()
-                            .icon(IconName::Close)
-                            .with_size(gpui_component::Size::XSmall)
-                            .tooltip("Clear Structure Definition")
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.dispatch_action(Box::new(crate::actions::ClearStructureDefinition), cx);
-                            })),
-                    )
+                gpui_component::button::Button::new("clear-structure-btn")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .with_size(gpui_component::Size::XSmall)
+                    .disabled(export_is_busy)
+                    .tooltip("Clear Structure Definition")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::ClearStructureDefinition), cx);
+                    }))
                     .into_any_element(),
             )
         } else if has_active_editor {
@@ -759,7 +1218,57 @@ impl Render for StructTreeView {
             None
         };
 
-        let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, None, header_actions);
+        let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, definition_badge, header_actions);
+
+        let structure_toolbar = if has_structure {
+            Some(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme.border.opacity(0.7))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                gpui_component::button::Button::new("expand-all-struct-btn")
+                                    .ghost()
+                                    .icon(IconName::ListTree)
+                                    .with_size(gpui_component::Size::XSmall)
+                                    .tooltip("Expand all fields")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.expand_all(cx);
+                                    })),
+                            )
+                            .child(
+                                gpui_component::button::Button::new("collapse-all-struct-btn")
+                                    .ghost()
+                                    .icon(IconName::Minimize)
+                                    .with_size(gpui_component::Size::XSmall)
+                                    .tooltip("Collapse all fields")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.collapse_all(cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let export_feedback = match &self.export_status {
+            StructureExportStatus::Idle => None,
+            StructureExportStatus::Copying => Some((IconName::LoaderCircle, "Preparing structure text...".to_string(), theme.accent)),
+            StructureExportStatus::Exporting => Some((IconName::LoaderCircle, "Preparing TOML export...".to_string(), theme.accent)),
+            StructureExportStatus::Success(message) => Some((IconName::Check, message.clone(), theme.green)),
+            StructureExportStatus::Error(message) => Some((IconName::TriangleAlert, message.clone(), theme.red)),
+        };
 
         let container = crate::ui::style::panel_container(is_focused, theme);
 
@@ -774,6 +1283,16 @@ impl Render for StructTreeView {
             .on_action(cx.listener(Self::collapse))
             .on_action(cx.listener(Self::on_action_expand_all))
             .on_action(cx.listener(Self::on_action_collapse_all))
+            .on_action(cx.listener(Self::on_action_toggle_structure_address_column))
+            .on_action(cx.listener(Self::on_action_toggle_structure_type_column))
+            .on_action(cx.listener(Self::on_action_toggle_structure_size_column))
+            .on_action(cx.listener(Self::on_action_toggle_structure_value_column))
+            .on_action(cx.listener(Self::on_action_set_value_radix_hex))
+            .on_action(cx.listener(Self::on_action_set_value_radix_dec))
+            .on_action(cx.listener(Self::on_action_set_value_radix_oct))
+            .on_action(cx.listener(Self::on_action_set_value_radix_bin))
+            .on_action(cx.listener(Self::on_action_copy_structure_result))
+            .on_action(cx.listener(Self::on_action_export_structure_toml))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
@@ -781,7 +1300,23 @@ impl Render for StructTreeView {
                 }),
             )
             .child(header)
-            .when_some(parse_progress, |el, (progress, is_finalizing)| {
+            .when_some(structure_toolbar, |el, toolbar| el.child(toolbar))
+            .when_some(export_feedback, |el, (icon, message, color)| {
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_1()
+                        .px_3()
+                        .py_1()
+                        .bg(color.opacity(0.08))
+                        .text_xs()
+                        .text_color(color)
+                        .child(Icon::new(icon).size(px(13.0)))
+                        .child(div().flex_1().truncate().child(message)),
+                )
+            })
+            .when_some(parse_progress, |el, (progress, parsed_bytes, total_bytes, is_finalizing)| {
                 el.child(
                     div()
                         .id("structure-parse-progress")
@@ -790,6 +1325,22 @@ impl Render for StructTreeView {
                         .overflow_hidden()
                         .bg(theme.border.opacity(0.35))
                         .child(div().h_full().w(relative(progress)).bg(if is_finalizing { theme.yellow } else { theme.accent })),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(if is_finalizing {
+                            "Finalizing structure index..."
+                        } else {
+                            "Analyzing binary data..."
+                        })
+                        .child(format!("{} / {}", format_size_friendly(parsed_bytes), format_size_friendly(total_bytes))),
                 )
             })
             .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if show_parsing_placeholder {
@@ -906,14 +1457,139 @@ impl Render for StructTreeView {
                 }
             } else {
                 let focus_handle = self.focus_handle.clone();
-                uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {
+                let column_visibility = self.column_visibility;
+                let column_widths = self.column_widths;
+                let value_radix = self.value_radix;
+                let column_header = h_flex()
+                    .id("structure-column-header")
+                    .w_full()
+                    .h(px(22.0))
+                    .items_center()
+                    .px_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(theme.border.opacity(0.7))
+                    .bg(theme.muted.opacity(0.18))
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        Self::tree_cell(column_widths.field)
+                            .items_center()
+                            .gap_1()
+                            .child(div().flex_shrink_0().w(px(TREE_INDICATOR_WIDTH)).h(px(TREE_INDICATOR_WIDTH)))
+                            .child(div().flex_1().min_w_0().truncate().whitespace_nowrap().child("FIELD"))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                                    if event.click_count >= 2 {
+                                        this.auto_fit_column(StructureColumn::Field, cx);
+                                    }
+                                }),
+                            ),
+                    )
+                    .when(column_visibility.address, |this| {
+                        this.child(
+                            Self::table_cell(Some(column_widths.address), theme.border.opacity(0.7))
+                                .child("Address")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                                        if event.click_count >= 2 {
+                                            this.auto_fit_column(StructureColumn::Address, cx);
+                                        }
+                                    }),
+                                ),
+                        )
+                    })
+                    .when(column_visibility.type_name, |this| {
+                        this.child(
+                            Self::table_cell(Some(column_widths.type_name), theme.border.opacity(0.7))
+                                .child("TYPE")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                                        if event.click_count >= 2 {
+                                            this.auto_fit_column(StructureColumn::Type, cx);
+                                        }
+                                    }),
+                                ),
+                        )
+                    })
+                    .when(column_visibility.size, |this| {
+                        this.child(
+                            Self::table_cell(Some(column_widths.size), theme.border.opacity(0.7))
+                                .child("SIZE")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                                        if event.click_count >= 2 {
+                                            this.auto_fit_column(StructureColumn::Size, cx);
+                                        }
+                                    }),
+                                ),
+                        )
+                    })
+                    .when(column_visibility.value, |this| {
+                        this.child(Self::table_cell(column_widths.value, theme.border.opacity(0.7)).child("VALUE").on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                                if event.click_count >= 2 {
+                                    this.auto_fit_column(StructureColumn::Value, cx);
+                                }
+                            }),
+                        ))
+                    })
+                    .context_menu({
+                        let context_focus = self.focus_handle.clone();
+                        move |menu, window, cx| {
+                            menu.action_context(context_focus.clone())
+                                .label("Visible columns")
+                                .separator()
+                                .menu_with_check("Address", column_visibility.address, Box::new(crate::actions::ToggleStructureAddressColumn))
+                                .menu_with_check("TYPE", column_visibility.type_name, Box::new(crate::actions::ToggleStructureTypeColumn))
+                                .menu_with_check("SIZE", column_visibility.size, Box::new(crate::actions::ToggleStructureSizeColumn))
+                                .menu_with_check("VALUE", column_visibility.value, Box::new(crate::actions::ToggleStructureValueColumn))
+                                .separator()
+                                .submenu("VALUE format", window, cx, move |menu, _window, _cx| {
+                                    menu.menu_with_check(
+                                        "Hexadecimal (16)",
+                                        value_radix == DisplayRadix::Hexadecimal,
+                                        Box::new(crate::actions::SetRadixHex),
+                                    )
+                                    .menu_with_check("Decimal (10)", value_radix == DisplayRadix::Decimal, Box::new(crate::actions::SetRadixDec))
+                                    .menu_with_check("Octal (8)", value_radix == DisplayRadix::Octal, Box::new(crate::actions::SetRadixOct))
+                                    .menu_with_check(
+                                        "Binary (2)",
+                                        value_radix == DisplayRadix::Binary,
+                                        Box::new(crate::actions::SetRadixBin),
+                                    )
+                                })
+                        }
+                    });
+                let context_view = view.clone();
+                let context_focus = focus_handle.clone();
+                let tree_list = uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {
                     let this = view.read(cx);
                     range
                         .map(|ix| {
                             if let Some(field) = this.flattened_fields.get(ix) {
                                 let is_selected = this.selected_index == Some(ix);
                                 if let Some(parsed_field) = this.field_at_path(&field.path) {
-                                    Self::render_list_item(ix, field, parsed_field, is_selected, is_focused, view.clone(), &focus_handle, window, cx)
+                                    Self::render_list_item(
+                                        ix,
+                                        field,
+                                        parsed_field,
+                                        is_selected,
+                                        is_focused,
+                                        column_visibility,
+                                        column_widths,
+                                        value_radix,
+                                        view.clone(),
+                                        &focus_handle,
+                                        window,
+                                        cx,
+                                    )
                                 } else {
                                     div().into_any_element()
                                 }
@@ -923,9 +1599,60 @@ impl Render for StructTreeView {
                         })
                         .collect::<Vec<_>>()
                 })
-                .track_scroll(self.scroll_handle.clone())
-                .size_full()
-                .into_any_element()
+                .track_scroll(self.scroll_handle.clone());
+                let tree_view = v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(tree_list.flex_1().min_h_0().w_full())
+                    .context_menu(move |menu, window, cx| {
+                        let selected_field = {
+                            let this = context_view.read(cx);
+                            this.selected_index.and_then(|ix| {
+                                let field = this.flattened_fields.get(ix)?;
+                                let parsed_field = this.field_at_path(&field.path)?;
+                                Some((
+                                    parsed_field.id.clone(),
+                                    parsed_field.offset,
+                                    Self::value_text(parsed_field, this.value_radix),
+                                    this.value_radix,
+                                ))
+                            })
+                        };
+                        let Some((field_id, field_offset, field_value, value_radix)) = selected_field else {
+                            return menu;
+                        };
+
+                        let offset_hex = format!("0x{:08X}", field_offset);
+                        menu.action_context(context_focus.clone())
+                            .menu(format!("Go to Offset ({})", offset_hex), Box::new(crate::actions::GoToBeginning))
+                            .separator()
+                            .menu(format!("Copy Value ({})", field_value), Box::new(crate::actions::Copy))
+                            .menu(format!("Copy Field Name ({})", field_id), Box::new(crate::actions::Copy))
+                            .menu(format!("Copy Offset ({})", offset_hex), Box::new(crate::actions::Copy))
+                            .separator()
+                            .submenu("VALUE format", window, cx, move |menu, _window, _cx| {
+                                menu.menu_with_check(
+                                    "Hexadecimal (16)",
+                                    value_radix == DisplayRadix::Hexadecimal,
+                                    Box::new(crate::actions::SetRadixHex),
+                                )
+                                .menu_with_check("Decimal (10)", value_radix == DisplayRadix::Decimal, Box::new(crate::actions::SetRadixDec))
+                                .menu_with_check("Octal (8)", value_radix == DisplayRadix::Octal, Box::new(crate::actions::SetRadixOct))
+                                .menu_with_check(
+                                    "Binary (2)",
+                                    value_radix == DisplayRadix::Binary,
+                                    Box::new(crate::actions::SetRadixBin),
+                                )
+                            })
+                            .separator()
+                            .menu("Copy Structure Analysis", Box::new(crate::actions::CopyStructureResult))
+                            .menu("Export Structure as TOML", Box::new(crate::actions::ExportStructureToml))
+                            .separator()
+                            .menu("Expand All", Box::new(crate::actions::ExpandAllStructure))
+                            .menu("Collapse All", Box::new(crate::actions::CollapseAllStructure))
+                    });
+                v_flex().size_full().child(column_header).child(tree_view).into_any_element()
             }))
     }
 }

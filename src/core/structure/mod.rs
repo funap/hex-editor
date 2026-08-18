@@ -1,4 +1,5 @@
 pub mod definition;
+pub mod export;
 pub mod expression;
 pub mod history;
 pub mod interpreter;
@@ -10,6 +11,7 @@ pub mod types;
 mod tests;
 
 pub use definition::*;
+pub use export::*;
 pub use history::*;
 pub use interpreter::KaitaiInterpreter;
 pub use stream::*;

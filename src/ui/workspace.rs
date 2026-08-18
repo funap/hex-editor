@@ -57,6 +57,21 @@ struct ParseUpdateBatch {
     has_more_fields: bool,
 }
 
+impl ParseUpdateBatch {
+    fn discard_on_background(self, executor: &BackgroundExecutor) {
+        executor
+            .spawn(async move {
+                drop(self);
+            })
+            .detach();
+    }
+}
+
+enum ParseUpdateDelivery {
+    Applied { should_continue: bool, has_more_fields: bool },
+    Stale(ParseUpdateBatch),
+}
+
 struct ParseUpdateMailbox {
     pending: Mutex<Option<PendingParseUpdate>>,
     notify: tokio::sync::Notify,
@@ -104,6 +119,19 @@ impl ParseUpdateMailbox {
 
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    fn close_and_discard(&self, executor: &BackgroundExecutor) {
+        self.closed.store(true, Ordering::Release);
+        let pending = self.pending.lock().expect("parse update mailbox lock").take();
+        if let Some(pending) = pending {
+            executor
+                .spawn(async move {
+                    drop(pending);
+                })
+                .detach();
+        }
         self.notify.notify_one();
     }
 
@@ -1396,9 +1424,9 @@ impl Workspace {
             service.notify_document_changed(&path, cx);
         }
 
-        self.left_panel.update(cx, |p, cx| {
-            p.set_editor(Some(editor), cx);
-        });
+        // The panels observe the editor entity. Clearing and re-binding the
+        // same editor here is redundant and can re-enter the Structure Panel
+        // while its action handler is still being dispatched.
         cx.notify();
     }
 
@@ -2083,13 +2111,17 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
                 continue;
             };
 
-            let should_continue = editor_entity.update(cx, |editor, cx| {
+            let mut batch = Some(batch);
+            let delivery = editor_entity.update(cx, |editor, cx| {
+                let batch = batch.take().expect("parse update batch must be present");
                 if editor.parse_generation != generation {
-                    return false;
+                    return ParseUpdateDelivery::Stale(batch);
                 }
                 if !editor.is_parsing_structure && !batch.is_done {
-                    return false;
+                    return ParseUpdateDelivery::Stale(batch);
                 }
+                let is_done = batch.is_done;
+                let has_more_fields = batch.has_more_fields;
                 editor.parse_progress_offset = batch.parsed_offset;
                 editor.parse_total_size = batch.total_bytes;
                 editor.is_finalizing_structure = batch.is_finalizing;
@@ -2098,16 +2130,40 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
                 } else if !batch.fields.is_empty() {
                     editor.append_parse_chunks(batch.definition_id, batch.fields, batch.parsed_offset, batch.total_bytes);
                 }
-                if batch.is_done {
+                if is_done {
                     editor.is_parsing_structure = false;
                     editor.is_finalizing_structure = false;
                     editor.parse_cancel_token = None;
                 }
                 cx.notify();
-                !batch.is_done
+                ParseUpdateDelivery::Applied {
+                    should_continue: !is_done,
+                    has_more_fields,
+                }
             });
 
-            if should_continue.is_err() || !should_continue.unwrap_or(false) {
+            let (should_continue, has_more_fields) = match delivery {
+                Ok(ParseUpdateDelivery::Applied {
+                    should_continue,
+                    has_more_fields,
+                }) => (should_continue, has_more_fields),
+                Ok(ParseUpdateDelivery::Stale(stale_batch)) => {
+                    let executor = cx.background_executor();
+                    mailbox.close_and_discard(executor);
+                    stale_batch.discard_on_background(executor);
+                    break;
+                }
+                Err(_) => {
+                    let executor = cx.background_executor();
+                    mailbox.close_and_discard(executor);
+                    if let Some(batch) = batch {
+                        batch.discard_on_background(executor);
+                    }
+                    break;
+                }
+            };
+
+            if !should_continue {
                 break;
             }
 
@@ -2115,7 +2171,7 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
             // update the status bar before processing the next batch. If the
             // mailbox still contains chunks, the next notification is already
             // scheduled by `take_batch`.
-            if batch.has_more_fields || !batch.is_done {
+            if has_more_fields || should_continue {
                 cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
             }
         }

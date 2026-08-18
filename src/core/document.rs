@@ -83,6 +83,18 @@ impl Document {
     }
 }
 
+impl Drop for Document {
+    fn drop(&mut self) {
+        let old_definition = self.ksy_definition.write().ok().and_then(|mut definition| definition.take());
+        let old_parse_result = self.parse_result.write().ok().and_then(|mut result| result.take());
+        if old_definition.is_some() || old_parse_result.is_some() {
+            std::thread::spawn(move || {
+                drop((old_definition, old_parse_result));
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

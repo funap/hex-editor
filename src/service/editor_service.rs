@@ -2,7 +2,7 @@ use crate::core::buffer::Buffer;
 use crate::core::document::Document;
 use crate::core::editor::Editor;
 use crate::core::search::{self, SearchOptions};
-use gpui::{App, Entity, Task, WeakEntity};
+use gpui::{App, Entity, EntityId, Task, WeakEntity};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,32 @@ impl EditorService {
         let list = editors.entry(path).or_default();
         list.retain(|w| w.upgrade().is_some());
         list.push(editor);
+    }
+
+    /// Releases one editor's ownership of a cached document.
+    ///
+    /// The cache remains available while another editor still references the
+    /// same path. Once the last editor is released, the document cache entry
+    /// is evicted so a future open starts with a fresh document state.
+    pub fn release_editor(&self, path: &Path, editor_id: EntityId) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let should_evict = {
+            let mut editors = self.editors.write().expect("editors write lock");
+            let remove_entry = if let Some(list) = editors.get_mut(&path) {
+                list.retain(|editor| editor.entity_id() != editor_id && editor.upgrade().is_some());
+                list.is_empty()
+            } else {
+                true
+            };
+            if remove_entry {
+                editors.remove(&path);
+            }
+            remove_entry
+        };
+
+        if should_evict {
+            self.documents.write().expect("documents write lock").remove(&path);
+        }
     }
 
     /// Notifies all active editors viewing the document at `path` to invalidate layout and repaint.

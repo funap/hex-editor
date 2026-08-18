@@ -17,10 +17,24 @@ use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::search::SearchMode;
+use crate::service::editor_service::EditorService;
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
+use std::path::PathBuf;
 
 const CONTEXT: &str = "EditorPanel";
+
+struct EditorDocumentLease {
+    service: EditorService,
+    path: PathBuf,
+    editor_id: gpui::EntityId,
+}
+
+impl Drop for EditorDocumentLease {
+    fn drop(&mut self) {
+        self.service.release_editor(&self.path, self.editor_id);
+    }
+}
 
 pub fn init(cx: &mut App) {
     // Initialize HexView actions and keybindings
@@ -53,6 +67,7 @@ pub struct EditorPanel {
     tab_panel: Option<WeakEntity<TabPanel>>,
     _appearance_subscription: Subscription,
     _editor_subscription: Subscription,
+    _document_lease: Option<EditorDocumentLease>,
 }
 
 impl EditorPanel {
@@ -146,11 +161,18 @@ impl EditorPanel {
         })
         .detach();
 
-        // Register editor with EditorService for cross-tab notifications
-        let path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
-        if let Some(path) = path {
-            AppState::global(cx).editor_service.register_editor(path, editor.downgrade());
-        }
+        // Register the editor as a document lease. The lease removes the
+        // cached document only after the last split/tab for that path is
+        // dropped, so closing one duplicate tab keeps the shared state alive.
+        let document_lease = editor.read(cx).document.read().ok().map(|document| document.path().to_path_buf()).map(|path| {
+            let service = AppState::global(cx).editor_service.clone();
+            service.register_editor(path.clone(), editor.downgrade());
+            EditorDocumentLease {
+                service,
+                path,
+                editor_id: editor.entity_id(),
+            }
+        });
 
         Self {
             editor,
@@ -162,6 +184,7 @@ impl EditorPanel {
             tab_panel: None,
             _appearance_subscription,
             _editor_subscription,
+            _document_lease: document_lease,
         }
     }
 

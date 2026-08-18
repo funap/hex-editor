@@ -5,9 +5,10 @@ use crate::core::editor::LineMap;
 use crate::core::encoding::Encoding;
 use crate::core::highlight::HighlightItem;
 use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, is_group_zero};
-use crate::core::structure::ParseResult;
+use crate::core::structure::{IndexedField, ParseResult};
 use gpui::*;
 use gpui_component::ActiveTheme;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -858,9 +859,65 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         let desc_start_x = hex_end_x + px(SECTION_GAP);
         let desc_end_x = desc_start_x + px(params.desc_col_width);
 
-        let active_ranges = parse_res.find_active_struct_ranges(offset, chunk_len);
-        let container_structs = parse_res.find_container_structs_starting_at(offset, chunk_len);
-        let leaf_fields = parse_res.find_leaf_fields_starting_at(offset, chunk_len);
+        let is_structure_header_row = chunk_len == 0;
+        let query_len = chunk_len.max(1);
+        let mut container_structs: Cow<'_, [IndexedField]> = if parse_res.is_live() {
+            Cow::Owned(parse_res.find_live_container_structs_starting_at(offset, query_len))
+        } else {
+            Cow::Borrowed(parse_res.find_container_structs_starting_at(offset, query_len))
+        };
+
+        // A structure header gets its own zero-byte row. On the following
+        // data row, keep only collapsed containers visible so the parent is
+        // not printed twice.
+        let has_header_before = !is_structure_header_row
+            && params.row_idx > 0
+            && params.line_starts.get(params.row_idx - 1) == Some(offset)
+            && parse_res.has_structure_header_at(offset, params.collapsed_structs);
+        if has_header_before {
+            container_structs = Cow::Owned(
+                container_structs
+                    .iter()
+                    .filter(|container| params.collapsed_structs.contains(&container.id))
+                    .cloned()
+                    .collect(),
+            );
+        }
+
+        if is_structure_header_row {
+            container_structs = Cow::Owned(
+                container_structs
+                    .iter()
+                    .filter(|container| !container.is_instance && container.size > 0)
+                    .cloned()
+                    .collect(),
+            );
+        }
+
+        if is_structure_header_row && container_structs.len() > 1 {
+            let mut same_offset_rows = 0;
+            let mut previous_row = params.row_idx;
+            while previous_row > 0 && params.line_starts.get(previous_row - 1) == Some(offset) {
+                same_offset_rows += 1;
+                previous_row -= 1;
+            }
+            if let Some(container) = container_structs.get(same_offset_rows).cloned() {
+                container_structs = Cow::Owned(vec![container]);
+            }
+        }
+
+        let leaf_fields: Cow<'_, [IndexedField]> = if is_structure_header_row {
+            Cow::Owned(Vec::new())
+        } else if parse_res.is_live() {
+            Cow::Owned(parse_res.find_live_leaf_fields_starting_at(offset, chunk_len))
+        } else {
+            Cow::Borrowed(parse_res.find_leaf_fields_starting_at(offset, chunk_len))
+        };
+        let active_ranges = if parse_res.is_live() {
+            Vec::new()
+        } else {
+            parse_res.find_active_struct_ranges(offset, query_len)
+        };
 
         let is_collapsed = container_structs.first().map(|c| params.collapsed_structs.contains(&c.id)).unwrap_or(false);
 
@@ -870,23 +927,27 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                 .iter()
                 .find(|r| container_structs.first().map(|c| c.id == r.id).unwrap_or(false))
                 .map(|r| r.depth)
+                .or_else(|| container_structs.first().map(|container| container.depth))
                 .unwrap_or(struct_depth)
-        } else {
+        } else if !active_ranges.is_empty() {
             active_ranges.len()
+        } else {
+            leaf_fields.first().map(|field| field.depth).unwrap_or(0)
         };
         let indent_px = indent_level as f32 * 14.0;
 
         let mut desc_parts = Vec::new();
         if let Some(container) = container_structs.first() {
             let icon = if is_collapsed { "▶" } else { "▼" };
+            let label = container.format_container_label();
             if is_collapsed {
-                desc_parts.push(format!("{} {} ({} bytes)", icon, container.id, container.size));
+                desc_parts.push(format!("{} {} ({} bytes)", icon, label, container.size));
             } else {
-                desc_parts.push(format!("{} {}", icon, container.id));
+                desc_parts.push(format!("{} {}", icon, label));
             }
         }
         if !is_collapsed {
-            for f in leaf_fields {
+            for f in leaf_fields.iter() {
                 desc_parts.push(f.format_expression().to_string());
             }
         }

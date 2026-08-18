@@ -29,12 +29,13 @@ use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::format::{CopyFormat, format_bytes, format_hex_spaces};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
-use crate::core::structure::ParseResult;
+use crate::core::structure::{IndexedField, ParseResult};
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, StyledExt, h_flex};
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
@@ -428,7 +429,9 @@ impl HexView {
             return 0.0;
         }
 
-        let start_row = Editor::find_line_index(scan_range.start, line_starts);
+        // Include a possible structure header immediately before the first
+        // data row in the scan range.
+        let start_row = Editor::find_line_index(scan_range.start, line_starts).saturating_sub(1);
         let end_row = if scan_range.end >= total_size {
             line_starts.len()
         } else {
@@ -448,17 +451,43 @@ impl HexView {
             let next_offset = line_starts.get(row + 1).unwrap_or(total_size);
             let chunk_len = next_offset.saturating_sub(offset);
             if chunk_len == 0 {
+                let containers: Cow<'_, [IndexedField]> = if parse_result.is_live() {
+                    Cow::Owned(parse_result.find_live_container_structs_starting_at(offset, 1))
+                } else {
+                    Cow::Borrowed(parse_result.find_container_structs_starting_at(offset, 1))
+                };
+                for container in containers.iter().filter(|container| !container.is_instance && container.size > 0) {
+                    let text = if collapsed_structs.contains(&container.id) {
+                        format!("▶ {} ({} bytes)", container.format_container_label(), container.size)
+                    } else {
+                        format!("▼ {}", container.format_container_label())
+                    };
+                    let row_width = container.depth as f32 * 14.0 + weighted_text_width(&text, char_w) + 8.0;
+                    max_width = max_width.max(row_width);
+                }
                 continue;
             }
 
-            let container_structs = parse_result.find_container_structs_starting_at(offset, chunk_len);
-            let leaf_fields = parse_result.find_leaf_fields_starting_at(offset, chunk_len);
+            let container_structs: Cow<'_, [IndexedField]> = if parse_result.is_live() {
+                Cow::Owned(parse_result.find_live_container_structs_starting_at(offset, chunk_len))
+            } else {
+                Cow::Borrowed(parse_result.find_container_structs_starting_at(offset, chunk_len))
+            };
+            let leaf_fields: Cow<'_, [IndexedField]> = if parse_result.is_live() {
+                Cow::Owned(parse_result.find_live_leaf_fields_starting_at(offset, chunk_len))
+            } else {
+                Cow::Borrowed(parse_result.find_leaf_fields_starting_at(offset, chunk_len))
+            };
 
             if container_structs.is_empty() && leaf_fields.is_empty() {
                 continue;
             }
 
-            let active_ranges = parse_result.find_active_struct_ranges(offset, chunk_len);
+            let active_ranges = if parse_result.is_live() {
+                Vec::new()
+            } else {
+                parse_result.find_active_struct_ranges(offset, chunk_len)
+            };
             let is_collapsed = container_structs.first().map(|c| collapsed_structs.contains(&c.id)).unwrap_or(false);
 
             let struct_depth = active_ranges.len().saturating_sub(1);
@@ -467,9 +496,14 @@ impl HexView {
                     .iter()
                     .find(|r| container_structs.first().map(|c| c.id == r.id).unwrap_or(false))
                     .map(|r| r.depth)
+                    .or_else(|| container_structs.first().map(|container| container.depth))
                     .unwrap_or(struct_depth)
             } else {
-                active_ranges.len()
+                if active_ranges.is_empty() {
+                    leaf_fields.first().map(|field| field.depth).unwrap_or(0)
+                } else {
+                    active_ranges.len()
+                }
             };
             let indent_px = indent_level as f32 * 14.0;
 
@@ -478,16 +512,16 @@ impl HexView {
 
             if let Some(container) = container_structs.first() {
                 let text = if is_collapsed {
-                    format!("▶ {} ({} bytes)", container.id, container.size)
+                    format!("▶ {} ({} bytes)", container.format_container_label(), container.size)
                 } else {
-                    format!("▼ {}", container.id)
+                    format!("▼ {}", container.format_container_label())
                 };
                 parts_width += weighted_text_width(&text, char_w);
                 part_count += 1;
             }
 
             if !is_collapsed {
-                for f in leaf_fields {
+                for f in leaf_fields.iter() {
                     let expr = f.format_expression();
                     parts_width += weighted_text_width(expr, char_w);
                     part_count += 1;

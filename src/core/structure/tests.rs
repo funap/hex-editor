@@ -674,6 +674,84 @@ types:
 }
 
 #[test]
+fn test_zero_sized_body_does_not_leak_into_next_zip_section_description() {
+    let zip_ksy = r#"
+meta:
+  id: zip_zero_body
+  endian: le
+seq:
+  - id: sections
+    type: pk_section
+    repeat: eos
+types:
+  pk_section:
+    seq:
+      - id: magic
+        contents: 'PK'
+      - id: section_type
+        type: u2
+      - id: body
+        type:
+          switch-on: section_type
+          cases:
+            0x0403: local_file
+            0x0605: end_of_central_dir
+  local_file:
+    seq:
+      - id: header
+        type: local_file_header
+      - id: body
+        size: header.compressed_size
+  local_file_header:
+    seq:
+      - id: compressed_size
+        type: u4
+  end_of_central_dir:
+    seq:
+      - id: marker
+        type: u1
+"#;
+    let ksy = parse_ksy_yaml(zip_ksy);
+
+    // A zero-length local-file body ends exactly where the next PK section
+    // starts. The empty leaf must remain in the parse tree but must not be
+    // selected as a description for the next section's data row.
+    let data = [
+        0x50, 0x4B, 0x03, 0x04, // local-file signature
+        0x00, 0x00, 0x00, 0x00, // header.compressed_size = 0
+        0x50, 0x4B, 0x05, 0x06, // end-of-central-directory signature
+        0xAA,
+    ];
+    let mut stream = KaitaiStream::new(&data);
+    let result = KaitaiInterpreter::new(ksy).parse(&mut stream);
+
+    assert_eq!(result.fields.len(), 2);
+    let local_section = &result.fields[0];
+    assert_eq!(local_section.id, "sections[0]");
+    assert_eq!(local_section.offset, 0);
+    assert_eq!(local_section.size, 8);
+
+    let local_file = &local_section.children[2];
+    assert_eq!(local_file.id, "body");
+    assert_eq!(local_file.field_type, "local_file");
+    let local_file_index = result
+        .find_container_structs_starting_at(4, 4)
+        .iter()
+        .find(|field| field.id == "body")
+        .expect("switched local_file container should be indexed");
+    assert_eq!(local_file_index.format_container_label(), "body: local_file");
+    let empty_body = &local_file.children[1];
+    assert_eq!(empty_body.id, "body");
+    assert_eq!(empty_body.offset, 8);
+    assert_eq!(empty_body.size, 0);
+
+    assert_eq!(result.fields[1].id, "sections[1]");
+    assert_eq!(result.fields[1].offset, 8);
+    let next_section_leaves = result.find_leaf_fields_starting_at(8, 1);
+    assert!(next_section_leaves.iter().all(|field| field.id != "body"));
+}
+
+#[test]
 fn test_parse_with_cancellation_token() {
     let yaml = r#"
 meta:
@@ -898,6 +976,58 @@ seq:
     assert_eq!(line_map.get(1), Some(2)); // field_b (2..4)
     assert_eq!(line_map.get(2), Some(4)); // field_c (4..8)
     assert_eq!(line_map.get(3), Some(8)); // unparsed tail (8..10)
+}
+
+#[test]
+fn test_editor_adds_description_only_rows_for_parent_structures() {
+    use crate::core::document::Document;
+    use crate::core::editor::Editor;
+    use crate::core::structure::{FieldValue, ParseResult, ParsedField};
+    use std::sync::{Arc, RwLock};
+
+    let child_a = ParsedField {
+        id: "first".into(),
+        field_type: "u2".into(),
+        offset: 0,
+        size: 2,
+        value: FieldValue::U16(0x0102),
+        color: gpui::Hsla::default(),
+        description: None,
+        children: Vec::new(),
+        enum_label: None,
+        is_instance: false,
+    };
+    let child_b = ParsedField {
+        id: "second".into(),
+        field_type: "u2".into(),
+        offset: 2,
+        size: 2,
+        value: FieldValue::U16(0x0304),
+        color: gpui::Hsla::default(),
+        description: None,
+        children: Vec::new(),
+        enum_label: None,
+        is_instance: false,
+    };
+    let parent = ParsedField {
+        id: "record".into(),
+        field_type: "record".into(),
+        offset: 0,
+        size: 4,
+        value: FieldValue::Struct,
+        color: gpui::Hsla::default(),
+        description: None,
+        children: vec![child_a, child_b],
+        enum_label: None,
+        is_instance: false,
+    };
+
+    let buffer = crate::core::buffer::Buffer::new(vec![1, 2, 3, 4]);
+    let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+    let mut editor = Editor::new(doc);
+    editor.set_parse_result(ParseResult::new("records".into(), vec![parent], 4, Vec::new()));
+
+    assert_eq!(editor.line_starts(), vec![0, 0, 2]);
 }
 
 #[test]
@@ -1257,9 +1387,17 @@ types:
     editor.set_kaitai_definition(ksy_arc);
 
     let line_starts = editor.line_starts();
-    assert_eq!(line_starts.get(7), Some(7)); // '世' starts at offset 7
-    assert_eq!(line_starts.get(8), Some(10)); // '界' starts at offset 10 (not 8 or 9!)
-    assert_eq!(line_starts.get(9), Some(13)); // '!' starts at offset 13 (not 11 or 12!)
+    // Each parsed codepoint is a parent structure, so its description gets a
+    // zero-byte row immediately before the row containing its bytes.
+    let world_row = Editor::find_line_index(7, &line_starts);
+    let punctuation_row = Editor::find_line_index(10, &line_starts);
+    let exclamation_row = Editor::find_line_index(13, &line_starts);
+    assert_eq!(line_starts.get(world_row.saturating_sub(1)), Some(7)); // parent row
+    assert_eq!(line_starts.get(world_row), Some(7)); // '世' starts at offset 7
+    assert_eq!(line_starts.get(punctuation_row.saturating_sub(1)), Some(10)); // parent row
+    assert_eq!(line_starts.get(punctuation_row), Some(10)); // '界' starts at offset 10
+    assert_eq!(line_starts.get(exclamation_row.saturating_sub(1)), Some(13)); // parent row
+    assert_eq!(line_starts.get(exclamation_row), Some(13)); // '!' starts at offset 13
 }
 
 #[test]
@@ -1365,6 +1503,47 @@ fn test_editor_parse_progress_tracking() {
     assert_eq!(editor.parse_progress_offset, 0);
     assert_eq!(editor.parse_total_size, 0);
     assert!(!editor.is_parsing_structure);
+}
+
+#[test]
+fn test_clear_structure_definition_discards_a_completed_result() {
+    use crate::core::document::Document;
+    use crate::core::editor::Editor;
+    use crate::core::structure::{FieldValue, ParseResult, ParsedField};
+    use std::sync::{Arc, RwLock};
+
+    let buffer = crate::core::buffer::Buffer::new(vec![0xAA, 0xBB]);
+    let document = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
+    let mut editor = Editor::new(document);
+    editor.structure_parse_async = true;
+    editor.set_parse_result(ParseResult::new(
+        "completed".into(),
+        vec![ParsedField {
+            id: "value".into(),
+            field_type: "u2".into(),
+            offset: 0,
+            size: 2,
+            value: FieldValue::U16(0xAABB),
+            color: gpui::Hsla::default(),
+            description: None,
+            children: Vec::new(),
+            enum_label: None,
+            is_instance: false,
+        }],
+        2,
+        Vec::new(),
+    ));
+    let old_generation = editor.parse_generation;
+
+    editor.clear_structure_definition();
+
+    assert!(editor.ksy_definition().is_none());
+    assert!(editor.parse_result().is_none());
+    assert!(!editor.is_parsing_structure);
+    assert!(!editor.structure_parse_async);
+    assert_eq!(editor.parse_progress_offset, 0);
+    assert_eq!(editor.parse_total_size, 0);
+    assert_ne!(editor.parse_generation, old_generation);
 }
 
 #[test]

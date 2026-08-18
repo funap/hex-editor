@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
 use crate::core::layout::{LineMap, build_line_map_from_sorted_events};
+use crate::core::radix::DisplayRadix;
 use gpui::Hsla;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub enum FieldValue {
@@ -75,6 +77,47 @@ impl FieldValue {
             FieldValue::String(s) => s.clone(),
             FieldValue::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
             other => format!("{}", other),
+        }
+    }
+
+    /// Formats numeric values in the requested radix while preserving the
+    /// regular display for strings, byte arrays, structures, and non-integer
+    /// values.
+    pub fn format_with_radix(&self, radix: DisplayRadix) -> String {
+        match self {
+            FieldValue::U8(value) => Self::format_unsigned(*value as u64, radix),
+            FieldValue::U16(value) => Self::format_unsigned(*value as u64, radix),
+            FieldValue::U32(value) => Self::format_unsigned(*value as u64, radix),
+            FieldValue::U64(value) => Self::format_unsigned(*value, radix),
+            FieldValue::I8(value) => Self::format_signed(*value as i64, radix),
+            FieldValue::I16(value) => Self::format_signed(*value as i64, radix),
+            FieldValue::I32(value) => Self::format_signed(*value as i64, radix),
+            FieldValue::I64(value) => Self::format_signed(*value, radix),
+            other => other.to_string(),
+        }
+    }
+
+    fn format_unsigned(value: u64, radix: DisplayRadix) -> String {
+        match radix {
+            DisplayRadix::Hexadecimal => format!("0x{value:X}"),
+            DisplayRadix::Decimal => value.to_string(),
+            DisplayRadix::Octal => format!("0o{value:o}"),
+            DisplayRadix::Binary => format!("0b{value:b}"),
+        }
+    }
+
+    fn format_signed(value: i64, radix: DisplayRadix) -> String {
+        if radix == DisplayRadix::Decimal {
+            return value.to_string();
+        }
+
+        let sign = if value.is_negative() { "-" } else { "" };
+        let magnitude = value.unsigned_abs();
+        match radix {
+            DisplayRadix::Hexadecimal => format!("{sign}0x{magnitude:X}"),
+            DisplayRadix::Octal => format!("{sign}0o{magnitude:o}"),
+            DisplayRadix::Binary => format!("{sign}0b{magnitude:b}"),
+            DisplayRadix::Decimal => unreachable!("decimal values return before radix formatting"),
         }
     }
 }
@@ -495,25 +538,50 @@ pub struct IndexedField {
     pub id: String,
     pub offset: usize,
     pub size: usize,
+    /// Nesting depth in the parsed structure tree.
+    pub depth: usize,
+    /// Whether this field is a computed/positioned instance rather than a physical field.
+    pub is_instance: bool,
+    type_name: String,
     expression: String,
 }
 
 impl IndexedField {
-    fn container(field: &ParsedField) -> Self {
+    fn container(field: &ParsedField, depth: usize) -> Self {
         Self {
             id: field.id.clone(),
             offset: field.offset,
             size: field.size,
+            depth,
+            is_instance: field.is_instance,
+            type_name: field.field_type.clone(),
             expression: String::new(),
         }
     }
 
-    fn leaf(field: &ParsedField) -> Self {
+    fn leaf(field: &ParsedField, depth: usize) -> Self {
         Self {
             id: field.id.clone(),
             offset: field.offset,
             size: field.size,
+            depth,
+            is_instance: field.is_instance,
+            type_name: String::new(),
             expression: field.format_expression(),
+        }
+    }
+
+    /// Returns the field label used for a structure description.
+    ///
+    /// A switched custom type is stored as the resolved type name in
+    /// `ParsedField.field_type`, while `id` remains the field name (`body` in
+    /// a ZIP section). Keeping both makes the selected case visible without
+    /// changing IDs used by collapse and range lookup logic.
+    pub fn format_container_label(&self) -> String {
+        if self.type_name.is_empty() || self.type_name == self.id {
+            self.id.clone()
+        } else {
+            format!("{}: {}", self.id, self.type_name)
         }
     }
 
@@ -555,10 +623,18 @@ pub(crate) struct StructureIndexBuilder {
     container_seen: HashSet<(usize, usize, usize)>,
     leaf_seen: HashSet<(usize, usize, usize)>,
     range_seen: HashSet<(usize, usize, usize)>,
+    collect_layout: bool,
 }
 
 impl StructureIndexBuilder {
     pub(crate) fn new() -> Self {
+        Self {
+            collect_layout: true,
+            ..Self::default()
+        }
+    }
+
+    fn new_live() -> Self {
         Self::default()
     }
 
@@ -602,16 +678,25 @@ impl StructureIndexBuilder {
         }
     }
 
+    fn finish_live(mut self) -> LiveIndexBatch {
+        self.container_structs.sort_by_key(|field| field.offset);
+        self.leaf_fields.sort_by_key(|field| field.offset);
+        LiveIndexBatch {
+            container_structs: self.container_structs,
+            leaf_fields: self.leaf_fields,
+        }
+    }
+
     fn collect_index_field(&mut self, field: &ParsedField, depth: usize) {
         let mut work = vec![(field, depth)];
 
         while let Some((field, depth)) = work.pop() {
             let is_str = field.is_struct();
-            if !field.is_instance && field.size > 0 {
+            if self.collect_layout && !field.is_instance && field.size > 0 {
                 self.field_breaks.push(field.offset);
                 self.field_breaks.push(field.offset + field.size);
             }
-            if field.size > 0 && !is_str {
+            if self.collect_layout && field.size > 0 && !is_str {
                 self.highlights.push((field.offset..field.offset + field.size, field.color));
             }
 
@@ -619,9 +704,9 @@ impl StructureIndexBuilder {
                 let end = field.offset + field.size;
                 let id_key = self.id_key(&field.id);
                 if self.container_seen.insert((field.offset, field.size, id_key)) {
-                    self.container_structs.push(IndexedField::container(field));
+                    self.container_structs.push(IndexedField::container(field, depth));
                 }
-                if self.range_seen.insert((field.offset, end, id_key)) {
+                if self.collect_layout && self.range_seen.insert((field.offset, end, id_key)) {
                     self.active_ranges.push(ActiveStructRange {
                         start: field.offset,
                         end,
@@ -629,10 +714,10 @@ impl StructureIndexBuilder {
                         id: field.id.clone(),
                     });
                 }
-            } else if field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
+            } else if field.size > 0 && field.children.is_empty() && !matches!(field.value, FieldValue::Struct) {
                 let id_key = self.id_key(&field.id);
                 if self.leaf_seen.insert((field.offset, field.size, id_key)) {
-                    self.leaf_fields.push(IndexedField::leaf(field));
+                    self.leaf_fields.push(IndexedField::leaf(field, depth));
                 }
             }
 
@@ -656,6 +741,68 @@ impl StructureIndexBuilder {
         }
 
         (base, tree)
+    }
+}
+
+/// Indexes newly parsed chunks for the live structure view.
+///
+/// The final parser index is intentionally built once, on the parser thread.
+/// During parsing the UI only needs descriptions for the chunks that have
+/// arrived so far. Keeping one small, sorted index per received chunk avoids
+/// rebuilding or cloning the complete index on every progress update.
+#[derive(Debug)]
+struct LiveIndexBatch {
+    container_structs: Vec<IndexedField>,
+    leaf_fields: Vec<IndexedField>,
+}
+
+#[derive(Debug, Default)]
+struct LiveStructureIndex {
+    batches: RwLock<Vec<Arc<LiveIndexBatch>>>,
+}
+
+impl LiveStructureIndex {
+    fn append_chunks(&self, chunks: &[Arc<[ParsedField]>]) {
+        let mut batches = Vec::with_capacity(chunks.len());
+        for chunk in chunks.iter().filter(|chunk| !chunk.is_empty()) {
+            let mut builder = StructureIndexBuilder::new_live();
+            for field in chunk.iter() {
+                builder.add_field(field);
+            }
+            batches.push(Arc::new(builder.finish_live()));
+        }
+
+        if !batches.is_empty() {
+            self.batches.write().expect("live structure index write lock").extend(batches);
+        }
+    }
+
+    fn fields_starting_at(&self, start_offset: usize, len: usize, select: fn(&LiveIndexBatch) -> &[IndexedField]) -> Vec<IndexedField> {
+        if len == 0 {
+            return Vec::new();
+        }
+
+        let end_offset = start_offset.saturating_add(len);
+        let batches = self.batches.read().expect("live structure index read lock");
+        let mut fields = Vec::new();
+        for batch in batches.iter() {
+            let fields_in_batch = select(batch);
+            let start_idx = fields_in_batch.partition_point(|field| field.offset < start_offset);
+            let end_idx = start_idx + fields_in_batch[start_idx..].partition_point(|field| field.offset < end_offset);
+            fields.extend(fields_in_batch[start_idx..end_idx].iter().cloned());
+        }
+
+        fields.sort_by(|left, right| (left.offset, left.depth, left.size, &left.id).cmp(&(right.offset, right.depth, right.size, &right.id)));
+        fields.dedup_by(|right, left| right.offset == left.offset && right.size == left.size && right.id == left.id);
+        fields
+    }
+
+    fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> Vec<IndexedField> {
+        self.fields_starting_at(start_offset, len, |index| &index.container_structs)
+    }
+
+    fn find_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> Vec<IndexedField> {
+        self.fields_starting_at(start_offset, len, |index| &index.leaf_fields)
     }
 }
 
@@ -688,6 +835,7 @@ pub struct ParseResult {
     /// included. The editor falls back to the existing dynamic layout for
     /// those cases, so this cache cannot change their display semantics.
     pub structure_line_map: Option<Arc<LineMap>>,
+    live_index: Option<Arc<LiveStructureIndex>>,
 }
 
 impl ParseResult {
@@ -714,6 +862,7 @@ impl ParseResult {
             errors,
             index: Arc::new(index),
             structure_line_map: None,
+            live_index: None,
         }
     }
 
@@ -726,17 +875,20 @@ impl ParseResult {
             errors: Vec::new(),
             index: Arc::new(StructureIndex::default()),
             structure_line_map: None,
+            live_index: Some(Arc::new(LiveStructureIndex::default())),
         }
     }
 
     /// Prepares the default expanded structure line map off the UI thread.
     pub fn with_structure_line_map(mut self, total_size: usize) -> Self {
         let field_breaks = self.index.field_breaks.as_ref();
+        let mut structure_headers = BTreeMap::new();
+        self.collect_structure_header_lines(&mut structure_headers, &HashSet::new());
         self.structure_line_map = Some(Arc::new(build_line_map_from_sorted_events(
             total_size,
             field_breaks,
             &Default::default(),
-            &Default::default(),
+            &structure_headers,
         )));
         self
     }
@@ -757,20 +909,20 @@ impl ParseResult {
         )
     }
 
-    /// Appends a field batch without rebuilding the byte-range index.
+    /// Appends a field batch to a live parse snapshot.
     ///
-    /// This is intended for live parse snapshots. The structure tree can use
-    /// the appended fields immediately, while the complete index is supplied
-    /// by the final parse result. Keeping this operation index-free prevents
-    /// the UI thread from repeatedly scanning every field seen so far.
+    /// Only the new chunk is indexed. Previously received chunks keep their
+    /// own small index, so the UI never rebuilds the complete parse result.
     pub fn append_fields_without_index(&self, fields: Vec<ParsedField>, total_parsed_bytes: usize) -> Self {
         let chunk: Arc<[ParsedField]> = Arc::from(fields.into_boxed_slice());
         self.append_shared_chunks_without_index(std::slice::from_ref(&chunk), total_parsed_bytes)
     }
 
-    /// Appends shared parse chunks without rebuilding the byte-range index.
+    /// Appends shared parse chunks without rebuilding the complete byte-range index.
     pub fn append_shared_chunks_without_index(&self, chunks: &[Arc<[ParsedField]>], total_parsed_bytes: usize) -> Self {
         let fields = self.fields.append_shared_chunks(chunks);
+        let live_index = self.live_index.clone().unwrap_or_else(|| Arc::new(LiveStructureIndex::default()));
+        live_index.append_chunks(chunks);
         Self {
             definition_id: self.definition_id.clone(),
             fields,
@@ -778,7 +930,29 @@ impl ParseResult {
             errors: self.errors.clone(),
             index: self.index.clone(),
             structure_line_map: None,
+            live_index: Some(live_index),
         }
+    }
+
+    /// Returns whether this result is an incremental snapshot.
+    pub fn is_live(&self) -> bool {
+        self.live_index.is_some()
+    }
+
+    /// Finds container descriptions in an incremental snapshot.
+    pub fn find_live_container_structs_starting_at(&self, start_offset: usize, len: usize) -> Vec<IndexedField> {
+        self.live_index
+            .as_ref()
+            .map(|index| index.find_container_structs_starting_at(start_offset, len))
+            .unwrap_or_default()
+    }
+
+    /// Finds leaf descriptions in an incremental snapshot.
+    pub fn find_live_leaf_fields_starting_at(&self, start_offset: usize, len: usize) -> Vec<IndexedField> {
+        self.live_index
+            .as_ref()
+            .map(|index| index.find_leaf_fields_starting_at(start_offset, len))
+            .unwrap_or_default()
     }
 
     pub fn build_index(&mut self) {
@@ -788,6 +962,7 @@ impl ParseResult {
         }
         self.index = Arc::new(index_builder.finish());
         self.structure_line_map = None;
+        self.live_index = None;
     }
 
     pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
@@ -817,6 +992,38 @@ impl ParseResult {
                 }
             }
         }
+    }
+
+    /// Adds one description-only row for each visible physical structure.
+    pub fn collect_structure_header_lines(&self, empty_lines: &mut BTreeMap<usize, usize>, collapsed_structs: &HashSet<String>) {
+        if collapsed_structs.is_empty() {
+            for header in self.index.container_structs.iter().filter(|field| !field.is_instance && field.size > 0) {
+                *empty_lines.entry(header.offset).or_default() += 1;
+            }
+            return;
+        }
+
+        let mut work = self.fields.iter().map(|field| (field, false)).collect::<Vec<_>>();
+        while let Some((field, hidden_by_collapsed_parent)) = work.pop() {
+            let is_collapsed = collapsed_structs.contains(&field.id);
+            if field.is_struct() && !field.is_instance && field.size > 0 && !hidden_by_collapsed_parent && !is_collapsed {
+                *empty_lines.entry(field.offset).or_default() += 1;
+            }
+
+            if !hidden_by_collapsed_parent && !is_collapsed {
+                for child in field.children.iter().rev() {
+                    work.push((child, false));
+                }
+            }
+        }
+    }
+
+    /// Returns whether a visible structure starts at `offset`.
+    pub fn has_structure_header_at(&self, offset: usize, collapsed_structs: &HashSet<String>) -> bool {
+        self.index
+            .container_structs
+            .iter()
+            .any(|header| header.offset == offset && header.size > 0 && !header.is_instance && !collapsed_structs.contains(&header.id))
     }
 
     pub fn find_container_structs_starting_at(&self, start_offset: usize, len: usize) -> &[IndexedField] {
@@ -918,6 +1125,29 @@ mod tests {
     }
 
     #[test]
+    fn live_parse_index_exposes_only_received_chunks() {
+        let mut first_container = test_field("header", 0);
+        first_container.size = 2;
+        first_container.value = FieldValue::Struct;
+        first_container.children = vec![test_field("magic", 0)];
+
+        let first: Arc<[ParsedField]> = Arc::from(vec![first_container].into_boxed_slice());
+        let second: Arc<[ParsedField]> = Arc::from(vec![test_field("tail", 2)].into_boxed_slice());
+
+        let partial = ParseResult::empty("live".into()).append_shared_chunks_without_index(&[first], 2);
+        assert!(partial.is_live());
+        assert_eq!(partial.find_live_container_structs_starting_at(0, 2)[0].id, "header");
+        assert_eq!(partial.find_live_leaf_fields_starting_at(0, 2)[0].id, "magic");
+        assert!(partial.find_live_leaf_fields_starting_at(2, 1).is_empty());
+
+        let partial = partial.append_shared_chunks_without_index(&[second], 3);
+        assert_eq!(partial.find_live_leaf_fields_starting_at(2, 1)[0].id, "tail");
+
+        let complete = ParseResult::new("complete".into(), Vec::new(), 0, Vec::new());
+        assert!(!complete.is_live());
+    }
+
+    #[test]
     fn field_value_conversions_cover_numeric_text_and_struct_values() {
         assert_eq!(FieldValue::U8(0x12).to_i64(), 0x12);
         assert_eq!(FieldValue::I64(-4).to_i64(), -4);
@@ -928,6 +1158,11 @@ mod tests {
         assert_eq!(FieldValue::String("text".into()).to_string_value(), "text");
         assert_eq!(FieldValue::Bytes(vec![b'A', b'\0']).to_string_value(), "A\0");
         assert_eq!(FieldValue::Struct.to_string_value(), "{...}");
+        assert_eq!(FieldValue::U16(0x2A).format_with_radix(DisplayRadix::Binary), "0b101010");
+        assert_eq!(FieldValue::U16(0x2A).format_with_radix(DisplayRadix::Octal), "0o52");
+        assert_eq!(FieldValue::U16(0x2A).format_with_radix(DisplayRadix::Decimal), "42");
+        assert_eq!(FieldValue::U16(0x2A).format_with_radix(DisplayRadix::Hexadecimal), "0x2A");
+        assert_eq!(FieldValue::I8(-10).format_with_radix(DisplayRadix::Hexadecimal), "-0xA");
     }
 
     #[test]

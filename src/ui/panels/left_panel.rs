@@ -8,6 +8,7 @@ use crate::ui::components::highlight_panel::HighlightPanel;
 use crate::ui::components::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::ui::components::struct_tree_view::StructTreeView;
 use crate::ui::panels::visual_map_panel::VisualMapPanel;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum LeftPanelTab {
@@ -85,6 +86,20 @@ impl LeftPanel {
         });
         self.highlight_panel.update(cx, |panel, cx| {
             panel.set_editor(editor, cx);
+        });
+    }
+
+    /// Updates the recent structure definition paths shown by the Structure panel.
+    pub fn set_structure_definition_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        self.struct_tree.update(cx, |panel, cx| {
+            panel.set_definition_history(paths, cx);
+        });
+    }
+
+    /// Updates the recent binary file paths shown by the Files panel.
+    pub fn set_file_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        self.file_tree.update(cx, |panel, cx| {
+            panel.set_recent_file_history(paths, cx);
         });
     }
 

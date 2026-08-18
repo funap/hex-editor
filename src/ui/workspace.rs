@@ -29,7 +29,8 @@ pub struct Workspace {
     pub status_bar: Entity<StatusBar>,
     pub left_panel: Entity<LeftPanel>,
     pub activity_bar: Entity<ActivityBar>,
-    pub ksy_definition: Option<Arc<crate::core::structure::KsyDefinition>>,
+    pub recent_definition_history: crate::core::structure::DefinitionHistory,
+    pub recent_file_history: crate::core::structure::FileHistory,
     pub is_left_panel_visible: bool,
     focus_handle: FocusHandle,
     last_active_editor_id: Cell<Option<EntityId>>,
@@ -178,6 +179,24 @@ pub fn init(cx: &mut App) {
     cx.on_action::<LoadStructureDefinition>(|_, cx| {
         defer_in_active_workspace(cx, |workspace, window, cx| {
             workspace.on_action_load_structure_definition(&LoadStructureDefinition, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::LoadStructureDefinitionFromHistory>(|action, cx| {
+        let action = action.clone();
+        defer_in_active_workspace(cx, move |workspace, window, cx| {
+            workspace.on_action_load_structure_definition_from_history(&action, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::RemoveStructureDefinitionFromHistory>(|action, cx| {
+        let action = action.clone();
+        defer_in_active_workspace(cx, move |workspace, window, cx| {
+            workspace.on_action_remove_structure_definition_from_history(&action, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::RemoveFileFromHistory>(|action, cx| {
+        let action = action.clone();
+        defer_in_active_workspace(cx, move |workspace, window, cx| {
+            workspace.on_action_remove_file_from_history(&action, window, cx);
         });
     });
     cx.on_action::<ToggleInsertMode>(|_, cx| {
@@ -341,17 +360,28 @@ impl Workspace {
         })
         .detach();
 
-        Self {
+        let recent_history = cx.global::<crate::settings::RecentHistoryState>().clone();
+        let recent_definition_paths = recent_history.definitions.paths().to_vec();
+        let recent_file_paths = recent_history.files.paths().to_vec();
+        let workspace = Self {
             pane_tree,
             title_bar,
             status_bar,
             left_panel,
             activity_bar,
-            ksy_definition: None,
+            recent_definition_history: recent_history.definitions,
+            recent_file_history: recent_history.files,
             is_left_panel_visible: true,
             focus_handle: cx.focus_handle(),
             last_active_editor_id: Cell::new(None),
-        }
+        };
+
+        workspace.left_panel.update(cx, |panel, cx| {
+            panel.set_structure_definition_history(&recent_definition_paths, cx);
+            panel.set_file_history(&recent_file_paths, cx);
+        });
+
+        workspace
     }
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<Editor>> {
@@ -360,6 +390,28 @@ impl Workspace {
 
     pub fn active_editor_panel(&self, cx: &App) -> Option<Entity<EditorPanel>> {
         self.pane_tree.read(cx).active_editor_panel(cx)
+    }
+
+    fn publish_recent_history(&mut self, cx: &mut Context<Self>) {
+        let definition_paths = self.recent_definition_history.paths().to_vec();
+        let file_paths = self.recent_file_history.paths().to_vec();
+        self.left_panel.update(cx, |panel, cx| {
+            panel.set_structure_definition_history(&definition_paths, cx);
+            panel.set_file_history(&file_paths, cx);
+        });
+
+        let definitions = self.recent_definition_history.clone();
+        let files = self.recent_file_history.clone();
+        cx.update_global::<crate::settings::RecentHistoryState, _>(|state, _| {
+            state.definitions = definitions;
+            state.files = files;
+        });
+        crate::settings::save_current(cx);
+    }
+
+    fn record_recent_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.recent_file_history.record(path);
+        self.publish_recent_history(cx);
     }
 
     fn sync_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -460,10 +512,6 @@ impl Workspace {
             editor.set_encoding(default_encoding);
             editor
         });
-
-        if let Some(ksy) = &self.ksy_definition {
-            set_kaitai_definition_async(&editor, ksy.clone(), cx);
-        }
 
         let editor_panel = cx.new(|cx| EditorPanel::new(editor, window, cx));
         let content = TabContent::Editor(editor_panel);
@@ -1007,6 +1055,7 @@ impl Workspace {
                         tree.set_active_group(group.read(cx).id, cx);
                     });
                     self.sync_active_editor(window, cx);
+                    self.record_recent_file(path.clone(), cx);
                     cx.notify();
                     return;
                 }
@@ -1014,6 +1063,7 @@ impl Workspace {
         }
 
         let view = cx.entity();
+        let recent_path = path.clone();
         cx.spawn_in(window, async move |_, window| {
             let editor_service_opt = window.update(|_, cx| AppState::global(cx).editor_service.clone()).ok();
 
@@ -1023,6 +1073,7 @@ impl Workspace {
                         window
                             .update(|window, cx| {
                                 view.update(cx, |this, cx| {
+                                    this.record_recent_file(recent_path.clone(), cx);
                                     this.open_editor_panel(document, window, cx);
                                 });
                             })
@@ -1049,7 +1100,16 @@ impl Workspace {
                 let right_result = app.editor_service.open_file(std::path::PathBuf::from(right_path)).await;
 
                 if let (Ok(left_document), Ok(right_document)) = (left_result, right_result) {
-                    let _ = workspace.update_in(window, |_, window, cx| {
+                    let left_recent_path = left_document.read().ok().map(|document| document.path().to_path_buf());
+                    let right_recent_path = right_document.read().ok().map(|document| document.path().to_path_buf());
+                    let _ = workspace.update_in(window, |workspace_view, window, cx| {
+                        if let Some(path) = left_recent_path {
+                            workspace_view.record_recent_file(path, cx);
+                        }
+                        if let Some(path) = right_recent_path {
+                            workspace_view.record_recent_file(path, cx);
+                        }
+
                         let app = AppState::global(cx).clone();
                         let diff_result_task = app.editor_service.compute_diff(left_document.clone(), right_document.clone(), cx);
 
@@ -1214,6 +1274,10 @@ impl Workspace {
     }
 
     fn on_action_load_structure_definition(&mut self, _: &LoadStructureDefinition, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_editor(cx).is_none() {
+            return;
+        }
+
         let path = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -1225,70 +1289,115 @@ impl Workspace {
 
         cx.spawn_in(window, async move |_, window| {
             if let Some(path) = path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut p| p.pop()) {
-                match std::fs::read_to_string(&path) {
-                    Ok(contents) => match serde_yaml::from_str::<crate::core::structure::KsyDefinition>(&contents) {
-                        Ok(ksy) => {
-                            window
-                                .update(|window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        let ksy_arc = Arc::new(ksy);
-                                        this.ksy_definition = Some(ksy_arc.clone());
-
-                                        let mut editors = Vec::new();
-                                        for group in this.pane_tree.read(cx).all_groups() {
-                                            for tab in &group.read(cx).tabs {
-                                                if let Some(ed) = tab.content.editor(cx) {
-                                                    editors.push(ed);
-                                                }
-                                            }
-                                        }
-
-                                        for editor_entity in editors {
-                                            set_kaitai_definition_async(&editor_entity, ksy_arc.clone(), cx);
-                                        }
-
-                                        let active_editor = this.active_editor(cx);
-                                        this.left_panel.update(cx, |p, cx| {
-                                            p.set_editor(active_editor, cx);
-                                            p.set_tab(crate::ui::panels::left_panel::LeftPanelTab::Structure, cx);
-                                        });
-                                        this.set_left_panel_visible(true, window, cx);
-                                    });
-                                })
-                                .ok();
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to parse KSY definition: {}", e);
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("Failed to read KSY file at {:?}: {}", path, e);
-                    }
-                }
+                window
+                    .update(|window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.load_structure_definition_from_path(path, window, cx);
+                        });
+                    })
+                    .ok();
             }
         })
         .detach();
     }
 
-    fn on_action_clear_structure_definition(&mut self, _: &ClearStructureDefinition, _: &mut Window, cx: &mut Context<Self>) {
-        self.ksy_definition = None;
-        let mut editors = Vec::new();
-        for group in self.pane_tree.read(cx).all_groups() {
-            for tab in &group.read(cx).tabs {
-                if let Some(ed) = tab.content.editor(cx) {
-                    editors.push(ed);
+    fn on_action_load_structure_definition_from_history(
+        &mut self,
+        action: &crate::actions::LoadStructureDefinitionFromHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_editor(cx).is_none() {
+            return;
+        }
+
+        self.load_structure_definition_from_path(PathBuf::from(&action.path), window, cx);
+    }
+
+    fn load_structure_definition_from_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target_editor) = self.active_editor(cx) else { return };
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| match std::fs::read_to_string(&path) {
+            Ok(contents) => match serde_yaml::from_str::<crate::core::structure::KsyDefinition>(&contents) {
+                Ok(ksy) => {
+                    window
+                        .update(|window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.apply_loaded_structure_definition(target_editor, path, ksy, window, cx);
+                            });
+                        })
+                        .ok();
                 }
+                Err(e) => {
+                    eprintln!("Failed to parse KSY definition: {}", e);
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read KSY file at {:?}: {}", path, e);
             }
-        }
-        for editor_entity in editors {
-            editor_entity.update(cx, |editor, cx| {
-                editor.clear_structure_definition();
-                cx.notify();
+        })
+        .detach();
+    }
+
+    fn apply_loaded_structure_definition(
+        &mut self,
+        target_editor: Entity<Editor>,
+        path: PathBuf,
+        ksy: crate::core::structure::KsyDefinition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ksy = Arc::new(ksy);
+        set_kaitai_definition_async(&target_editor, ksy, cx);
+
+        self.recent_definition_history.record(path);
+        self.publish_recent_history(cx);
+        if self.active_editor(cx).is_some_and(|editor| editor.entity_id() == target_editor.entity_id()) {
+            self.left_panel.update(cx, |panel, cx| {
+                panel.set_editor(Some(target_editor), cx);
+                panel.set_tab(crate::ui::panels::left_panel::LeftPanelTab::Structure, cx);
             });
+            self.set_left_panel_visible(true, window, cx);
         }
-        let active_editor = self.active_editor(cx);
+    }
+
+    fn on_action_remove_structure_definition_from_history(
+        &mut self,
+        action: &crate::actions::RemoveStructureDefinitionFromHistory,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = PathBuf::from(&action.path);
+        if self.recent_definition_history.remove(&path) {
+            self.publish_recent_history(cx);
+        }
+    }
+
+    fn on_action_remove_file_from_history(&mut self, action: &crate::actions::RemoveFileFromHistory, _: &mut Window, cx: &mut Context<Self>) {
+        let path = PathBuf::from(&action.path);
+        if self.recent_file_history.remove(&path) {
+            self.publish_recent_history(cx);
+        }
+    }
+
+    fn on_action_clear_structure_definition(&mut self, _: &ClearStructureDefinition, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let document_path = editor.read(cx).document.read().ok().map(|document| document.path().to_path_buf());
+        editor.update(cx, |editor, cx| {
+            editor.clear_structure_definition();
+            cx.notify();
+        });
+
+        if let Some(path) = document_path {
+            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            service.notify_document_changed(&path, cx);
+        }
+
         self.left_panel.update(cx, |p, cx| {
-            p.set_editor(active_editor, cx);
+            p.set_editor(Some(editor), cx);
         });
         cx.notify();
     }
@@ -1813,6 +1922,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_export_highlights))
             .on_action(cx.listener(Self::on_action_import_highlights))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
+            .on_action(cx.listener(Self::on_action_load_structure_definition_from_history))
+            .on_action(cx.listener(Self::on_action_remove_structure_definition_from_history))
+            .on_action(cx.listener(Self::on_action_remove_file_from_history))
             .on_action(cx.listener(Self::on_action_clear_structure_definition))
             .on_action(cx.listener(Self::on_action_toggle_inline_structure_view))
             .on_action(cx.listener(Self::on_action_open_folder))

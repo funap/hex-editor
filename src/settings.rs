@@ -1,5 +1,6 @@
 use crate::core::appearance::Appearance;
 use crate::core::encoding::Encoding;
+use crate::core::structure::{DefinitionHistory, FileHistory};
 use gpui::App;
 use gpui_component::theme::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,27 @@ pub struct Settings {
     pub appearance: Appearance,
     pub theme_mode: ThemeMode,
     pub default_encoding: Encoding,
+    pub recent_definition_paths: Vec<PathBuf>,
+    pub recent_file_paths: Vec<PathBuf>,
+}
+
+/// Application-wide recent-path histories shared by all workspace windows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecentHistoryState {
+    pub definitions: DefinitionHistory,
+    pub files: FileHistory,
+}
+
+impl gpui::Global for RecentHistoryState {}
+
+impl RecentHistoryState {
+    /// Creates the in-memory histories from persisted settings.
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            definitions: DefinitionHistory::from_paths(settings.recent_definition_paths.clone()),
+            files: FileHistory::from_paths(settings.recent_file_paths.clone()),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -31,6 +53,8 @@ impl Default for Settings {
             appearance: Appearance::default(),
             theme_mode: ThemeMode::Light,
             default_encoding: Encoding::default(),
+            recent_definition_paths: Vec::new(),
+            recent_file_paths: Vec::new(),
         }
     }
 }
@@ -64,10 +88,13 @@ impl Settings {
 
     /// Creates a settings snapshot from the application's current globals.
     pub fn from_app(cx: &App) -> Self {
+        let recent_history = cx.global::<RecentHistoryState>();
         Self {
             appearance: cx.global::<Appearance>().clone(),
             theme_mode: Theme::global(cx).mode,
             default_encoding: *cx.global::<Encoding>(),
+            recent_definition_paths: recent_history.definitions.paths().to_vec(),
+            recent_file_paths: recent_history.files.paths().to_vec(),
         }
     }
 
@@ -117,6 +144,9 @@ impl Settings {
         if !self.appearance.font_size.is_finite() || self.appearance.font_size <= 0.0 {
             self.appearance.font_size = defaults.font_size;
         }
+
+        self.recent_definition_paths = DefinitionHistory::from_paths(self.recent_definition_paths).paths().to_vec();
+        self.recent_file_paths = FileHistory::from_paths(self.recent_file_paths).paths().to_vec();
         self
     }
 }
@@ -225,6 +255,8 @@ mod tests {
             },
             theme_mode: ThemeMode::Dark,
             default_encoding: Encoding::Utf16Le,
+            recent_definition_paths: vec![PathBuf::from("definition.ksy")],
+            recent_file_paths: vec![PathBuf::from("binary.bin")],
         };
 
         settings.save_to(&file.path).expect("save settings");

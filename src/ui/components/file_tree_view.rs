@@ -1,6 +1,6 @@
 use crate::actions::{LoadChildren, OpenDiff, OpenFile, Rename, SelectForCompare, SelectItem};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ui::icon::IconName;
 use autocorrect::ignorer::Ignorer;
@@ -9,17 +9,25 @@ use gpui::{
     SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::ButtonVariants as _,
     h_flex,
     list::ListItem,
     menu::ContextMenuExt,
     tree::{TreeItem, TreeState, tree},
+    v_flex,
 };
 
 actions!(file_tree, [MoveUp, MoveDown]);
 
 const CONTEXT: &str = "TreeStory";
+
+fn path_file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("up", MoveUp, Some(CONTEXT)),
@@ -41,6 +49,7 @@ pub struct FileTreeView {
     root_path: Option<PathBuf>,
     loaded_paths: HashSet<String>,
     items: Vec<TreeItem>,
+    recent_file_paths: Vec<PathBuf>,
     pub pending_compare_path: Option<String>,
 }
 
@@ -110,8 +119,19 @@ impl FileTreeView {
             root_path: None,
             loaded_paths: HashSet::new(),
             items: Vec::new(),
+            recent_file_paths: Vec::new(),
             pending_compare_path: None,
         }
+    }
+
+    /// Updates the recent binary file paths displayed in the empty state.
+    pub fn set_recent_file_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        if self.recent_file_paths == paths {
+            return;
+        }
+
+        self.recent_file_paths = paths.to_vec();
+        cx.notify();
     }
 
     fn load_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -386,11 +406,71 @@ impl Render for FileTreeView {
                     }))
                     .into_any_element();
 
+                let mut empty_actions = v_flex().w_full().items_center().child(open_btn);
+                if !self.recent_file_paths.is_empty() {
+                    let recent_items = self
+                        .recent_file_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            let path = path.to_string_lossy().into_owned();
+                            let label = path_file_name(Path::new(&path));
+                            let open_path = path.clone();
+                            let remove_path = path.clone();
+
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        gpui_component::button::Button::new(SharedString::from(format!("recent-file-{index}")))
+                                            .icon(IconName::Binary)
+                                            .label(label)
+                                            .ghost()
+                                            .compact()
+                                            .with_size(gpui_component::Size::XSmall)
+                                            .w_full()
+                                            .justify_start()
+                                            .tooltip(path.clone())
+                                            .on_click(cx.listener(move |_, _, window, cx| {
+                                                window.dispatch_action(Box::new(OpenFile { path: open_path.clone() }), cx);
+                                            })),
+                                    ),
+                                )
+                                .child(
+                                    gpui_component::button::Button::new(SharedString::from(format!("remove-recent-file-{index}")))
+                                        .ghost()
+                                        .icon(IconName::Close)
+                                        .with_size(gpui_component::Size::XSmall)
+                                        .tooltip("Remove from recents")
+                                        .on_click(cx.listener(move |_, _, window, cx| {
+                                            window.dispatch_action(Box::new(crate::actions::RemoveFileFromHistory { path: remove_path.clone() }), cx);
+                                        })),
+                                )
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>();
+
+                    empty_actions = empty_actions.child(
+                        v_flex()
+                            .w_full()
+                            .mt_4()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(theme.border.opacity(0.6))
+                            .items_start()
+                            .gap_1()
+                            .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
+                            .children(recent_items),
+                    );
+                }
+
                 crate::ui::style::panel_empty_state(
                     IconName::FolderOpen,
                     "No Folder Opened",
                     Some("Open a directory to explore files"),
-                    Some(open_btn),
+                    Some(empty_actions.into_any_element()),
                     theme,
                 )
                 .into_any_element()

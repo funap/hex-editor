@@ -4,12 +4,20 @@ use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Sizable as _, button::ButtonVariants as _, h_flex};
+use gpui_component::{ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, button::ButtonVariants as _, h_flex, v_flex};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
 
 const CONTEXT: &str = "StructTreeView";
+
+fn path_from_string_file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".to_string())
+}
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -39,6 +47,7 @@ pub struct StructTreeView {
     pub scroll_handle: UniformListScrollHandle,
     pub focus_handle: FocusHandle,
     pub selected_index: Option<usize>,
+    pub recent_definition_paths: Vec<PathBuf>,
     last_parse_id: Option<(String, usize, usize, usize, usize, bool)>,
     last_selection_cursor: Option<usize>,
     last_selection_scan_len: usize,
@@ -79,6 +88,7 @@ impl StructTreeView {
             scroll_handle,
             focus_handle,
             selected_index: None,
+            recent_definition_paths: Vec::new(),
             last_parse_id: None,
             last_selection_cursor: None,
             last_selection_scan_len: 0,
@@ -117,6 +127,16 @@ impl StructTreeView {
             self.last_parse_id = None;
             self.set_parse_result(None, cx);
         }
+        cx.notify();
+    }
+
+    /// Updates the recent structure definition paths displayed in the empty state.
+    pub fn set_definition_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        if self.recent_definition_paths == paths {
+            return;
+        }
+
+        self.recent_definition_paths = paths.to_vec();
         cx.notify();
     }
 
@@ -660,6 +680,7 @@ impl Render for StructTreeView {
         let show_parsing_placeholder = is_parsing && self.flattened_fields.is_empty();
         let is_focused = self.focus_handle.is_focused(window);
         let theme = cx.theme();
+        let has_active_editor = self.editor.is_some();
         let parse_progress = self.editor.as_ref().and_then(|editor| {
             let editor = editor.read(cx);
             if !editor.is_parsing_structure && !editor.is_finalizing_structure {
@@ -718,7 +739,7 @@ impl Render for StructTreeView {
                     )
                     .into_any_element(),
             )
-        } else {
+        } else if has_active_editor {
             Some(
                 gpui_component::button::Button::new("load-structure-header-btn")
                     .ghost()
@@ -734,6 +755,8 @@ impl Render for StructTreeView {
                     }))
                     .into_any_element(),
             )
+        } else {
+            None
         };
 
         let header = crate::ui::style::panel_header("STRUCTURE", is_focused, theme, None, header_actions);
@@ -779,23 +802,108 @@ impl Render for StructTreeView {
                 )
                 .into_any_element()
             } else if is_empty {
-                let load_btn = gpui_component::button::Button::new("load-ksy-btn")
-                    .label("Load Structure (.ksy)")
-                    .primary()
-                    .with_size(gpui_component::Size::Small)
-                    .on_click(cx.listener(|_, _, window, cx| {
-                        window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
-                    }))
-                    .into_any_element();
+                let recent_section = if !self.recent_definition_paths.is_empty() {
+                    let recent_buttons = self
+                        .recent_definition_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            let path = path.to_string_lossy().into_owned();
+                            let label = path_from_string_file_name(&path);
+                            let load_path = path.clone();
+                            let remove_path = path.clone();
 
-                crate::ui::style::panel_empty_state(
-                    IconName::ListTree,
-                    "No Structure Loaded",
-                    Some("Open a Kaitai Struct (.ksy) YAML file to inspect binary fields"),
-                    Some(load_btn),
-                    theme,
-                )
-                .into_any_element()
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        gpui_component::button::Button::new(SharedString::from(format!("recent-definition-{index}")))
+                                            .icon(IconName::FileCode)
+                                            .label(label)
+                                            .ghost()
+                                            .compact()
+                                            .with_size(gpui_component::Size::XSmall)
+                                            .w_full()
+                                            .justify_start()
+                                            .disabled(!has_active_editor)
+                                            .tooltip(if has_active_editor { path.clone() } else { "Open a file first".to_string() })
+                                            .on_click(cx.listener(move |_, _, window, cx| {
+                                                window.dispatch_action(
+                                                    Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                                )
+                                .child(
+                                    gpui_component::button::Button::new(SharedString::from(format!("remove-recent-definition-{index}")))
+                                        .ghost()
+                                        .icon(IconName::Close)
+                                        .with_size(gpui_component::Size::XSmall)
+                                        .tooltip("Remove from recents")
+                                        .on_click(cx.listener(move |_, _, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(crate::actions::RemoveStructureDefinitionFromHistory { path: remove_path.clone() }),
+                                                cx,
+                                            );
+                                        })),
+                                )
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>();
+
+                    Some(
+                        v_flex()
+                            .w_full()
+                            .mt_4()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(theme.border.opacity(0.6))
+                            .items_start()
+                            .gap_1()
+                            .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
+                            .children(recent_buttons)
+                            .into_any_element(),
+                    )
+                } else {
+                    None
+                };
+
+                if !has_active_editor {
+                    crate::ui::style::panel_empty_state(
+                        IconName::File,
+                        "No File Open",
+                        Some("Open a binary file before loading a structure definition"),
+                        recent_section,
+                        theme,
+                    )
+                    .into_any_element()
+                } else {
+                    let load_btn = gpui_component::button::Button::new("load-ksy-btn")
+                        .label("Load Definition...")
+                        .primary()
+                        .with_size(gpui_component::Size::Small)
+                        .on_click(cx.listener(|_, _, window, cx| {
+                            window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
+                        }))
+                        .into_any_element();
+
+                    let mut load_actions = v_flex().w_full().items_center().child(load_btn);
+                    if let Some(recent_section) = recent_section {
+                        load_actions = load_actions.child(recent_section);
+                    }
+
+                    crate::ui::style::panel_empty_state(
+                        IconName::ListTree,
+                        "No Structure Loaded",
+                        Some("Open a Kaitai Struct (.ksy) YAML file to inspect binary fields"),
+                        Some(load_actions.into_any_element()),
+                        theme,
+                    )
+                    .into_any_element()
+                }
             } else {
                 let focus_handle = self.focus_handle.clone();
                 uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {

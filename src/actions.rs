@@ -153,6 +153,30 @@ pub struct ShowChecksumTab;
 #[action(namespace = app)]
 pub struct LoadStructureDefinition;
 
+/// Loads a previously selected structure definition path.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct LoadStructureDefinitionFromHistory {
+    pub path: String,
+}
+
+/// Removes a structure definition path from the recent history.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveStructureDefinitionFromHistory {
+    pub path: String,
+}
+
+/// Removes a binary file path from the recent history.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveFileFromHistory {
+    pub path: String,
+}
+
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = app)]
 pub struct ClearStructureDefinition;

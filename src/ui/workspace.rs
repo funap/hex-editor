@@ -12,6 +12,7 @@ use crate::ui::panels::left_panel::{LeftPanel, LeftPanelTab};
 
 use crate::app_state::{AppState, InsertModeState};
 use crate::core::editor::Editor;
+use crate::core::encoding::Encoding;
 use crate::ui::components::status_bar::StatusBar;
 use gpui_component::Root;
 use gpui_component::menu::AppMenuBar;
@@ -453,7 +454,12 @@ impl Workspace {
     }
 
     fn open_editor_panel(&mut self, document: Arc<RwLock<crate::core::document::Document>>, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = cx.new(|_| Editor::new(document));
+        let default_encoding = *cx.global::<Encoding>();
+        let editor = cx.new(|_| {
+            let mut editor = Editor::new(document);
+            editor.set_encoding(default_encoding);
+            editor
+        });
 
         if let Some(ksy) = &self.ksy_definition {
             set_kaitai_definition_async(&editor, ksy.clone(), cx);

@@ -1,16 +1,34 @@
 // This file will be responsible for converting byte sequences into strings corresponding to a specified encoding
 // (e.g., UTF-8, Shift JIS). It will also include logic for detecting the encoding.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Encoding {
+    #[serde(rename = "ascii")]
     #[default]
     Ascii,
+    #[serde(rename = "utf-8")]
     Utf8,
+    #[serde(rename = "utf-16-le")]
     Utf16Le,
+    #[serde(rename = "utf-16-be")]
     Utf16Be,
 }
 
+impl gpui::Global for Encoding {}
+
 impl Encoding {
+    /// Returns the display label used by the UI and settings menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ascii => "ASCII",
+            Self::Utf8 => "UTF-8",
+            Self::Utf16Le => "UTF-16 LE",
+            Self::Utf16Be => "UTF-16 BE",
+        }
+    }
+
     /// Encodes one Unicode scalar value using this display encoding.
     pub fn encode_char(&self, character: char) -> Option<Vec<u8>> {
         match self {

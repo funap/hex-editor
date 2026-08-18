@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 use crate::actions::{NextDifference, PrevDifference, ToggleSyncScroll};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
+use crate::core::encoding::Encoding;
 use crate::ui::components::hex_view::{HexView, HexViewEvent, HorizontalScrollTarget, ScrollColumn};
 
 const CONTEXT: &str = "DiffPanel";
@@ -40,8 +41,17 @@ pub struct DiffPanel {
 
 impl DiffPanel {
     pub fn new(left_document: Arc<RwLock<Document>>, right_document: Arc<RwLock<Document>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let left_editor = cx.new(|_cx| Editor::new(left_document.clone()));
-        let right_editor = cx.new(|_cx| Editor::new(right_document.clone()));
+        let default_encoding = *cx.global::<Encoding>();
+        let left_editor = cx.new(|_cx| {
+            let mut editor = Editor::new(left_document.clone());
+            editor.set_encoding(default_encoding);
+            editor
+        });
+        let right_editor = cx.new(|_cx| {
+            let mut editor = Editor::new(right_document.clone());
+            editor.set_encoding(default_encoding);
+            editor
+        });
         let appearance = cx.global::<Appearance>().clone();
         let left_view = cx.new(|cx| {
             HexView::new(left_editor, window, cx)

@@ -1,10 +1,15 @@
 use crate::core::appearance::Appearance;
+use crate::core::encoding::Encoding;
 use gpui::prelude::*;
-use gpui::{Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div};
+use gpui::{
+    Action, App, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div,
+};
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Sizable as _, Size, StyledExt,
+    button::Button,
     dock::{Panel, PanelEvent},
     input::{self, Input, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     switch::Switch,
     theme::{Theme, ThemeMode},
 };
@@ -48,6 +53,10 @@ impl SettingsPanel {
         }));
 
         subscriptions.push(cx.observe_global::<Theme>(|_, cx| {
+            cx.notify();
+        }));
+
+        subscriptions.push(cx.observe_global::<Encoding>(|_, cx| {
             cx.notify();
         }));
 
@@ -101,36 +110,76 @@ impl SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let container = div().p_4().flex().flex_col().gap_4();
+        let container = div().p_4().flex().flex_col().gap_6();
         let is_dark_mode = cx.theme().is_dark();
 
         container
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_action_update_setting_input))
-            .child(div().child("Appearance").font_weight(gpui::FontWeight::BOLD).mb_2())
-            .child(div().flex().items_center().justify_between().child(div().child("Dark Mode")).child(
-                Switch::new("dark-mode").checked(is_dark_mode).on_click(|checked, window, cx| {
-                    let mode = if *checked { ThemeMode::Dark } else { ThemeMode::Light };
-                    crate::theme::set_mode(mode, Some(window), cx);
-                    crate::settings::save_current(cx);
-                }),
-            ))
-            .child(div().child("Editor").font_weight(gpui::FontWeight::BOLD).mb_2())
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().child("Font Family"))
-                    .child(div().w_48().child(Input::new(&self.font_family_input))),
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child("Appearance"))
+                    .child(div().flex().items_center().gap_4().child(div().w_24().child("Dark Mode")).child(
+                        Switch::new("dark-mode").checked(is_dark_mode).on_click(|checked, window, cx| {
+                            let mode = if *checked { ThemeMode::Dark } else { ThemeMode::Light };
+                            crate::theme::set_mode(mode, Some(window), cx);
+                            crate::settings::save_current(cx);
+                        }),
+                    )),
             )
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().child("Font Size"))
-                    .child(div().w_48().child(Input::new(&self.font_size_input))),
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child("Editor"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .child(div().w_32().child("Font Family"))
+                            .child(div().w_48().child(Input::new(&self.font_family_input))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .child(div().w_32().child("Font Size"))
+                            .child(div().w_48().child(Input::new(&self.font_size_input))),
+                    )
+                    .child({
+                        let default_encoding = *cx.global::<Encoding>();
+                        let encoding_options = [Encoding::Ascii, Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be];
+
+                        div().flex().items_center().gap_4().child(div().w_32().child("Default Encoding")).child(
+                            div().w_48().child(
+                                Button::new("default-encoding")
+                                    .label(default_encoding.label())
+                                    .outline()
+                                    .dropdown_caret(true)
+                                    .with_size(Size::Small)
+                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
+                                        encoding_options.iter().copied().fold(menu, |menu, encoding| {
+                                            menu.item(
+                                                PopupMenuItem::new(encoding.label())
+                                                    .checked(encoding == default_encoding)
+                                                    .on_click(move |_, _, cx| {
+                                                        cx.update_global::<Encoding, _>(|current, _| {
+                                                            *current = encoding;
+                                                        });
+                                                        crate::settings::save_current(cx);
+                                                    }),
+                                            )
+                                        })
+                                    }),
+                            ),
+                        )
+                    }),
             )
     }
 }

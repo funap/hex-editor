@@ -62,6 +62,7 @@ fn init_app_state(cx: &mut App) {
 
     app_state::AppState::init(cx);
     cx.set_global(settings.appearance.clone());
+    cx.set_global(settings.default_encoding);
 
     gpui_component::init(cx);
     theme::init(cx);

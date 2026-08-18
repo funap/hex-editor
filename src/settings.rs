@@ -1,4 +1,5 @@
 use crate::core::appearance::Appearance;
+use crate::core::encoding::Encoding;
 use gpui::App;
 use gpui_component::theme::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ static SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub struct Settings {
     pub appearance: Appearance,
     pub theme_mode: ThemeMode,
+    pub default_encoding: Encoding,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
         Self {
             appearance: Appearance::default(),
             theme_mode: ThemeMode::Light,
+            default_encoding: Encoding::default(),
         }
     }
 }
@@ -64,6 +67,7 @@ impl Settings {
         Self {
             appearance: cx.global::<Appearance>().clone(),
             theme_mode: Theme::global(cx).mode,
+            default_encoding: *cx.global::<Encoding>(),
         }
     }
 
@@ -220,6 +224,7 @@ mod tests {
                 font_size: 18.0,
             },
             theme_mode: ThemeMode::Dark,
+            default_encoding: Encoding::Utf16Le,
         };
 
         settings.save_to(&file.path).expect("save settings");
@@ -237,6 +242,7 @@ mod tests {
         assert_eq!(settings.appearance.font_family, "Fira Code");
         assert_eq!(settings.appearance.font_size, Appearance::default().font_size);
         assert_eq!(settings.theme_mode, ThemeMode::Light);
+        assert_eq!(settings.default_encoding, Encoding::default());
     }
 
     #[test]

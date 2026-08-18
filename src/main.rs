@@ -9,11 +9,11 @@ mod app_state;
 mod assets;
 mod core;
 mod service;
+mod settings;
 mod theme;
 mod ui;
 
 use crate::assets::Assets;
-use crate::core::appearance::Appearance;
 use ui::workspace::Workspace;
 
 fn main() {
@@ -58,11 +58,15 @@ fn parse_cli_args() -> (Vec<PathBuf>, Option<PathBuf>) {
 
 /// Initializes core application state, themes, and UI components.
 fn init_app_state(cx: &mut App) {
+    let settings = settings::Settings::load();
+
     app_state::AppState::init(cx);
-    cx.set_global(Appearance::default());
+    cx.set_global(settings.appearance.clone());
 
     gpui_component::init(cx);
     theme::init(cx);
+    theme::set_mode(settings.theme_mode, None, cx);
+    settings::register_quit_handler(cx);
     ui::workspace::init(cx);
     ui::components::file_tree_view::init(cx);
     ui::components::search_bar::init(cx);

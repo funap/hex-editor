@@ -57,6 +57,7 @@ impl SettingsPanel {
                 cx.update_global::<Appearance, _>(|appearance, _| {
                     appearance.font_family = value;
                 });
+                crate::settings::save_current(cx);
             }
         }));
 
@@ -67,6 +68,7 @@ impl SettingsPanel {
                     cx.update_global::<Appearance, _>(|appearance, _| {
                         appearance.font_size = size;
                     });
+                    crate::settings::save_current(cx);
                 }
             }
         }));
@@ -110,6 +112,7 @@ impl Render for SettingsPanel {
                 Switch::new("dark-mode").checked(is_dark_mode).on_click(|checked, window, cx| {
                     let mode = if *checked { ThemeMode::Dark } else { ThemeMode::Light };
                     crate::theme::set_mode(mode, Some(window), cx);
+                    crate::settings::save_current(cx);
                 }),
             ))
             .child(div().child("Editor").font_weight(gpui::FontWeight::BOLD).mb_2())

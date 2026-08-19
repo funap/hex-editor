@@ -425,7 +425,7 @@ impl Render for FileTreeView {
                                 .child(
                                     div().flex_1().min_w_0().child(
                                         gpui_component::button::Button::new(SharedString::from(format!("recent-file-{index}")))
-                                            .icon(IconName::Binary)
+                                            .icon(IconName::File)
                                             .label(label)
                                             .ghost()
                                             .compact()

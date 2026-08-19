@@ -408,7 +408,7 @@ impl Render for HighlightPanel {
             .child(
                 Button::new("add-hl")
                     .ghost()
-                    .icon(IconName::Plus)
+                    .icon(IconName::BookmarkPlus)
                     .with_size(Size::XSmall)
                     .tooltip("Add highlight at current selection / cursor")
                     .disabled(!has_editor)
@@ -419,7 +419,7 @@ impl Render for HighlightPanel {
             .child(
                 Button::new("import-hl")
                     .ghost()
-                    .icon(IconName::FolderOpen)
+                    .icon(IconName::Import)
                     .with_size(Size::XSmall)
                     .tooltip("Import highlights from JSON file")
                     .disabled(!has_editor)
@@ -430,7 +430,7 @@ impl Render for HighlightPanel {
             .child(
                 Button::new("export-hl")
                     .ghost()
-                    .icon(IconName::ExternalLink)
+                    .icon(IconName::HardDriveDownload)
                     .with_size(Size::XSmall)
                     .tooltip("Export highlights to JSON file")
                     .disabled(!has_editor || count == 0)
@@ -455,7 +455,7 @@ impl Render for HighlightPanel {
         // Content body
         let body = if !has_editor {
             crate::ui::style::panel_empty_state(
-                IconName::Highlighter,
+                IconName::Bookmark,
                 "No Active File",
                 Some("Open a binary file to view and manage highlights"),
                 None,
@@ -464,9 +464,9 @@ impl Render for HighlightPanel {
             .into_any_element()
         } else if highlights.is_empty() {
             crate::ui::style::panel_empty_state(
-                IconName::Highlighter,
+                IconName::Bookmark,
                 "No Highlights",
-                Some("Select bytes in hex view and choose a color, or click '+' above to add"),
+                Some("Select bytes in hex view and choose a color, or click the add icon above"),
                 None,
                 &theme,
             )
@@ -601,7 +601,7 @@ impl HighlightPanel {
                     .child(
                         Button::new(SharedString::from(format!("nav-{}", item_id)))
                             .ghost()
-                            .icon(IconName::Search)
+                            .icon(IconName::Binoculars)
                             .with_size(Size::XSmall)
                             .tooltip("Go to offset")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -612,7 +612,7 @@ impl HighlightPanel {
                     .child(
                         Button::new(SharedString::from(format!("edit-{}", item_id)))
                             .ghost()
-                            .icon(IconName::Settings2)
+                            .icon(IconName::PenLine)
                             .with_size(Size::XSmall)
                             .tooltip("Edit comment")
                             .on_click(cx.listener({
@@ -625,7 +625,7 @@ impl HighlightPanel {
                     .child(
                         Button::new(SharedString::from(format!("del-{}", item_id)))
                             .ghost()
-                            .icon(IconName::Close)
+                            .icon(IconName::BookmarkX)
                             .with_size(Size::XSmall)
                             .tooltip("Delete highlight")
                             .on_click(cx.listener({

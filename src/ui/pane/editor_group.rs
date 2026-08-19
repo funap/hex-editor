@@ -538,7 +538,7 @@ impl Render for EditorGroup {
                                     .child(
                                         Icon::new(if is_read_only { IconName::Eye } else { IconName::File })
                                             .size(px(14.0))
-                                            .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
+                                            .text_color(if is_active { theme.primary } else { theme.muted_foreground }),
                                     )
                                     .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
                                     .child(
@@ -568,7 +568,7 @@ impl Render for EditorGroup {
                                                         .items_center()
                                                         .justify_center()
                                                         .group_hover(close_group.clone(), |style| style.invisible())
-                                                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent)),
+                                                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.primary)),
                                                 )
                                             })
                                             .child(

@@ -61,7 +61,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                     s.bg(theme.background)
                         .text_color(theme.foreground)
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(theme.accent))
+                        .child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(theme.primary))
                 })
                 .when(!is_active, |s| {
                     s.bg(tab_bar_bg)
@@ -106,7 +106,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 .child(
                     Icon::new(if is_read_only { IconName::Eye } else { IconName::File })
                         .size(px(14.0))
-                        .text_color(if is_active { theme.accent } else { theme.muted_foreground }),
+                        .text_color(if is_active { theme.primary } else { theme.muted_foreground }),
                 )
                 .child(div().flex_1().truncate().text_sm().child(title))
                 .child(
@@ -124,7 +124,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                             window.dispatch_action(Box::new(CloseActivePanel), cx);
                         })
                         .child(if is_dirty && !is_active {
-                            div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.accent).into_any_element()
+                            div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.primary).into_any_element()
                         } else {
                             Icon::new(IconName::Close).size(px(12.0)).text_color(theme.muted_foreground).into_any_element()
                         }),

@@ -119,13 +119,6 @@ impl Render for StatusBar {
             ("0x0 (0)".to_string(), "0x0".to_string())
         };
 
-        let is_dirty = if let Some(editor) = &active_editor {
-            let editor = editor.read(cx);
-            editor.document.read().map(|d| d.is_dirty()).unwrap_or(false)
-        } else {
-            false
-        };
-
         let is_read_only = if let Some(editor) = &active_editor {
             editor.read(cx).is_read_only()
         } else {
@@ -133,10 +126,8 @@ impl Render for StatusBar {
         };
         let file_mode_label = if is_read_only { "Read-only" } else { "Writable" };
         let file_mode_icon = if is_read_only { IconName::Eye } else { IconName::File };
-        let file_mode_color = if is_read_only { theme.muted_foreground } else { theme.green };
         let insert_mode = InsertModeState::is_enabled(cx);
         let edit_mode_label = if insert_mode { "Insert" } else { "Overwrite" };
-        let edit_mode_color = if insert_mode { theme.accent } else { theme.muted_foreground };
 
         let radix_badge_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
@@ -275,74 +266,6 @@ impl Render for StatusBar {
                     .items_center()
                     .gap_2()
                     .text_xs()
-                    .when(active_editor.is_some(), |el| {
-                        el.child(
-                            div()
-                                .id("status-file-mode")
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .text_color(file_mode_color)
-                                .hover(|s| s.bg(theme.muted.opacity(0.4)))
-                                .tooltip(move |_window, cx| {
-                                    cx.new(|_| {
-                                        gpui_component::tooltip::Tooltip::new(if is_read_only {
-                                            "Read-only. Click to make this file writable"
-                                        } else {
-                                            "Writable. Click to make this file read-only"
-                                        })
-                                    })
-                                    .into()
-                                })
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleReadOnly), cx);
-                                })
-                                .child(Icon::new(file_mode_icon).size(px(13.0)))
-                                .child(file_mode_label),
-                        )
-                    })
-                    .when(active_editor.is_some(), |el| {
-                        el.child(
-                            div()
-                                .id("status-edit-mode")
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .text_color(edit_mode_color)
-                                .hover(|s| s.bg(theme.muted.opacity(0.4)))
-                                .tooltip(move |_window, cx| {
-                                    cx.new(|_| {
-                                        gpui_component::tooltip::Tooltip::new(if insert_mode {
-                                            "Insert Mode. Click to switch to Overwrite Mode"
-                                        } else {
-                                            "Overwrite Mode. Click to switch to Insert Mode"
-                                        })
-                                    })
-                                    .into()
-                                })
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleInsertMode), cx);
-                                })
-                                .child(edit_mode_label),
-                        )
-                    })
-                    .when(is_dirty, |el| {
-                        el.child(
-                            div()
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .bg(theme.yellow.opacity(0.2))
-                                .text_color(theme.yellow)
-                                .font_semibold()
-                                .child("● Modified"),
-                        )
-                    })
                     .child(
                         div()
                             .id("status-size-pill")
@@ -361,6 +284,39 @@ impl Render for StatusBar {
                                     .child(format!("Size: {}", format_size_friendly(total_size))),
                             ),
                     )
+                    .when(active_editor.is_some(), |el| {
+                        el.child(
+                            Button::new("status-file-mode-btn")
+                                .icon(file_mode_icon)
+                                .label(file_mode_label)
+                                .ghost()
+                                .with_size(Size::XSmall)
+                                .tooltip(if is_read_only {
+                                    "Read-only. Click to make this file writable"
+                                } else {
+                                    "Writable. Click to make this file read-only"
+                                })
+                                .on_click(cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleReadOnly), cx);
+                                })),
+                        )
+                    })
+                    .when(active_editor.is_some(), |el| {
+                        el.child(div().w_px().h_3().bg(theme.border)).child(
+                            Button::new("status-edit-mode-btn")
+                                .label(edit_mode_label)
+                                .ghost()
+                                .with_size(Size::XSmall)
+                                .tooltip(if insert_mode {
+                                    "Insert Mode. Click to switch to Overwrite Mode"
+                                } else {
+                                    "Overwrite Mode. Click to switch to Insert Mode"
+                                })
+                                .on_click(cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleInsertMode), cx);
+                                })),
+                        )
+                    })
                     .when_some(radix_badge_info, |el, radix_label| {
                         el.child(div().w_px().h_3().bg(theme.border)).child(
                             Button::new("status-radix-btn")

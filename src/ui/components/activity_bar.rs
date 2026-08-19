@@ -66,10 +66,10 @@ impl Render for ActivityBar {
                     .child(self.render_icon(Activity::Files, IconName::Files, "Files", cx))
                     .child(self.render_icon(Activity::Search, IconName::Search, "Search", cx))
                     .child(self.render_icon(Activity::Structure, IconName::ListTree, "Structure", cx))
-                    .child(self.render_icon(Activity::Inspector, IconName::SquareMousePointer, "Inspector", cx))
+                    .child(self.render_icon(Activity::Inspector, IconName::Binary, "Inspector", cx))
                     .child(self.render_icon(Activity::Map, IconName::Map, "Map", cx))
                     .child(self.render_icon(Activity::Checksum, IconName::Hash, "Checksum", cx))
-                    .child(self.render_icon(Activity::Highlights, IconName::Highlighter, "Highlights", cx)),
+                    .child(self.render_icon(Activity::Highlights, IconName::Bookmark, "Highlights", cx)),
             )
             .child(
                 div()

@@ -8,7 +8,7 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
-use gpui_component::{ActiveTheme, Icon, Sizable as _, Size, StyledExt};
+use gpui_component::{ActiveTheme, Sizable as _, Size, StyledExt};
 
 pub enum StatusBarEvent {
     #[allow(dead_code)]

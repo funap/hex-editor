@@ -12,6 +12,7 @@ pub enum Activity {
     Map = 4,
     Checksum = 5,
     Highlights = 6,
+    Strings = 7,
 }
 
 pub enum ActivityBarEvent {
@@ -65,6 +66,7 @@ impl Render for ActivityBar {
                     .items_center()
                     .child(self.render_icon(Activity::Files, IconName::Files, "Files", cx))
                     .child(self.render_icon(Activity::Search, IconName::Search, "Search", cx))
+                    .child(self.render_icon(Activity::Strings, IconName::TextInitial, "Strings", cx))
                     .child(self.render_icon(Activity::Structure, IconName::ListTree, "Structure", cx))
                     .child(self.render_icon(Activity::Inspector, IconName::Binary, "Inspector", cx))
                     .child(self.render_icon(Activity::Map, IconName::Map, "Map", cx))

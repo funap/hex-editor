@@ -7,6 +7,7 @@ pub mod highlight_panel;
 pub mod search_bar;
 pub mod search_panel;
 pub mod status_bar;
+pub mod strings_panel;
 pub mod struct_tree_view;
 pub mod tab_bar;
 pub mod title_bar;

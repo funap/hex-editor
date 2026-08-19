@@ -293,7 +293,7 @@ impl Render for SearchPanel {
         let actions = h_flex().items_center().gap_1().child(
             Button::new("clear-search")
                 .ghost()
-                .icon(IconName::Close)
+                .icon(IconName::Eraser)
                 .with_size(Size::XSmall)
                 .tooltip("Clear results")
                 .disabled(!has_editor || (self.results.is_empty() && self.last_query.is_empty()))

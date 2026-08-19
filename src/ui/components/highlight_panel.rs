@@ -441,7 +441,7 @@ impl Render for HighlightPanel {
             .child(
                 Button::new("clear-hl")
                     .ghost()
-                    .icon(IconName::Delete)
+                    .icon(IconName::Eraser)
                     .with_size(Size::XSmall)
                     .tooltip("Clear all highlights")
                     .disabled(!has_editor || count == 0)

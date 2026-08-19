@@ -14,4 +14,5 @@ pub mod layout;
 pub mod radix;
 pub mod search;
 pub mod selection;
+pub mod strings;
 pub mod structure;

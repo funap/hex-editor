@@ -927,11 +927,11 @@ impl StructTreeView {
 
     fn auto_fit_column(&mut self, column: StructureColumn, cx: &mut Context<Self>) {
         let header = match column {
-            StructureColumn::Field => "FIELD",
+            StructureColumn::Field => "Field",
             StructureColumn::Address => "Address",
-            StructureColumn::Type => "TYPE",
-            StructureColumn::Size => "SIZE",
-            StructureColumn::Value => "VALUE",
+            StructureColumn::Type => "Type",
+            StructureColumn::Size => "Size",
+            StructureColumn::Value => "Value",
         };
         let mut max_width = Self::estimated_text_width(header);
         if matches!(column, StructureColumn::Field) {
@@ -1369,24 +1369,29 @@ impl Render for StructTreeView {
                                 .items_center()
                                 .gap_1()
                                 .child(
-                                    div().flex_1().min_w_0().child(
-                                        gpui_component::button::Button::new(SharedString::from(format!("recent-definition-{index}")))
-                                            .icon(IconName::FileCode)
-                                            .label(label)
-                                            .ghost()
-                                            .compact()
-                                            .with_size(gpui_component::Size::XSmall)
-                                            .w_full()
-                                            .justify_start()
-                                            .disabled(!has_active_editor)
-                                            .tooltip(if has_active_editor { path.clone() } else { "Open a file first".to_string() })
-                                            .on_click(cx.listener(move |_, _, window, cx| {
-                                                window.dispatch_action(
-                                                    Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
-                                                    cx,
-                                                );
-                                            })),
-                                    ),
+                                    h_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_5()
+                                        .items_center()
+                                        .gap_1()
+                                        .px_1()
+                                        .cursor_pointer()
+                                        .when(!has_active_editor, |style| style.opacity(0.5))
+                                        .hover(|style| style.bg(theme.muted.opacity(0.4)))
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |_, _, window, cx| {
+                                                if has_active_editor {
+                                                    window.dispatch_action(
+                                                        Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        )
+                                        .child(Icon::new(IconName::FileCode).with_size(gpui_component::Size::XSmall))
+                                        .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )
                                 .child(
                                     gpui_component::button::Button::new(SharedString::from(format!("remove-recent-definition-{index}")))
@@ -1406,16 +1411,21 @@ impl Render for StructTreeView {
                         .collect::<Vec<_>>();
 
                     Some(
-                        v_flex()
+                        h_flex()
                             .w_full()
-                            .mt_4()
-                            .pt_3()
-                            .border_t_1()
-                            .border_color(theme.border.opacity(0.6))
-                            .items_start()
-                            .gap_1()
-                            .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
-                            .children(recent_buttons)
+                            .justify_start()
+                            .child(
+                                v_flex()
+                                    .w(relative(0.95))
+                                    .mt_4()
+                                    .pt_3()
+                                    .border_t_1()
+                                    .border_color(theme.border.opacity(0.6))
+                                    .items_start()
+                                    .gap_1()
+                                    .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
+                                    .children(recent_buttons),
+                            )
                             .into_any_element(),
                     )
                 } else {
@@ -1478,7 +1488,7 @@ impl Render for StructTreeView {
                             .items_center()
                             .gap_1()
                             .child(div().flex_shrink_0().w(px(TREE_INDICATOR_WIDTH)).h(px(TREE_INDICATOR_WIDTH)))
-                            .child(div().flex_1().min_w_0().truncate().whitespace_nowrap().child("FIELD"))
+                            .child(div().flex_1().min_w_0().truncate().whitespace_nowrap().child("Field"))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {

@@ -310,6 +310,7 @@ impl Workspace {
                 [
                     file_tree.read(cx).focus_handle(cx),
                     left_read.search_panel.read(cx).focus_handle(cx),
+                    left_read.strings_panel.read(cx).focus_handle(cx),
                     left_read.struct_tree.read(cx).focus_handle(cx),
                     left_read.data_inspector.read(cx).focus_handle(cx),
                     left_read.visual_map.read(cx).focus_handle(cx),
@@ -369,6 +370,20 @@ impl Workspace {
             &left_panel,
             |this, _, event: &crate::ui::components::search_panel::SearchPanelEvent, cx| match event {
                 crate::ui::components::search_panel::SearchPanelEvent::NavigateTo { offset, .. } => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.scroll_to_byte(*offset, cx);
+                        });
+                    }
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &left_panel,
+            |this, _, event: &crate::ui::components::strings_panel::StringsPanelEvent, cx| match event {
+                crate::ui::components::strings_panel::StringsPanelEvent::NavigateTo { offset, .. } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
                             panel.scroll_to_byte(*offset, cx);
@@ -1189,6 +1204,10 @@ impl Workspace {
         self.select_activity(Activity::Files, window, cx);
     }
 
+    fn on_action_show_strings_tab(&mut self, _: &ShowStringsTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_activity(Activity::Strings, window, cx);
+    }
+
     fn on_action_show_structure_tab(&mut self, _: &ShowStructureTab, window: &mut Window, cx: &mut Context<Self>) {
         self.select_activity(Activity::Structure, window, cx);
     }
@@ -1280,6 +1299,7 @@ impl Workspace {
         let tab = match activity {
             Activity::Files => LeftPanelTab::Files,
             Activity::Search => LeftPanelTab::Search,
+            Activity::Strings => LeftPanelTab::Strings,
             Activity::Structure => LeftPanelTab::Structure,
             Activity::Inspector => LeftPanelTab::Inspector,
             Activity::Map => LeftPanelTab::Map,
@@ -1847,6 +1867,7 @@ impl Workspace {
     fn on_focus_changed(&self, cx: &mut Context<Self>) {
         self.left_panel.update(cx, |panel, cx| {
             panel.file_tree.update(cx, |_, cx| cx.notify());
+            panel.strings_panel.update(cx, |_, cx| cx.notify());
             panel.struct_tree.update(cx, |_, cx| cx.notify());
             panel.data_inspector.update(cx, |_, cx| cx.notify());
             panel.visual_map.update(cx, |_, cx| cx.notify());
@@ -1866,6 +1887,7 @@ impl Workspace {
                 match active_tab {
                     LeftPanelTab::Files => activity_bar.set_activity(Some(Activity::Files), cx),
                     LeftPanelTab::Search => activity_bar.set_activity(Some(Activity::Search), cx),
+                    LeftPanelTab::Strings => activity_bar.set_activity(Some(Activity::Strings), cx),
                     LeftPanelTab::Structure => activity_bar.set_activity(Some(Activity::Structure), cx),
                     LeftPanelTab::Inspector => activity_bar.set_activity(Some(Activity::Inspector), cx),
                     LeftPanelTab::Map => activity_bar.set_activity(Some(Activity::Map), cx),
@@ -1944,6 +1966,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_open_settings))
             .on_action(cx.listener(Self::on_action_open_visual_map))
             .on_action(cx.listener(Self::on_action_show_files_tab))
+            .on_action(cx.listener(Self::on_action_show_strings_tab))
             .on_action(cx.listener(Self::on_action_show_structure_tab))
             .on_action(cx.listener(Self::on_action_show_checksum_tab))
             .on_action(cx.listener(Self::on_action_show_highlights_tab))

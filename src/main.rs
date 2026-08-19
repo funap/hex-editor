@@ -73,6 +73,7 @@ fn init_app_state(cx: &mut App) {
     ui::components::file_tree_view::init(cx);
     ui::components::search_bar::init(cx);
     ui::components::search_panel::init(cx);
+    ui::components::strings_panel::init(cx);
     ui::components::struct_tree_view::init(cx);
     ui::components::highlight_panel::init(cx);
     ui::panels::editor_panel::init(cx);
@@ -171,6 +172,7 @@ fn setup_menus(cx: &mut App) {
                     name: "Panels".into(),
                     items: vec![
                         gpui::MenuItem::action("Files", crate::actions::ShowFilesTab),
+                        gpui::MenuItem::action("Strings", crate::actions::ShowStringsTab),
                         gpui::MenuItem::action("Structure", crate::actions::ShowStructureTab),
                         gpui::MenuItem::action("Highlights", crate::actions::ShowHighlightsTab),
                         gpui::MenuItem::action("Checksum", crate::actions::ShowChecksumTab),

@@ -6,10 +6,10 @@ use crate::ui::icon::IconName;
 use autocorrect::ignorer::Ignorer;
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
-    SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
+    SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
     button::ButtonVariants as _,
     h_flex,
     list::ListItem,
@@ -423,20 +423,23 @@ impl Render for FileTreeView {
                                 .items_center()
                                 .gap_1()
                                 .child(
-                                    div().flex_1().min_w_0().child(
-                                        gpui_component::button::Button::new(SharedString::from(format!("recent-file-{index}")))
-                                            .icon(IconName::File)
-                                            .label(label)
-                                            .ghost()
-                                            .compact()
-                                            .with_size(gpui_component::Size::XSmall)
-                                            .w_full()
-                                            .justify_start()
-                                            .tooltip(path.clone())
-                                            .on_click(cx.listener(move |_, _, window, cx| {
+                                    h_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_5()
+                                        .items_center()
+                                        .gap_1()
+                                        .px_1()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(theme.muted.opacity(0.4)))
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |_, _, window, cx| {
                                                 window.dispatch_action(Box::new(OpenFile { path: open_path.clone() }), cx);
-                                            })),
-                                    ),
+                                            }),
+                                        )
+                                        .child(Icon::new(IconName::File).with_size(gpui_component::Size::XSmall))
+                                        .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )
                                 .child(
                                     gpui_component::button::Button::new(SharedString::from(format!("remove-recent-file-{index}")))
@@ -453,16 +456,18 @@ impl Render for FileTreeView {
                         .collect::<Vec<_>>();
 
                     empty_actions = empty_actions.child(
-                        v_flex()
-                            .w_full()
-                            .mt_4()
-                            .pt_3()
-                            .border_t_1()
-                            .border_color(theme.border.opacity(0.6))
-                            .items_start()
-                            .gap_1()
-                            .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
-                            .children(recent_items),
+                        h_flex().w_full().justify_start().child(
+                            v_flex()
+                                .w(relative(0.95))
+                                .mt_4()
+                                .pt_3()
+                                .border_t_1()
+                                .border_color(theme.border.opacity(0.6))
+                                .items_start()
+                                .gap_1()
+                                .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child("Recents"))
+                                .children(recent_items),
+                        ),
                     );
                 }
 

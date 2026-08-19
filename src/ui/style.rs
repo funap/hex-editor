@@ -31,6 +31,7 @@ pub fn panel_header(title: impl Into<SharedString>, is_focused: bool, theme: &Th
         .justify_between()
         .items_center()
         .h(px(34.0))
+        .flex_shrink_0()
         .px_3()
         .border_b_1()
         .border_color(theme.border)
@@ -79,7 +80,7 @@ pub fn panel_empty_state(
     }
 
     if let Some(act) = action {
-        container = container.child(div().mt_2().child(act));
+        container = container.child(div().mt_2().w_full().child(act));
     }
 
     container

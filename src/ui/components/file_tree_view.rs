@@ -353,7 +353,7 @@ impl Render for FileTreeView {
             Some(
                 gpui_component::button::Button::new("close-folder")
                     .ghost()
-                    .icon(IconName::Close)
+                    .icon(IconName::Eraser)
                     .with_size(gpui_component::Size::XSmall)
                     .tooltip("Close Folder")
                     .on_click(cx.listener(|this, _, _, cx| {

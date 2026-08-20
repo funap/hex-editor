@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![recursion_limit = "1024"]
+#![recursion_limit = "2048"]
 
 use gpui::{App, Application};
 use std::path::PathBuf;

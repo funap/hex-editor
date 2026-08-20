@@ -90,7 +90,22 @@ impl TabContent {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Untitled".to_string())
             }
-            TabContent::Diff(_) => "Diff".to_string(),
+            TabContent::Diff(p) => {
+                let dp = p.read(cx);
+                let left_name = dp
+                    .left_path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Left".to_string());
+                let right_name = dp
+                    .right_path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Right".to_string());
+                format!("Diff: {} ↔ {}", left_name, right_name)
+            }
             TabContent::Settings(_) => "Settings".to_string(),
             TabContent::VisualMap(_) => "Visual Map".to_string(),
         }

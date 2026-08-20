@@ -1184,12 +1184,112 @@ impl Workspace {
     }
 
     fn on_action_select_for_compare(&mut self, action: &SelectForCompare, _window: &mut Window, cx: &mut Context<Self>) {
+        crate::app_state::PendingCompareState::set(Some(action.path.clone()), cx);
         self.left_panel.update(cx, |panel, cx| {
             panel.file_tree.update(cx, |file_tree, cx| {
                 file_tree.pending_compare_path = Some(action.path.clone());
                 cx.notify();
             });
         });
+    }
+
+    fn on_action_compare_with_active_file(&mut self, action: &CompareWithActiveFile, window: &mut Window, cx: &mut Context<Self>) {
+        let active_path = self.active_editor(cx).and_then(|ed| {
+            let doc = ed.read(cx).document.read().ok()?;
+            Some(doc.path().to_path_buf())
+        });
+        if let Some(active_p) = active_path {
+            let left_path = active_p.to_string_lossy().to_string();
+            let right_path = action.path.clone();
+            if left_path != right_path {
+                self.on_action_open_diff(&OpenDiff { left_path, right_path }, window, cx);
+            }
+        }
+    }
+
+    fn on_action_compare_open_files(&mut self, _: &CompareOpenFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let mut open_paths = Vec::new();
+        for group in self.pane_tree.read(cx).all_groups() {
+            for tab in group.read(cx).tabs() {
+                if let Some(p) = tab.path(cx)
+                    && !open_paths.contains(&p)
+                {
+                    open_paths.push(p);
+                }
+            }
+        }
+
+        if open_paths.len() >= 2 {
+            let active_path = self.active_editor(cx).and_then(|ed| {
+                let doc = ed.read(cx).document.read().ok()?;
+                Some(doc.path().to_path_buf())
+            });
+
+            let (left, right) = if let Some(active_p) = active_path {
+                let other = open_paths.iter().find(|p| *p != &active_p).unwrap_or(&open_paths[0]);
+                (active_p, other.clone())
+            } else {
+                (open_paths[0].clone(), open_paths[1].clone())
+            };
+
+            self.on_action_open_diff(
+                &OpenDiff {
+                    left_path: left.to_string_lossy().to_string(),
+                    right_path: right.to_string_lossy().to_string(),
+                },
+                window,
+                cx,
+            );
+        } else if open_paths.len() == 1 {
+            let left_path = open_paths[0].clone();
+            let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Select second file to compare with".into()),
+            });
+
+            let view = cx.entity();
+            cx.spawn_in(window, async move |_, window| {
+                if let Some(right_path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                    window
+                        .update(|window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.on_action_open_diff(
+                                    &OpenDiff {
+                                        left_path: left_path.to_string_lossy().to_string(),
+                                        right_path: right_path.to_string_lossy().to_string(),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        })
+                        .ok();
+                }
+            })
+            .detach();
+        }
+    }
+
+    fn on_action_compare_visible_panes(&mut self, _: &CompareVisiblePanes, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = self.pane_tree.read(cx).all_groups();
+        if groups.len() >= 2 {
+            let g0_path = groups[0].read(cx).active_tab().and_then(|t| t.path(cx));
+            let g1_path = groups[1].read(cx).active_tab().and_then(|t| t.path(cx));
+            if let (Some(left), Some(right)) = (g0_path, g1_path)
+                && left != right
+            {
+                self.on_action_open_diff(
+                    &OpenDiff {
+                        left_path: left.to_string_lossy().to_string(),
+                        right_path: right.to_string_lossy().to_string(),
+                    },
+                    window,
+                    cx,
+                );
+            }
+        }
     }
 
     fn on_action_toggle_left_panel(&mut self, _: &ToggleLeftPanel, window: &mut Window, cx: &mut Context<Self>) {
@@ -1962,6 +2062,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_toggle_byte_order))
             .on_action(cx.listener(Self::on_action_open_diff))
             .on_action(cx.listener(Self::on_action_select_for_compare))
+            .on_action(cx.listener(Self::on_action_compare_with_active_file))
+            .on_action(cx.listener(Self::on_action_compare_open_files))
+            .on_action(cx.listener(Self::on_action_compare_visible_panes))
             .on_action(cx.listener(Self::on_action_toggle_left_panel))
             .on_action(cx.listener(Self::on_action_open_settings))
             .on_action(cx.listener(Self::on_action_open_visual_map))

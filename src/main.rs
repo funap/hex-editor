@@ -263,6 +263,12 @@ fn setup_menus(cx: &mut App) {
                 gpui::MenuItem::submenu(gpui::Menu {
                     name: "Compare / Diff".into(),
                     items: vec![
+                        gpui::MenuItem::action("Compare Open Files...", crate::actions::CompareOpenFiles),
+                        gpui::MenuItem::action("Compare Visible Split Panes", crate::actions::CompareVisiblePanes),
+                        gpui::MenuItem::separator(),
+                        gpui::MenuItem::action("Swap Diff Files", crate::actions::SwapDiffFiles),
+                        gpui::MenuItem::action("Refresh Diff", crate::actions::RefreshDiff),
+                        gpui::MenuItem::separator(),
                         gpui::MenuItem::action("Next Difference", crate::actions::NextDifference),
                         gpui::MenuItem::action("Previous Difference", crate::actions::PrevDifference),
                     ],
@@ -434,5 +440,10 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
+        // Compare / Diff
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("alt-cmd-d", crate::actions::CompareOpenFiles, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("alt-ctrl-d", crate::actions::CompareOpenFiles, None),
     ]);
 }

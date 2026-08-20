@@ -137,4 +137,25 @@ mod tests {
         assert_eq!(result.total_differences, 0);
         assert_eq!(result.chunks.len(), 0);
     }
+
+    #[test]
+    fn test_empty_left_non_empty_right() {
+        let left = b"";
+        let right = b"12345";
+        let result = compute_simple_diff(left, right);
+
+        assert_eq!(result.total_differences, 5);
+        assert_eq!(result.chunks.len(), 1);
+        assert_eq!(result.chunks[0], DiffChunk::Modified { offset: 0, length: 5 });
+    }
+
+    #[test]
+    fn test_interleaving_modifications() {
+        let left = b"A_B_C_D";
+        let right = b"A!B!C!D";
+        let result = compute_simple_diff(left, right);
+
+        assert_eq!(result.total_differences, 3);
+        assert_eq!(result.chunks.len(), 7);
+    }
 }

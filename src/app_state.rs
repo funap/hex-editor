@@ -26,6 +26,30 @@ impl InsertModeState {
     }
 }
 
+/// Global state tracking the currently selected file path for comparison.
+#[derive(Clone, Debug, Default)]
+pub struct PendingCompareState {
+    pub path: Option<String>,
+}
+
+impl Global for PendingCompareState {}
+
+impl PendingCompareState {
+    pub fn path(cx: &App) -> Option<String> {
+        cx.try_global::<Self>().and_then(|s| s.path.clone())
+    }
+
+    pub fn set(path: Option<String>, cx: &mut App) {
+        if cx.has_global::<Self>() {
+            cx.update_global::<Self, _>(|state, _| {
+                state.path = path;
+            });
+        } else {
+            cx.set_global(Self { path });
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppState {
@@ -41,6 +65,7 @@ impl AppState {
         };
         cx.set_global::<AppState>(state);
         cx.set_global(InsertModeState::default());
+        cx.set_global(PendingCompareState::default());
     }
 
     pub fn global(cx: &App) -> &Self {

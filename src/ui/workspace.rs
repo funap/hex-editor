@@ -194,6 +194,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("insert", crate::actions::ToggleInsertMode, None),
     ]);
 
+    cx.on_action::<OpenFile>(|action, cx| {
+        let action = action.clone();
+        defer_in_active_workspace(cx, move |workspace, window, cx| {
+            workspace.on_action_open_file(&action, window, cx);
+        });
+    });
     cx.on_action::<OpenFileDialog>(|_, cx| {
         defer_in_active_workspace(cx, |workspace, window, cx| {
             workspace.on_action_open_file_dialog(&OpenFileDialog, window, cx);

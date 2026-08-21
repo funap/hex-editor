@@ -6,7 +6,7 @@ use crate::ui::icon::IconName;
 use autocorrect::ignorer::Ignorer;
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
-    SharedString, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px, relative,
+    SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
@@ -424,6 +424,7 @@ impl Render for FileTreeView {
                                 .gap_1()
                                 .child(
                                     h_flex()
+                                        .id(("recent-file-item", index))
                                         .flex_1()
                                         .min_w_0()
                                         .h_5()
@@ -432,12 +433,10 @@ impl Render for FileTreeView {
                                         .px_1()
                                         .cursor_pointer()
                                         .hover(|style| style.bg(theme.muted.opacity(0.4)))
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |_, _, window, cx| {
-                                                window.dispatch_action(Box::new(OpenFile { path: open_path.clone() }), cx);
-                                            }),
-                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.focus_handle.focus(window);
+                                            cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(open_path.clone())));
+                                        }))
                                         .child(Icon::new(IconName::File).with_size(gpui_component::Size::XSmall))
                                         .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )

@@ -1370,6 +1370,7 @@ impl Render for StructTreeView {
                                 .gap_1()
                                 .child(
                                     h_flex()
+                                        .id(("recent-definition-item", index))
                                         .flex_1()
                                         .min_w_0()
                                         .h_5()
@@ -1379,17 +1380,15 @@ impl Render for StructTreeView {
                                         .cursor_pointer()
                                         .when(!has_active_editor, |style| style.opacity(0.5))
                                         .hover(|style| style.bg(theme.muted.opacity(0.4)))
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |_, _, window, cx| {
-                                                if has_active_editor {
-                                                    window.dispatch_action(
-                                                        Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
-                                                        cx,
-                                                    );
-                                                }
-                                            }),
-                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if has_active_editor {
+                                                this.focus_handle.focus(window);
+                                                window.dispatch_action(
+                                                    Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
+                                                    cx,
+                                                );
+                                            }
+                                        }))
                                         .child(Icon::new(IconName::FileCode).with_size(gpui_component::Size::XSmall))
                                         .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )

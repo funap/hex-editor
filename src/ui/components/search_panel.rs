@@ -1,16 +1,38 @@
 use crate::core::editor::Editor;
 use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern};
+use crate::ui::components::data_table::{TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{self, Input, InputState};
-use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
+use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, WindowExt as _, h_flex, v_flex};
 
 actions!(search_panel, [MoveUp, MoveDown, SelectCurrent, ClearResults]);
 
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = search_panel, no_json)]
+struct CopyAddress {
+    value: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = search_panel, no_json)]
+struct CopyValue {
+    value: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = search_panel, no_json)]
+struct CopyText {
+    value: String,
+}
+
 const CONTEXT: &str = "SearchPanel";
 pub const MAX_SEARCH_RESULTS: usize = 10_000;
+
+const SEARCH_ROW_HEIGHT: f32 = 24.0;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -21,6 +43,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", SelectCurrent, Some("SearchPanel && !InputFocus")),
         KeyBinding::new("escape", ClearResults, Some("SearchPanel")),
     ]);
+}
+
+fn default_search_columns() -> Vec<TableColumn> {
+    vec![
+        TableColumn::new("address", "Address", px(90.0)).min_width(px(60.0)).resizable(true),
+        TableColumn::new("value", "Value", px(140.0)).min_width(px(60.0)).resizable(true),
+        TableColumn::new("text", "Text", px(120.0)).min_width(px(60.0)).resizable(true),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +65,8 @@ pub enum SearchPanelEvent {
 pub struct SearchPanel {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
-    pub scroll_handle: UniformListScrollHandle,
+    pub table_state: VirtualTableState,
+    pub last_container_width: Pixels,
     pub input: Entity<InputState>,
     pub mode: SearchMode,
     pub is_searching: bool,
@@ -54,7 +85,7 @@ impl EventEmitter<SearchPanelEvent> for SearchPanel {}
 impl SearchPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let scroll_handle = UniformListScrollHandle::new();
+        let table_state = VirtualTableState::new(default_search_columns());
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search pattern in file..."));
 
         let input_sub = cx.subscribe_in(&input, window, |this, _, event: &input::InputEvent, _window, cx| {
@@ -66,7 +97,8 @@ impl SearchPanel {
         let mut this = Self {
             editor: None,
             focus_handle,
-            scroll_handle,
+            table_state,
+            last_container_width: px(300.0),
             input,
             mode: SearchMode::Hex,
             is_searching: false,
@@ -187,7 +219,7 @@ impl SearchPanel {
                     this.results = items;
                     if !this.results.is_empty() {
                         this.selected_index = Some(0);
-                        this.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                        this.table_state.scroll_to_row(0, ScrollStrategy::Top);
                     }
                     if let Some(ed) = &this.editor {
                         let generation = ed.read(cx).search_state.generation;
@@ -235,7 +267,7 @@ impl SearchPanel {
             Some(0) | None => self.results.len().saturating_sub(1),
             Some(idx) => idx - 1,
         };
-        self.scroll_handle.scroll_to_item(new_idx, ScrollStrategy::Top);
+        self.table_state.scroll_to_row(new_idx, ScrollStrategy::Top);
         self.select_item(new_idx, cx);
     }
 
@@ -247,7 +279,7 @@ impl SearchPanel {
             Some(idx) if idx + 1 < self.results.len() => idx + 1,
             _ => 0,
         };
-        self.scroll_handle.scroll_to_item(new_idx, ScrollStrategy::Top);
+        self.table_state.scroll_to_row(new_idx, ScrollStrategy::Top);
         self.select_item(new_idx, cx);
     }
 
@@ -271,10 +303,71 @@ impl SearchPanel {
         }
         cx.notify();
     }
+
+    fn copy_offset(&mut self, action: &CopyAddress, window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
+        window.push_notification(gpui_component::notification::Notification::info(format!("Copied address {}", action.value)), cx);
+    }
+
+    fn copy_value(&mut self, action: &CopyValue, window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
+        window.push_notification(gpui_component::notification::Notification::info("Copied hex value"), cx);
+    }
+
+    fn copy_text(&mut self, action: &CopyText, window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
+        window.push_notification(gpui_component::notification::Notification::info("Copied text value"), cx);
+    }
+
+    fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        let buffer = self.editor.as_ref().and_then(|ed| {
+            let ed_ref = ed.read(cx);
+            ed_ref.document.read().ok().map(|d| d.buffer.clone())
+        });
+        let buffer_slice = buffer.as_ref().map(|b| b.data());
+
+        let texts = self.results.iter().take(128).map(|item| match col_ix {
+            0 => format!("0x{:08X}", item.offset),
+            1 => {
+                let (hex, _) = format_row_previews(buffer_slice, item.offset, self.match_len);
+                hex
+            }
+            2 => {
+                let (_, ascii) = format_row_previews(buffer_slice, item.offset, self.match_len);
+                ascii
+            }
+            _ => String::new(),
+        });
+
+        self.table_state.auto_fit_column_with_texts(col_ix, texts);
+        cx.notify();
+    }
+}
+
+fn format_row_previews(buffer_data: Option<&[u8]>, offset: usize, match_len: usize) -> (String, String) {
+    let snippet_len = match_len.clamp(4, 16);
+    if let Some(data) = buffer_data {
+        let end = (offset + snippet_len).min(data.len());
+        let slice = if offset < data.len() { &data[offset..end] } else { &[] };
+        let mut hex = String::with_capacity(slice.len() * 3);
+        for (i, b) in slice.iter().enumerate() {
+            if i > 0 {
+                hex.push(' ');
+            }
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{:02X}", b);
+        }
+        let ascii: String = slice.iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' }).collect();
+        (hex, ascii)
+    } else {
+        (String::new(), String::new())
+    }
 }
 
 impl Render for SearchPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let resize_overlay = VirtualTable::render_resize_overlay(&self.table_state, cx, |this| &mut this.table_state);
+
         let theme = cx.theme();
         let is_focused = self.focus_handle.is_focused(window);
         let has_editor = self.editor.is_some();
@@ -405,6 +498,9 @@ impl Render for SearchPanel {
         } else {
             let view = cx.entity().clone();
             let is_truncated = self.is_truncated;
+            let context_focus_handle = self.focus_handle.clone();
+            let total_visible_width = self.table_state.total_visible_width();
+            let scroll_offset_x = self.table_state.scroll_offset_x;
 
             let truncation_notice = if is_truncated {
                 Some(
@@ -422,6 +518,19 @@ impl Render for SearchPanel {
                 None
             };
 
+            let header_row = VirtualTable::render_header_row(
+                &self.table_state,
+                "search-column-header",
+                theme,
+                cx,
+                None::<fn(usize, &TableColumn) -> Option<AnyElement>>,
+                Self::auto_fit_column,
+                None::<fn(&mut Self, usize, &mut Context<Self>)>,
+                |this| &mut this.table_state,
+            );
+
+            let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+
             let list = uniform_list("search-panel-results-list", self.results.len(), move |range, window, cx| {
                 let this = view.read(cx);
                 let theme = cx.theme();
@@ -434,14 +543,14 @@ impl Render for SearchPanel {
                     .map(|idx| {
                         if let Some(item) = this.results.get(idx) {
                             let is_selected = this.selected_index == Some(idx);
-                            let (bg_color, border_color, index_color) = if is_selected {
+                            let (bg_color, border_color) = if is_selected {
                                 if is_focused {
-                                    (theme.selection, theme.accent, theme.accent)
+                                    (theme.selection, theme.accent)
                                 } else {
-                                    (theme.muted, theme.muted_foreground.opacity(0.4), theme.muted_foreground)
+                                    (theme.muted, theme.muted_foreground.opacity(0.4))
                                 }
                             } else {
-                                (theme.sidebar, theme.border.opacity(0.5), theme.muted_foreground)
+                                (theme.sidebar, theme.border.opacity(0.5))
                             };
 
                             let hover_bg = if is_selected {
@@ -451,64 +560,64 @@ impl Render for SearchPanel {
                             };
 
                             let offset = item.offset;
-                            let snippet_len = this.match_len.clamp(4, 16);
+                            let offset_value = format!("0x{:08X}", offset);
+                            let (preview_hex, preview_ascii) = format_row_previews(buffer.as_ref().map(|b| b.data()), offset, this.match_len);
+                            let context_focus_handle = context_focus_handle.clone();
+                            let menu_offset = offset_value.clone();
+                            let menu_hex = preview_hex.clone();
+                            let menu_ascii = preview_ascii.clone();
 
-                            let (preview_hex, preview_ascii) = if let Some(buf) = &buffer {
-                                let data = buf.data();
-                                let end = (offset + snippet_len).min(data.len());
-                                let slice = if offset < data.len() { &data[offset..end] } else { &[] };
-                                let hex = slice.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
-                                let ascii: String = slice.iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' }).collect();
-                                (hex, ascii)
-                            } else {
-                                (String::new(), String::new())
-                            };
-
-                            div()
-                                .px_1p5()
-                                .py_0p5()
+                            h_flex()
+                                .id(("search-result-item", idx))
+                                .w_full()
+                                .h(px(SEARCH_ROW_HEIGHT))
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .border_b_1()
+                                .border_color(border_color)
+                                .bg(bg_color)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(hover_bg))
+                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                    this.select_item(idx, cx);
+                                }))
+                                .context_menu(move |menu, _, _| {
+                                    menu.action_context(context_focus_handle.clone())
+                                        .menu("Copy Address", Box::new(CopyAddress { value: menu_offset.clone() }))
+                                        .menu("Copy Hex Value", Box::new(CopyValue { value: menu_hex.clone() }))
+                                        .menu("Copy Text", Box::new(CopyText { value: menu_ascii.clone() }))
+                                })
                                 .child(
-                                    v_flex()
-                                        .id(("search-result-item", idx))
-                                        .w_full()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(border_color)
-                                        .bg(bg_color)
-                                        .p_1p5()
-                                        .gap_1()
-                                        .cursor_pointer()
-                                        .hover(move |style| style.bg(hover_bg))
-                                        .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                                            this.select_item(idx, cx);
-                                        }))
-                                        .child(
-                                            h_flex()
-                                                .justify_between()
-                                                .items_center()
-                                                .child(
-                                                    h_flex()
-                                                        .gap_1p5()
-                                                        .items_center()
-                                                        .child(div().text_xs().font_semibold().text_color(index_color).child(format!("#{}", idx + 1)))
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .font_family("Courier New")
-                                                                .font_semibold()
-                                                                .text_color(theme.foreground)
-                                                                .child(format!("0x{:08X}", offset)),
-                                                        ),
-                                                )
-                                                .child(div().text_xs().text_color(theme.muted_foreground).child(format!("offset {}", offset))),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .justify_between()
-                                                .items_center()
-                                                .child(div().text_xs().font_family("Courier New").text_color(theme.muted_foreground).child(preview_hex))
-                                                .child(div().text_xs().font_family("Courier New").text_color(theme.foreground).child(preview_ascii)),
-                                        ),
+                                    h_flex()
+                                        .w(total_visible_width)
+                                        .h_full()
+                                        .ml(-scroll_offset_x)
+                                        .children(visible_cols.iter().enumerate().map(|(vis_ix, &(col_ix, width))| {
+                                            let is_first = vis_ix == 0;
+                                            let cell_content = match col_ix {
+                                                0 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .font_semibold()
+                                                    .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
+                                                    .child(offset_value.clone())
+                                                    .into_any_element(),
+                                                1 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(preview_hex.clone())
+                                                    .into_any_element(),
+                                                2 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .text_color(theme.foreground)
+                                                    .child(preview_ascii.clone())
+                                                    .into_any_element(),
+                                                _ => div().into_any_element(),
+                                            };
+                                            VirtualTable::render_data_cell(col_ix, width, is_first, theme.border.opacity(0.35), cell_content)
+                                        })),
                                 )
                                 .into_any_element()
                         } else {
@@ -517,24 +626,119 @@ impl Render for SearchPanel {
                     })
                     .collect::<Vec<_>>()
             })
-            .track_scroll(self.scroll_handle.clone())
+            .track_scroll(self.table_state.vertical_scroll_handle.clone())
             .size_full();
 
+            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
+            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+
             v_flex()
+                .id("search-table-container")
                 .flex_1()
                 .overflow_hidden()
+                .relative()
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        } else {
+                            this.table_state.update_resize(event.position.x);
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        if this.table_state.resizing_column.is_some() {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        if this.table_state.resizing_column.is_some() {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                    let delta_x = event.delta.pixel_delta(px(1.0)).x;
+                    if delta_x != px(0.0) {
+                        this.table_state.scroll_horizontally(delta_x, this.last_container_width);
+                        cx.notify();
+                    }
+                }))
+                .children(resize_overlay)
                 .children(truncation_notice)
-                .child(div().id("search-results-container").flex_1().child(list))
+                .child(header_row)
+                .child(
+                    div()
+                        .id("search-results-container")
+                        .flex_1()
+                        .overflow_hidden()
+                        .relative()
+                        .child(canvas(
+                            {
+                                let view = cx.entity().clone();
+                                move |bounds, _, cx| {
+                                    view.update(cx, |this, _| {
+                                        this.last_container_width = bounds.size.width;
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        ))
+                        .child(list)
+                        .child(vertical_scrollbar)
+                        .children(horizontal_scrollbar),
+                )
                 .into_any_element()
         };
 
         crate::ui::style::panel_container(is_focused, theme)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.table_state.resizing_column.is_some() {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    } else {
+                        this.table_state.update_resize(event.position.x);
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::select_current))
             .on_action(cx.listener(Self::clear_results_action))
+            .on_action(cx.listener(Self::copy_offset))
+            .on_action(cx.listener(Self::copy_value))
+            .on_action(cx.listener(Self::copy_text))
             .child(header)
             .child(search_controls)
             .child(body)

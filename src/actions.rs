@@ -65,6 +65,25 @@ pub struct SelectForCompare {
     pub path: String,
 }
 
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct CompareWithActiveFile {
+    pub path: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CompareVisiblePanes;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct CompareOpenFiles;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct SwapDiffFiles;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct RefreshDiff;
+
 #[derive(Clone, PartialEq, Action)]
 pub struct NextDifference;
 

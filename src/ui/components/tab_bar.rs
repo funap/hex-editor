@@ -78,7 +78,22 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                     let can_close_others = tabs.len() > 1;
                     let can_close_right = idx + 1 < tabs.len();
                     let tab_path = tab.path.clone();
-                    move |menu, _window, _cx| {
+                    let active_tab_path = tabs.iter().find(|t| t.is_active).and_then(|t| t.path.clone());
+                    let pending_compare_path = crate::app_state::PendingCompareState::path(cx);
+                    let other_open_tabs: Vec<(String, String)> = tabs
+                        .iter()
+                        .filter_map(|t| {
+                            if t.id != tab_id
+                                && let Some(p) = &t.path
+                                && t.path != tab.path
+                            {
+                                let p_str = p.to_string_lossy().to_string();
+                                return Some((t.title.clone(), p_str));
+                            }
+                            None
+                        })
+                        .collect();
+                    move |menu, window, cx| {
                         let mut menu = menu
                             .menu_with_icon("Close", IconName::Close, Box::new(crate::actions::CloseActivePanel))
                             .menu_with_icon_and_disabled("Close Others", IconName::Close, Box::new(crate::actions::CloseOtherTabs), !can_close_others)
@@ -92,6 +107,84 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                             .separator()
                             .menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
                             .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown));
+
+                        if let Some(current_path) = &tab_path {
+                            let current_path_str = current_path.to_string_lossy().to_string();
+                            menu = menu.separator();
+
+                            menu = menu.menu_with_icon(
+                                "Select for Compare",
+                                IconName::GitCompare,
+                                Box::new(crate::actions::SelectForCompare {
+                                    path: current_path_str.clone(),
+                                }),
+                            );
+
+                            if let Some(pending_path) = &pending_compare_path
+                                && pending_path != &current_path_str
+                            {
+                                let pending_name = std::path::Path::new(pending_path)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "Selected".to_string());
+                                menu = menu.menu_with_icon(
+                                    format!("Compare with '{}'", pending_name),
+                                    IconName::GitCompare,
+                                    Box::new(crate::actions::OpenDiff {
+                                        left_path: pending_path.clone(),
+                                        right_path: current_path_str.clone(),
+                                    }),
+                                );
+                            }
+
+                            if !is_active
+                                && let Some(active_p) = &active_tab_path
+                                && active_p != current_path
+                            {
+                                menu = menu.menu_with_icon(
+                                    "Compare with Active File",
+                                    IconName::GitCompare,
+                                    Box::new(crate::actions::OpenDiff {
+                                        left_path: active_p.to_string_lossy().to_string(),
+                                        right_path: current_path_str.clone(),
+                                    }),
+                                );
+                            }
+
+                            if other_open_tabs.len() == 1 {
+                                let (other_title, other_path) = &other_open_tabs[0];
+                                let is_already_shown = pending_compare_path.as_deref() == Some(other_path.as_str())
+                                    || (!is_active
+                                        && active_tab_path.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref() == Some(other_path.as_str()));
+                                if !is_already_shown {
+                                    menu = menu.menu_with_icon(
+                                        format!("Compare with '{}'", other_title),
+                                        IconName::GitCompare,
+                                        Box::new(crate::actions::OpenDiff {
+                                            left_path: current_path_str.clone(),
+                                            right_path: other_path.clone(),
+                                        }),
+                                    );
+                                }
+                            } else if other_open_tabs.len() > 1 {
+                                let current_path_str_clone = current_path_str.clone();
+                                let other_tabs_clone = other_open_tabs.clone();
+                                menu = menu.submenu("Compare with...", window, cx, move |menu, _window, _cx| {
+                                    let mut sub = menu;
+                                    for (title, path) in &other_tabs_clone {
+                                        sub = sub.menu_with_icon(
+                                            title.clone(),
+                                            IconName::GitCompare,
+                                            Box::new(crate::actions::OpenDiff {
+                                                left_path: current_path_str_clone.clone(),
+                                                right_path: path.clone(),
+                                            }),
+                                        );
+                                    }
+                                    sub
+                                });
+                            }
+                        }
 
                         if tab_path.is_some() {
                             menu = menu

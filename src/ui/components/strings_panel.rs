@@ -1,20 +1,21 @@
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::strings::{DEFAULT_MIN_STRING_LENGTH, StringMatch, find_strings_limited};
+use crate::ui::components::data_table::{TableColumn, TableSortDirection, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{self, Input, InputState};
 use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, h_flex, v_flex};
 use std::collections::HashMap;
 
 actions!(strings_panel, [MoveUp, MoveDown, SelectCurrent, ClearResults]);
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = strings_panel, no_json)]
-struct CopyOffset {
+struct CopyAddress {
     value: String,
 }
 
@@ -26,6 +27,8 @@ struct CopyValue {
 
 const CONTEXT: &str = "StringsPanel";
 pub const MAX_STRING_RESULTS: usize = 10_000;
+
+const STRINGS_ROW_HEIGHT: f32 = 24.0;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -54,28 +57,6 @@ struct CachedStringsState {
     scan_min_length: Option<usize>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SortColumn {
-    Offset,
-    Size,
-    Value,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SortDirection {
-    Ascending,
-    Descending,
-}
-
-impl SortDirection {
-    fn reversed(self) -> Self {
-        match self {
-            Self::Ascending => Self::Descending,
-            Self::Descending => Self::Ascending,
-        }
-    }
-}
-
 pub enum StringsPanelEvent {
     NavigateTo { offset: usize, len: usize },
 }
@@ -83,7 +64,7 @@ pub enum StringsPanelEvent {
 pub struct StringsPanel {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
-    pub scroll_handle: UniformListScrollHandle,
+    pub table_state: VirtualTableState,
     pub min_length_input: Entity<InputState>,
     pub filter_input: Entity<InputState>,
     pub is_scanning: bool,
@@ -96,8 +77,7 @@ pub struct StringsPanel {
     scan_signature: Option<ScanSignature>,
     scan_min_length: Option<usize>,
     cached_states: HashMap<EntityId, CachedStringsState>,
-    sort_column: Option<SortColumn>,
-    sort_direction: SortDirection,
+    last_container_width: Pixels,
     _input_subscription: Option<Subscription>,
     _filter_subscription: Option<Subscription>,
     _editor_subscription: Option<Subscription>,
@@ -105,10 +85,21 @@ pub struct StringsPanel {
 
 impl EventEmitter<StringsPanelEvent> for StringsPanel {}
 
+fn default_strings_columns() -> Vec<TableColumn> {
+    vec![
+        TableColumn::new("address", "Address", px(88.0))
+            .min_width(px(50.0))
+            .sortable(true)
+            .resizable(true),
+        TableColumn::new("size", "Size", px(58.0)).min_width(px(40.0)).sortable(true).resizable(true),
+        TableColumn::new("value", "Value", px(220.0)).min_width(px(80.0)).sortable(true).resizable(true),
+    ]
+}
+
 impl StringsPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let scroll_handle = UniformListScrollHandle::new();
+        let table_state = VirtualTableState::new(default_strings_columns());
         let min_length_input = cx.new(|cx| InputState::new(window, cx));
         min_length_input.update(cx, |input, cx| {
             input.set_value(DEFAULT_MIN_STRING_LENGTH.to_string(), window, cx);
@@ -133,7 +124,7 @@ impl StringsPanel {
         let mut this = Self {
             editor: None,
             focus_handle,
-            scroll_handle,
+            table_state,
             min_length_input,
             filter_input,
             is_scanning: false,
@@ -146,8 +137,7 @@ impl StringsPanel {
             scan_signature: None,
             scan_min_length: None,
             cached_states: HashMap::new(),
-            sort_column: None,
-            sort_direction: SortDirection::Ascending,
+            last_container_width: px(300.0),
             _input_subscription: Some(input_subscription),
             _filter_subscription: Some(filter_subscription),
             _editor_subscription: None,
@@ -294,7 +284,7 @@ impl StringsPanel {
                     this.has_scanned = true;
                     this.selected_index = this.sorted_indices(cx).first().copied();
                     if this.selected_index.is_some() {
-                        this.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                        this.table_state.scroll_to_row(0, ScrollStrategy::Top);
                     }
                     cx.notify();
                 })
@@ -330,20 +320,29 @@ impl StringsPanel {
 
     fn sorted_indices(&self, cx: &App) -> Vec<usize> {
         let mut indices = self.filtered_indices(cx);
-        let Some(column) = self.sort_column else {
+
+        // Check which column is sorted
+        let sorted_col = self
+            .table_state
+            .columns
+            .iter()
+            .enumerate()
+            .find_map(|(ix, col)| col.sort_direction.map(|dir| (ix, dir)));
+
+        let Some((col_ix, direction)) = sorted_col else {
             return indices;
         };
 
-        let direction = self.sort_direction;
         indices.sort_by(|left, right| {
             let left_match = &self.results[*left];
             let right_match = &self.results[*right];
-            let ordering = match column {
-                SortColumn::Offset => left_match.offset.cmp(&right_match.offset),
-                SortColumn::Size => left_match.byte_len.cmp(&right_match.byte_len),
-                SortColumn::Value => left_match.text.cmp(&right_match.text),
+            let ordering = match col_ix {
+                0 => left_match.offset.cmp(&right_match.offset),
+                1 => left_match.byte_len.cmp(&right_match.byte_len),
+                2 => left_match.text.cmp(&right_match.text),
+                _ => std::cmp::Ordering::Equal,
             };
-            let ordering = if direction == SortDirection::Descending {
+            let ordering = if direction == TableSortDirection::Descending {
                 ordering.reverse()
             } else {
                 ordering
@@ -353,38 +352,24 @@ impl StringsPanel {
         indices
     }
 
-    fn sort_label(&self, column: SortColumn, label: &str) -> String {
-        let indicator = if self.sort_column == Some(column) {
-            match self.sort_direction {
-                SortDirection::Ascending => " ↑",
-                SortDirection::Descending => " ↓",
-            }
-        } else {
-            ""
-        };
-        format!("{label}{indicator}")
-    }
-
-    fn table_cell(column: SortColumn, border_color: Hsla) -> Div {
-        let mut cell = div().items_center().min_w_0().pl_1().truncate().whitespace_nowrap();
-
-        cell = match column {
-            SortColumn::Offset => cell.flex_shrink_0().w_24(),
-            SortColumn::Size => cell.border_l_1().border_color(border_color).flex_shrink_0().w_16(),
-            SortColumn::Value => cell.border_l_1().border_color(border_color).flex_1(),
-        };
-
-        cell
-    }
-
-    fn sort_by(&mut self, column: SortColumn, cx: &mut Context<Self>) {
-        if self.sort_column == Some(column) {
-            self.sort_direction = self.sort_direction.reversed();
-        } else {
-            self.sort_column = Some(column);
-            self.sort_direction = SortDirection::Ascending;
-        }
+    fn sort_by(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        self.table_state.toggle_column_sort(col_ix);
         self.sync_selection_to_filter(cx);
+        cx.notify();
+    }
+
+    fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        let visible_indices = self.sorted_indices(cx);
+        let texts = visible_indices.iter().take(128).filter_map(|&index| {
+            self.results.get(index).map(|item| match col_ix {
+                0 => format!("0x{:08X}", item.offset),
+                1 => item.byte_len.to_string(),
+                2 => preview_text(&item.text),
+                _ => String::new(),
+            })
+        });
+
+        self.table_state.auto_fit_column_with_texts(col_ix, texts);
         cx.notify();
     }
 
@@ -399,13 +384,18 @@ impl StringsPanel {
 
     fn sync_selection_to_filter(&mut self, cx: &mut Context<Self>) {
         let visible_indices = self.sorted_indices(cx);
-        if self.selected_index.is_some_and(|index| visible_indices.contains(&index)) {
-            return;
+        if let Some(index) = self.selected_index {
+            if !visible_indices.contains(&index) {
+                self.selected_index = visible_indices.first().copied();
+            }
+        } else {
+            self.selected_index = visible_indices.first().copied();
         }
 
-        self.selected_index = visible_indices.first().copied();
-        if self.selected_index.is_some() {
-            self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        if let Some(index) = self.selected_index
+            && let Some(position) = visible_indices.iter().position(|&visible_index| visible_index == index)
+        {
+            self.table_state.scroll_to_row(position, ScrollStrategy::Top);
         }
     }
 
@@ -425,23 +415,18 @@ impl StringsPanel {
     }
 
     pub fn select_item(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(item) = self.results.get(index).cloned() else {
-            return;
-        };
-
-        self.selected_index = Some(index);
-        if let Some(ed) = &self.editor {
-            ed.update(cx, |editor, cx| {
-                editor.set_cursor_offset_exact(item.offset);
-                editor.set_selection_range(item.offset..item.offset.saturating_add(item.byte_len));
-                cx.notify();
-            });
+        if let Some(item) = self.results.get(index) {
+            self.selected_index = Some(index);
+            let offset = item.offset;
+            let len = item.byte_len;
+            if let Some(ed) = &self.editor {
+                ed.update(cx, |editor, cx| {
+                    editor.set_cursor_offset(offset);
+                    cx.notify();
+                });
+            }
+            cx.emit(StringsPanelEvent::NavigateTo { offset, len });
         }
-
-        cx.emit(StringsPanelEvent::NavigateTo {
-            offset: item.offset,
-            len: item.byte_len,
-        });
         cx.notify();
     }
 
@@ -457,8 +442,10 @@ impl StringsPanel {
             Some(0) | None => visible_indices.len().saturating_sub(1),
             Some(position) => position - 1,
         };
-        self.scroll_handle.scroll_to_item(new_position, ScrollStrategy::Top);
-        self.select_item(visible_indices[new_position], cx);
+        self.table_state.scroll_to_row(new_position, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.get(new_position) {
+            self.select_item(index, cx);
+        }
     }
 
     fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
@@ -473,8 +460,10 @@ impl StringsPanel {
             Some(position) if position + 1 < visible_indices.len() => position + 1,
             _ => 0,
         };
-        self.scroll_handle.scroll_to_item(new_position, ScrollStrategy::Top);
-        self.select_item(visible_indices[new_position], cx);
+        self.table_state.scroll_to_row(new_position, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.get(new_position) {
+            self.select_item(index, cx);
+        }
     }
 
     fn select_current(&mut self, _: &SelectCurrent, _: &mut Window, cx: &mut Context<Self>) {
@@ -486,7 +475,7 @@ impl StringsPanel {
         }
     }
 
-    fn copy_offset(&mut self, action: &CopyOffset, _: &mut Window, cx: &mut Context<Self>) {
+    fn copy_offset(&mut self, action: &CopyAddress, _: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
     }
 
@@ -502,6 +491,8 @@ impl StringsPanel {
 
 impl Render for StringsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let resize_overlay = VirtualTable::render_resize_overlay(&self.table_state, cx, |this| &mut this.table_state);
+
         let theme = cx.theme();
         let is_focused = self.focus_handle.is_focused(window);
         let has_editor = self.editor.is_some();
@@ -639,50 +630,21 @@ impl Render for StringsPanel {
         } else {
             let view = cx.entity().clone();
             let context_focus_handle = self.focus_handle.clone();
+            let total_visible_width = self.table_state.total_visible_width();
+            let scroll_offset_x = self.table_state.scroll_offset_x;
 
-            let table_header = h_flex()
-                .id("strings-column-header")
-                .w_full()
-                .h(px(22.0))
-                .items_center()
-                .gap_1()
-                .px_2()
-                .border_b_1()
-                .border_color(theme.border.opacity(0.7))
-                .bg(theme.muted.opacity(0.18))
-                .text_xs()
-                .font_semibold()
-                .text_color(theme.muted_foreground)
-                .child(
-                    Self::table_cell(SortColumn::Offset, theme.border.opacity(0.7))
-                        .id("strings-sort-offset")
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(theme.foreground))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sort_by(SortColumn::Offset, cx);
-                        }))
-                        .child(self.sort_label(SortColumn::Offset, "Offset")),
-                )
-                .child(
-                    Self::table_cell(SortColumn::Size, theme.border.opacity(0.7))
-                        .id("strings-sort-size")
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(theme.foreground))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sort_by(SortColumn::Size, cx);
-                        }))
-                        .child(self.sort_label(SortColumn::Size, "Size")),
-                )
-                .child(
-                    Self::table_cell(SortColumn::Value, theme.border.opacity(0.7))
-                        .id("strings-sort-value")
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(theme.foreground))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sort_by(SortColumn::Value, cx);
-                        }))
-                        .child(self.sort_label(SortColumn::Value, "Value")),
-                );
+            let header_row = VirtualTable::render_header_row(
+                &self.table_state,
+                "strings-column-header",
+                theme,
+                cx,
+                None::<fn(usize, &TableColumn) -> Option<AnyElement>>,
+                Self::auto_fit_column,
+                Some(Self::sort_by),
+                |this| &mut this.table_state,
+            );
+
+            let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
 
             let list = uniform_list("strings-panel-results-list", visible_indices.len(), move |range, window, cx| {
                 let this = view.read(cx);
@@ -690,7 +652,9 @@ impl Render for StringsPanel {
 
                 range
                     .map(|visible_index| {
-                        let index = visible_indices[visible_index];
+                        let Some(&index) = visible_indices.get(visible_index) else {
+                            return div().into_any_element();
+                        };
                         if let Some(item) = this.results.get(index) {
                             let is_selected = this.selected_index == Some(index);
                             let (bg_color, border_color, offset_color) = if is_selected {
@@ -712,16 +676,16 @@ impl Render for StringsPanel {
                             let offset = item.offset;
                             let byte_len = item.byte_len;
                             let offset_value = format!("0x{:08X}", offset);
+                            let menu_offset = offset_value.clone();
                             let value = item.text.clone();
                             let context_focus_handle = context_focus_handle.clone();
 
                             h_flex()
                                 .id(("strings-result-item", index))
                                 .w_full()
-                                .items_center()
-                                .gap_1()
-                                .px_2()
-                                .py_1()
+                                .h(px(STRINGS_ROW_HEIGHT))
+                                .flex_shrink_0()
+                                .overflow_hidden()
                                 .border_b_1()
                                 .border_color(border_color)
                                 .bg(bg_color)
@@ -732,29 +696,39 @@ impl Render for StringsPanel {
                                 }))
                                 .context_menu(move |menu, _, _| {
                                     menu.action_context(context_focus_handle.clone())
-                                        .menu("Copy Offset", Box::new(CopyOffset { value: offset_value.clone() }))
+                                        .menu("Copy Address", Box::new(CopyAddress { value: menu_offset.clone() }))
                                         .menu("Copy Value", Box::new(CopyValue { value: value.clone() }))
                                 })
                                 .child(
-                                    Self::table_cell(SortColumn::Offset, theme.border.opacity(0.35))
-                                        .text_xs()
-                                        .font_family("Courier New")
-                                        .text_color(offset_color)
-                                        .child(format!("0x{:08X}", offset)),
-                                )
-                                .child(
-                                    Self::table_cell(SortColumn::Size, theme.border.opacity(0.35))
-                                        .text_xs()
-                                        .font_family("Courier New")
-                                        .text_color(theme.muted_foreground)
-                                        .child(byte_len.to_string()),
-                                )
-                                .child(
-                                    Self::table_cell(SortColumn::Value, theme.border.opacity(0.35))
-                                        .text_xs()
-                                        .font_family("Courier New")
-                                        .text_color(theme.foreground)
-                                        .child(preview),
+                                    h_flex()
+                                        .w(total_visible_width)
+                                        .h_full()
+                                        .ml(-scroll_offset_x)
+                                        .children(visible_cols.iter().enumerate().map(|(vis_ix, &(col_ix, width))| {
+                                            let is_first = vis_ix == 0;
+                                            let cell_content = match col_ix {
+                                                0 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .text_color(offset_color)
+                                                    .child(offset_value.clone())
+                                                    .into_any_element(),
+                                                1 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(byte_len.to_string())
+                                                    .into_any_element(),
+                                                2 => div()
+                                                    .text_xs()
+                                                    .font_family("Courier New")
+                                                    .text_color(theme.foreground)
+                                                    .child(preview.clone())
+                                                    .into_any_element(),
+                                                _ => div().into_any_element(),
+                                            };
+                                            VirtualTable::render_data_cell(col_ix, width, is_first, theme.border.opacity(0.35), cell_content)
+                                        })),
                                 )
                                 .into_any_element()
                         } else {
@@ -763,20 +737,111 @@ impl Render for StringsPanel {
                     })
                     .collect::<Vec<_>>()
             })
-            .track_scroll(self.scroll_handle.clone())
+            .track_scroll(self.table_state.vertical_scroll_handle.clone())
             .size_full();
 
+            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
+            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+
             v_flex()
+                .id("strings-table-container")
                 .flex_1()
                 .overflow_hidden()
-                .child(table_header)
-                .child(div().id("strings-results-container").flex_1().child(list))
+                .relative()
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        } else {
+                            this.table_state.update_resize(event.position.x);
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        if this.table_state.resizing_column.is_some() {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        if this.table_state.resizing_column.is_some() {
+                            this.table_state.end_resize();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                    let delta_x = event.delta.pixel_delta(px(1.0)).x;
+                    if delta_x != px(0.0) {
+                        this.table_state.scroll_horizontally(delta_x, this.last_container_width);
+                        cx.notify();
+                    }
+                }))
+                .children(resize_overlay)
+                .child(header_row)
+                .child(
+                    div()
+                        .id("strings-results-container")
+                        .flex_1()
+                        .overflow_hidden()
+                        .relative()
+                        .child(canvas(
+                            {
+                                let view = cx.entity().clone();
+                                move |bounds, _, cx| {
+                                    view.update(cx, |this, _| {
+                                        this.last_container_width = bounds.size.width;
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        ))
+                        .child(list)
+                        .child(vertical_scrollbar)
+                        .children(horizontal_scrollbar),
+                )
                 .into_any_element()
         };
 
         crate::ui::style::panel_container(is_focused, theme)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.table_state.resizing_column.is_some() {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    } else {
+                        this.table_state.update_resize(event.position.x);
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::select_current))

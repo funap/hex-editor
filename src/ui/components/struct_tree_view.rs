@@ -1,6 +1,7 @@
 use crate::core::editor::Editor;
 use crate::core::radix::DisplayRadix;
 use crate::core::structure::{ParseResult, ParsedField, format_parse_result_as_text, format_parse_result_as_toml};
+use crate::ui::components::data_table::{TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use crate::ui::style::{format_size_friendly, format_with_commas};
 use gpui::prelude::*;
@@ -8,7 +9,6 @@ use gpui::*;
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex};
 use std::collections::HashSet;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
@@ -29,53 +29,23 @@ const AUTOFIT_CHAR_WIDTH: f32 = 7.2;
 const AUTOFIT_WIDE_CHAR_WIDTH: f32 = 13.0;
 const AUTOFIT_MAX_TEXT_CHARS: usize = 128;
 
-#[derive(Clone, Copy)]
-struct StructureColumnVisibility {
-    address: bool,
-    type_name: bool,
-    size: bool,
-    value: bool,
-}
-
-impl Default for StructureColumnVisibility {
-    fn default() -> Self {
-        Self {
-            address: true,
-            type_name: false,
-            size: false,
-            value: true,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct StructureColumnWidths {
-    field: Option<f32>,
-    address: f32,
-    type_name: f32,
-    size: f32,
-    value: Option<f32>,
-}
-
-impl Default for StructureColumnWidths {
-    fn default() -> Self {
-        Self {
-            field: Some(FIELD_COLUMN_WIDTH),
-            address: ADDRESS_COLUMN_WIDTH,
-            type_name: TYPE_COLUMN_WIDTH,
-            size: SIZE_COLUMN_WIDTH,
-            value: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum StructureColumn {
-    Field,
-    Address,
-    Type,
-    Size,
-    Value,
+fn default_structure_columns() -> Vec<TableColumn> {
+    vec![
+        TableColumn::new("field", "Field", px(FIELD_COLUMN_WIDTH)).min_width(px(60.0)).resizable(true),
+        TableColumn::new("address", "Address", px(ADDRESS_COLUMN_WIDTH))
+            .min_width(px(50.0))
+            .resizable(true)
+            .visible(true),
+        TableColumn::new("type", "Type", px(TYPE_COLUMN_WIDTH))
+            .min_width(px(50.0))
+            .resizable(true)
+            .visible(false),
+        TableColumn::new("size", "Size", px(SIZE_COLUMN_WIDTH))
+            .min_width(px(40.0))
+            .resizable(true)
+            .visible(false),
+        TableColumn::new("value", "Value", px(180.0)).min_width(px(60.0)).resizable(true).visible(true),
+    ]
 }
 
 fn path_from_string_file_name(path: &str) -> String {
@@ -130,12 +100,11 @@ pub struct StructTreeView {
     pub flattened_fields: Vec<FlattenedField>,
     pub expanded_paths: HashSet<Vec<usize>>,
     pub editor: Option<Entity<Editor>>,
-    pub scroll_handle: UniformListScrollHandle,
+    pub table_state: VirtualTableState,
     pub focus_handle: FocusHandle,
     pub selected_index: Option<usize>,
     pub recent_definition_paths: Vec<PathBuf>,
-    column_visibility: StructureColumnVisibility,
-    column_widths: StructureColumnWidths,
+    last_container_width: Pixels,
     value_radix: DisplayRadix,
     last_parse_id: Option<(String, usize, usize, usize, usize, bool)>,
     last_selection_cursor: Option<usize>,
@@ -178,7 +147,7 @@ impl StructTreeView {
         if let Some(ref res) = parse_result {
             Self::flatten_fields(res.fields.iter(), 0, &[], &expanded_paths, &mut flattened, 0);
         }
-        let scroll_handle = UniformListScrollHandle::new();
+        let table_state = VirtualTableState::new(default_structure_columns());
         let focus_handle = cx.focus_handle();
 
         let mut this = Self {
@@ -186,12 +155,11 @@ impl StructTreeView {
             flattened_fields: flattened,
             expanded_paths,
             editor: editor.clone(),
-            scroll_handle,
+            table_state,
             focus_handle,
             selected_index: None,
             recent_definition_paths: Vec::new(),
-            column_visibility: StructureColumnVisibility::default(),
-            column_widths: StructureColumnWidths::default(),
+            last_container_width: px(300.0),
             value_radix: DisplayRadix::Decimal,
             last_parse_id: None,
             last_selection_cursor: None,
@@ -367,7 +335,7 @@ impl StructTreeView {
             && self.selected_index != Some(idx)
         {
             self.selected_index = Some(idx);
-            self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
+            self.table_state.scroll_to_row(idx, ScrollStrategy::Top);
             cx.notify();
         } else if best_match.is_none() {
             self.selected_index = None;
@@ -397,7 +365,7 @@ impl StructTreeView {
         self.selected_index = None;
         self.last_selection_cursor = None;
         self.last_selection_scan_len = 0;
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.table_state.scroll_to_row(0, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -662,7 +630,7 @@ impl StructTreeView {
         }
 
         self.selected_index = Some(idx);
-        self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
+        self.table_state.scroll_to_row(idx, ScrollStrategy::Top);
 
         let item = &self.flattened_fields[idx];
         let offset = if item.size == 0 && item.has_children {
@@ -823,22 +791,26 @@ impl StructTreeView {
     }
 
     fn on_action_toggle_structure_address_column(&mut self, _: &crate::actions::ToggleStructureAddressColumn, _window: &mut Window, cx: &mut Context<Self>) {
-        self.column_visibility.address = !self.column_visibility.address;
+        let visible = self.table_state.column(1).map(|c| c.visible).unwrap_or(true);
+        self.table_state.set_column_visible(1, !visible);
         cx.notify();
     }
 
     fn on_action_toggle_structure_type_column(&mut self, _: &crate::actions::ToggleStructureTypeColumn, _window: &mut Window, cx: &mut Context<Self>) {
-        self.column_visibility.type_name = !self.column_visibility.type_name;
+        let visible = self.table_state.column(2).map(|c| c.visible).unwrap_or(false);
+        self.table_state.set_column_visible(2, !visible);
         cx.notify();
     }
 
     fn on_action_toggle_structure_size_column(&mut self, _: &crate::actions::ToggleStructureSizeColumn, _window: &mut Window, cx: &mut Context<Self>) {
-        self.column_visibility.size = !self.column_visibility.size;
+        let visible = self.table_state.column(3).map(|c| c.visible).unwrap_or(false);
+        self.table_state.set_column_visible(3, !visible);
         cx.notify();
     }
 
     fn on_action_toggle_structure_value_column(&mut self, _: &crate::actions::ToggleStructureValueColumn, _window: &mut Window, cx: &mut Context<Self>) {
-        self.column_visibility.value = !self.column_visibility.value;
+        let visible = self.table_state.column(4).map(|c| c.visible).unwrap_or(true);
+        self.table_state.set_column_visible(4, !visible);
         cx.notify();
     }
 
@@ -867,27 +839,6 @@ impl StructTreeView {
         self.set_value_radix(DisplayRadix::Binary, cx);
     }
 
-    fn visible_field_range(&self) -> Range<usize> {
-        let field_count = self.flattened_fields.len();
-        if field_count == 0 {
-            return 0..0;
-        }
-
-        let (start, end) = {
-            let scroll_state = self.scroll_handle.0.borrow();
-            let Some(item_size) = scroll_state.last_item_size else {
-                return 0..field_count.min(64);
-            };
-            let scroll_top = (-f32::from(scroll_state.base_handle.offset().y)).max(0.0);
-            let viewport_height = f32::from(item_size.item.height);
-            let start = (scroll_top / STRUCTURE_ROW_HEIGHT).floor() as usize;
-            let end = ((scroll_top + viewport_height) / STRUCTURE_ROW_HEIGHT).ceil() as usize;
-            (start.min(field_count), end.min(field_count))
-        };
-
-        if start < end { start..end } else { 0..field_count.min(1) }
-    }
-
     fn estimated_text_width(text: &str) -> f32 {
         text.chars()
             .take(AUTOFIT_MAX_TEXT_CHARS)
@@ -909,89 +860,44 @@ impl StructTreeView {
         }
     }
 
-    fn column_text(column: StructureColumn, field: &FlattenedField, parsed_field: &ParsedField, value_radix: DisplayRadix) -> String {
-        match column {
-            StructureColumn::Field => parsed_field.id.clone(),
-            StructureColumn::Address => format!("0x{:X}", parsed_field.offset),
-            StructureColumn::Type => {
-                if parsed_field.field_type.is_empty() {
-                    if field.has_children { "struct".to_string() } else { "value".to_string() }
-                } else {
-                    parsed_field.field_type.clone()
-                }
-            }
-            StructureColumn::Size => format!("{} B", format_with_commas(field.size)),
-            StructureColumn::Value => Self::value_text(parsed_field, value_radix),
-        }
-    }
-
-    fn auto_fit_column(&mut self, column: StructureColumn, cx: &mut Context<Self>) {
-        let header = match column {
-            StructureColumn::Field => "Field",
-            StructureColumn::Address => "Address",
-            StructureColumn::Type => "Type",
-            StructureColumn::Size => "Size",
-            StructureColumn::Value => "Value",
-        };
-        let mut max_width = Self::estimated_text_width(header);
-        if matches!(column, StructureColumn::Field) {
+    fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        self.table_state.end_resize();
+        let col = self.table_state.column(col_ix);
+        let header = col.map(|c| c.name.to_string()).unwrap_or_default();
+        let mut max_width = Self::estimated_text_width(&header);
+        if col_ix == 0 {
             max_width += TREE_INDICATOR_WIDTH + COLUMN_GAP;
         }
 
-        for ix in self.visible_field_range() {
-            let Some(field) = self.flattened_fields.get(ix) else {
-                continue;
-            };
+        for field in self.flattened_fields.iter().take(128) {
             let Some(parsed_field) = self.field_at_path(&field.path) else {
                 continue;
             };
 
-            let text = Self::column_text(column, field, parsed_field, self.value_radix);
+            let text = match col_ix {
+                0 => parsed_field.id.clone(),
+                1 => format!("0x{:X}", parsed_field.offset),
+                2 => {
+                    if parsed_field.field_type.is_empty() {
+                        if field.has_children { "struct".to_string() } else { "value".to_string() }
+                    } else {
+                        parsed_field.field_type.clone()
+                    }
+                }
+                3 => format!("{} B", format_with_commas(field.size)),
+                4 => Self::value_text(parsed_field, self.value_radix),
+                _ => String::new(),
+            };
             let mut text_width = Self::estimated_text_width(&text);
-            if matches!(column, StructureColumn::Field) {
+            if col_ix == 0 {
                 text_width += field.depth as f32 * TREE_INDENT_WIDTH + TREE_INDICATOR_WIDTH + COLUMN_GAP;
             }
             max_width = max_width.max(text_width);
         }
 
         let width = (max_width + AUTOFIT_HORIZONTAL_PADDING).clamp(AUTOFIT_MIN_WIDTH, AUTOFIT_MAX_WIDTH);
-        match column {
-            StructureColumn::Field => self.column_widths.field = Some(width),
-            StructureColumn::Address => self.column_widths.address = width,
-            StructureColumn::Type => self.column_widths.type_name = width,
-            StructureColumn::Size => self.column_widths.size = width,
-            StructureColumn::Value => self.column_widths.value = Some(width),
-        }
+        self.table_state.set_column_width(col_ix, px(width));
         cx.notify();
-    }
-
-    fn tree_cell(width: Option<f32>) -> Div {
-        let mut cell = h_flex().min_w_0();
-        if let Some(width) = width {
-            cell = cell.flex_shrink_0().w(px(width));
-        } else {
-            cell = cell.flex_1();
-        }
-        cell
-    }
-
-    fn table_cell(width: Option<f32>, border_color: Hsla) -> Div {
-        let mut cell = div()
-            .items_center()
-            .min_w_0()
-            .border_l_1()
-            .border_color(border_color)
-            .pl_1()
-            .truncate()
-            .whitespace_nowrap();
-
-        if let Some(width) = width {
-            cell = cell.flex_shrink_0().w(px(width));
-        } else {
-            cell = cell.flex_1();
-        }
-
-        cell
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1001,8 +907,9 @@ impl StructTreeView {
         parsed_field: &ParsedField,
         is_selected: bool,
         is_focused: bool,
-        column_visibility: StructureColumnVisibility,
-        column_widths: StructureColumnWidths,
+        visible_cols: &[(usize, Pixels)],
+        total_visible_width: Pixels,
+        scroll_offset_x: Pixels,
         value_radix: DisplayRadix,
         view: Entity<Self>,
         focus_handle: &FocusHandle,
@@ -1039,16 +946,14 @@ impl StructTreeView {
 
         let field_offset = parsed_field.offset;
 
-        div()
+        h_flex()
             .id(ix)
-            .flex()
-            .flex_row()
             .items_center()
             .w_full()
             .h(px(STRUCTURE_ROW_HEIGHT))
+            .flex_shrink_0()
+            .overflow_hidden()
             .bg(bg_color)
-            .px_2()
-            .gap_1()
             .hover(|style| style.bg(hover_color))
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -1065,91 +970,89 @@ impl StructTreeView {
                 }),
             )
             .child(
-                Self::tree_cell(column_widths.field)
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .w(px(TREE_INDENT_WIDTH * field.depth as f32 + TREE_INDICATOR_WIDTH))
-                            .h(px(TREE_INDICATOR_WIDTH))
-                            .items_center()
-                            .justify_end()
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .w(px(TREE_INDICATOR_WIDTH))
-                                    .h(px(TREE_INDICATOR_WIDTH))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .cursor_pointer()
-                                    .child(chevron_symbol)
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, _window, cx| {
-                                            this.toggle_collapse_at(ix, cx);
-                                        }),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(theme.foreground)
-                            .child(id),
-                    ),
+                h_flex()
+                    .w(total_visible_width)
+                    .h_full()
+                    .ml(-scroll_offset_x)
+                    .children(visible_cols.iter().enumerate().map(|(vis_ix, &(col_ix, width))| {
+                        let is_first = vis_ix == 0;
+                        let cell_content = match col_ix {
+                            0 => h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    h_flex()
+                                        .flex_shrink_0()
+                                        .w(px(TREE_INDENT_WIDTH * field.depth as f32 + TREE_INDICATOR_WIDTH))
+                                        .h(px(TREE_INDICATOR_WIDTH))
+                                        .items_center()
+                                        .justify_end()
+                                        .child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .w(px(TREE_INDICATOR_WIDTH))
+                                                .h(px(TREE_INDICATOR_WIDTH))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .cursor_pointer()
+                                                .child(chevron_symbol)
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, _window, cx| {
+                                                        this.toggle_collapse_at(ix, cx);
+                                                    }),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .whitespace_nowrap()
+                                        .text_sm()
+                                        .font_medium()
+                                        .text_color(theme.foreground)
+                                        .child(id.clone()),
+                                )
+                                .into_any_element(),
+                            1 => div()
+                                .text_xs()
+                                .font_family("Courier New")
+                                .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
+                                .child(format!("0x{:X}", field_offset))
+                                .into_any_element(),
+                            2 => div()
+                                .rounded_sm()
+                                .bg(theme.accent.opacity(0.14))
+                                .text_xs()
+                                .font_family("Courier New")
+                                .text_color(theme.accent)
+                                .child(type_label.clone())
+                                .into_any_element(),
+                            3 => div()
+                                .text_xs()
+                                .font_family("Courier New")
+                                .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
+                                .child(format!("{} B", format_with_commas(field.size)))
+                                .into_any_element(),
+                            4 => div().text_xs().text_color(theme.muted_foreground).child(value.clone()).into_any_element(),
+                            _ => div().into_any_element(),
+                        };
+                        VirtualTable::render_data_cell(col_ix, width, is_first, theme.border.opacity(0.35), cell_content)
+                    })),
             )
-            .when(column_visibility.address, |this| {
-                this.child(
-                    Self::table_cell(Some(column_widths.address), theme.border.opacity(0.35))
-                        .text_xs()
-                        .font_family("Courier New")
-                        .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
-                        .child(format!("0x{:X}", field_offset)),
-                )
-            })
-            .when(column_visibility.type_name, |this| {
-                this.child(
-                    Self::table_cell(Some(column_widths.type_name), theme.border.opacity(0.35))
-                        .rounded_sm()
-                        .bg(theme.accent.opacity(0.14))
-                        .text_xs()
-                        .font_family("Courier New")
-                        .text_color(theme.accent)
-                        .child(type_label),
-                )
-            })
-            .when(column_visibility.size, |this| {
-                this.child(
-                    Self::table_cell(Some(column_widths.size), theme.border.opacity(0.35))
-                        .text_xs()
-                        .font_family("Courier New")
-                        .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
-                        .child(format!("{} B", format_with_commas(field.size))),
-                )
-            })
-            .when(column_visibility.value, |this| {
-                this.child(
-                    Self::table_cell(column_widths.value, theme.border.opacity(0.35))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(value),
-                )
-            })
             .into_any_element()
     }
 }
 
 impl Render for StructTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let resize_overlay = VirtualTable::render_resize_overlay(&self.table_state, cx, |this| &mut this.table_state);
+
         let view = cx.entity().clone();
         let is_parsing = self.editor.as_ref().is_some_and(|ed| ed.read(cx).is_parsing_structure);
         let is_empty = self.flattened_fields.is_empty() && self.parse_result.as_ref().is_none_or(|result| result.fields.is_empty());
@@ -1189,7 +1092,7 @@ impl Render for StructTreeView {
             Some(
                 gpui_component::button::Button::new("clear-structure-btn")
                     .ghost()
-                    .icon(IconName::Close)
+                    .icon(IconName::Eraser)
                     .with_size(gpui_component::Size::XSmall)
                     .disabled(export_is_busy)
                     .tooltip("Clear Structure Definition")
@@ -1270,12 +1173,34 @@ impl Render for StructTreeView {
             StructureExportStatus::Error(message) => Some((IconName::TriangleAlert, message.clone(), theme.red)),
         };
 
-        let container = crate::ui::style::panel_container(is_focused, theme);
-
-        container
+        crate::ui::style::panel_container(is_focused, theme)
             .id("struct-tree-view")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if this.table_state.resizing_column.is_some() {
+                    this.table_state.update_resize(event.position.x);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if this.table_state.resizing_column.is_some() {
+                        this.table_state.end_resize();
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::toggle_expand))
@@ -1466,118 +1391,70 @@ impl Render for StructTreeView {
                 }
             } else {
                 let focus_handle = self.focus_handle.clone();
-                let column_visibility = self.column_visibility;
-                let column_widths = self.column_widths;
                 let value_radix = self.value_radix;
-                let column_header = h_flex()
-                    .id("structure-column-header")
-                    .w_full()
-                    .h(px(22.0))
-                    .items_center()
-                    .px_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(theme.border.opacity(0.7))
-                    .bg(theme.muted.opacity(0.18))
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        Self::tree_cell(column_widths.field)
-                            .items_center()
-                            .gap_1()
-                            .child(div().flex_shrink_0().w(px(TREE_INDICATOR_WIDTH)).h(px(TREE_INDICATOR_WIDTH)))
-                            .child(div().flex_1().min_w_0().truncate().whitespace_nowrap().child("Field"))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                                    if event.click_count >= 2 {
-                                        this.auto_fit_column(StructureColumn::Field, cx);
-                                    }
-                                }),
-                            ),
-                    )
-                    .when(column_visibility.address, |this| {
-                        this.child(
-                            Self::table_cell(Some(column_widths.address), theme.border.opacity(0.7))
-                                .child("Address")
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                                        if event.click_count >= 2 {
-                                            this.auto_fit_column(StructureColumn::Address, cx);
-                                        }
-                                    }),
-                                ),
-                        )
-                    })
-                    .when(column_visibility.type_name, |this| {
-                        this.child(
-                            Self::table_cell(Some(column_widths.type_name), theme.border.opacity(0.7))
-                                .child("TYPE")
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                                        if event.click_count >= 2 {
-                                            this.auto_fit_column(StructureColumn::Type, cx);
-                                        }
-                                    }),
-                                ),
-                        )
-                    })
-                    .when(column_visibility.size, |this| {
-                        this.child(
-                            Self::table_cell(Some(column_widths.size), theme.border.opacity(0.7))
-                                .child("SIZE")
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                                        if event.click_count >= 2 {
-                                            this.auto_fit_column(StructureColumn::Size, cx);
-                                        }
-                                    }),
-                                ),
-                        )
-                    })
-                    .when(column_visibility.value, |this| {
-                        this.child(Self::table_cell(column_widths.value, theme.border.opacity(0.7)).child("VALUE").on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                                if event.click_count >= 2 {
-                                    this.auto_fit_column(StructureColumn::Value, cx);
-                                }
-                            }),
-                        ))
-                    })
-                    .context_menu({
-                        let context_focus = self.focus_handle.clone();
-                        move |menu, window, cx| {
-                            menu.action_context(context_focus.clone())
-                                .label("Visible columns")
-                                .separator()
-                                .menu_with_check("Address", column_visibility.address, Box::new(crate::actions::ToggleStructureAddressColumn))
-                                .menu_with_check("TYPE", column_visibility.type_name, Box::new(crate::actions::ToggleStructureTypeColumn))
-                                .menu_with_check("SIZE", column_visibility.size, Box::new(crate::actions::ToggleStructureSizeColumn))
-                                .menu_with_check("VALUE", column_visibility.value, Box::new(crate::actions::ToggleStructureValueColumn))
-                                .separator()
-                                .submenu("VALUE format", window, cx, move |menu, _window, _cx| {
-                                    menu.menu_with_check(
-                                        "Hexadecimal (16)",
-                                        value_radix == DisplayRadix::Hexadecimal,
-                                        Box::new(crate::actions::SetRadixHex),
-                                    )
-                                    .menu_with_check("Decimal (10)", value_radix == DisplayRadix::Decimal, Box::new(crate::actions::SetRadixDec))
-                                    .menu_with_check("Octal (8)", value_radix == DisplayRadix::Octal, Box::new(crate::actions::SetRadixOct))
-                                    .menu_with_check(
-                                        "Binary (2)",
-                                        value_radix == DisplayRadix::Binary,
-                                        Box::new(crate::actions::SetRadixBin),
-                                    )
-                                })
+                let total_visible_width = self.table_state.total_visible_width();
+                let scroll_offset_x = self.table_state.scroll_offset_x;
+                let is_address_visible = self.table_state.column(1).map(|c| c.visible).unwrap_or(true);
+                let is_type_visible = self.table_state.column(2).map(|c| c.visible).unwrap_or(false);
+                let is_size_visible = self.table_state.column(3).map(|c| c.visible).unwrap_or(false);
+                let is_value_visible = self.table_state.column(4).map(|c| c.visible).unwrap_or(true);
+
+                let column_header = VirtualTable::render_header_row(
+                    &self.table_state,
+                    "structure-column-header",
+                    theme,
+                    cx,
+                    Some(|col_ix, col: &TableColumn| {
+                        if col_ix == 0 {
+                            Some(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(div().flex_shrink_0().w(px(TREE_INDICATOR_WIDTH)).h(px(TREE_INDICATOR_WIDTH)))
+                                    .child(div().flex_1().min_w_0().truncate().whitespace_nowrap().child(col.name.clone()))
+                                    .into_any_element(),
+                            )
+                        } else {
+                            None
                         }
-                    });
+                    }),
+                    Self::auto_fit_column,
+                    None::<fn(&mut Self, usize, &mut Context<Self>)>,
+                    |this| &mut this.table_state,
+                )
+                .context_menu({
+                    let context_focus = self.focus_handle.clone();
+                    let value_radix = self.value_radix;
+                    move |menu, window, cx| {
+                        menu.action_context(context_focus.clone())
+                            .label("Visible columns")
+                            .separator()
+                            .menu_with_check("Address", is_address_visible, Box::new(crate::actions::ToggleStructureAddressColumn))
+                            .menu_with_check("Type", is_type_visible, Box::new(crate::actions::ToggleStructureTypeColumn))
+                            .menu_with_check("Size", is_size_visible, Box::new(crate::actions::ToggleStructureSizeColumn))
+                            .menu_with_check("Value", is_value_visible, Box::new(crate::actions::ToggleStructureValueColumn))
+                            .separator()
+                            .submenu("Value format", window, cx, move |menu, _window, _cx| {
+                                menu.menu_with_check(
+                                    "Hexadecimal (16)",
+                                    value_radix == DisplayRadix::Hexadecimal,
+                                    Box::new(crate::actions::SetRadixHex),
+                                )
+                                .menu_with_check("Decimal (10)", value_radix == DisplayRadix::Decimal, Box::new(crate::actions::SetRadixDec))
+                                .menu_with_check("Octal (8)", value_radix == DisplayRadix::Octal, Box::new(crate::actions::SetRadixOct))
+                                .menu_with_check(
+                                    "Binary (2)",
+                                    value_radix == DisplayRadix::Binary,
+                                    Box::new(crate::actions::SetRadixBin),
+                                )
+                            })
+                    }
+                });
+
                 let context_view = view.clone();
                 let context_focus = focus_handle.clone();
+                let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+
                 let tree_list = uniform_list("struct-tree-list", self.flattened_fields.len(), move |range, window, cx| {
                     let this = view.read(cx);
                     range
@@ -1591,8 +1468,9 @@ impl Render for StructTreeView {
                                         parsed_field,
                                         is_selected,
                                         is_focused,
-                                        column_visibility,
-                                        column_widths,
+                                        &visible_cols,
+                                        total_visible_width,
+                                        scroll_offset_x,
                                         value_radix,
                                         view.clone(),
                                         &focus_handle,
@@ -1608,12 +1486,71 @@ impl Render for StructTreeView {
                         })
                         .collect::<Vec<_>>()
                 })
-                .track_scroll(self.scroll_handle.clone());
-                let tree_view = v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .child(tree_list.flex_1().min_h_0().w_full())
+                .track_scroll(self.table_state.vertical_scroll_handle.clone())
+                .size_full();
+
+                let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
+                let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+
+                v_flex()
+                    .id("struct-table-container")
+                    .size_full()
+                    .overflow_hidden()
+                    .relative()
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                        if this.table_state.resizing_column.is_some() {
+                            this.table_state.update_resize(event.position.x);
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                            if this.table_state.resizing_column.is_some() {
+                                this.table_state.end_resize();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                            if this.table_state.resizing_column.is_some() {
+                                this.table_state.end_resize();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                        let delta_x = event.delta.pixel_delta(px(1.0)).x;
+                        if delta_x != px(0.0) {
+                            this.table_state.scroll_horizontally(delta_x, this.last_container_width);
+                            cx.notify();
+                        }
+                    }))
+                    .children(resize_overlay)
+                    .child(column_header)
+                    .child(
+                        div()
+                            .id("struct-results-container")
+                            .flex_1()
+                            .overflow_hidden()
+                            .relative()
+                            .child(canvas(
+                                {
+                                    let view = cx.entity().clone();
+                                    move |bounds, _, cx| {
+                                        view.update(cx, |this, _| {
+                                            this.last_container_width = bounds.size.width;
+                                        });
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            ))
+                            .child(tree_list)
+                            .child(vertical_scrollbar)
+                            .children(horizontal_scrollbar),
+                    )
                     .context_menu(move |menu, window, cx| {
                         let selected_field = {
                             let this = context_view.read(cx);
@@ -1660,8 +1597,8 @@ impl Render for StructTreeView {
                             .separator()
                             .menu("Expand All", Box::new(crate::actions::ExpandAllStructure))
                             .menu("Collapse All", Box::new(crate::actions::CollapseAllStructure))
-                    });
-                v_flex().size_full().child(column_header).child(tree_view).into_any_element()
+                    })
+                    .into_any_element()
             }))
     }
 }

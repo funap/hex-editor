@@ -353,7 +353,7 @@ impl Render for FileTreeView {
             Some(
                 gpui_component::button::Button::new("close-folder")
                     .ghost()
-                    .icon(IconName::Close)
+                    .icon(IconName::Eraser)
                     .with_size(gpui_component::Size::XSmall)
                     .tooltip("Close Folder")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -516,14 +516,15 @@ impl Render for FileTreeView {
                                 let item_id = item.id.clone();
                                 let is_folder = item.is_folder();
                                 move |menu, _window, cx| {
-                                    let (can_compare, left_path, right_path, pending_compare) = view.update(cx, |this, _cx| {
+                                    let (can_compare, left_path, right_path, pending_compare) = view.update(cx, |this, cx| {
                                         let can_compare = this.selected_items.len() == 2 && this.selected_items.iter().all(|item| !item.is_folder());
                                         let (lp, rp) = if can_compare {
                                             (Some(this.selected_items[0].id.to_string()), Some(this.selected_items[1].id.to_string()))
                                         } else {
                                             (None, None)
                                         };
-                                        (can_compare, lp, rp, this.pending_compare_path.clone())
+                                        let pending = crate::app_state::PendingCompareState::path(cx).or_else(|| this.pending_compare_path.clone());
+                                        (can_compare, lp, rp, pending)
                                     });
 
                                     let mut menu = menu.menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile { path: item_id.to_string() }));

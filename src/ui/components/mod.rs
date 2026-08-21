@@ -1,6 +1,7 @@
 pub mod activity_bar;
 pub mod checksum_panel;
 pub mod data_inspector;
+pub mod data_table;
 pub mod file_tree_view;
 pub mod hex_view;
 pub mod highlight_panel;

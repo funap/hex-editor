@@ -1,13 +1,15 @@
 use crate::core::diff::{DiffChunk, DiffResult};
 use crate::core::document::Document;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::ActiveTheme;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::{ActiveTheme, IconName};
 use std::sync::{Arc, RwLock};
 
-use crate::actions::{NextDifference, PrevDifference, ToggleSyncScroll};
+use crate::actions::{NextDifference, PrevDifference, RefreshDiff, SwapDiffFiles, ToggleSyncScroll};
+use crate::app_state::AppState;
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
@@ -160,8 +162,8 @@ impl DiffPanel {
 
     fn update_highlights(&mut self, cx: &mut Context<Self>) {
         if let Some(diff_result) = &self.diff_result {
-            let mut left_highlights = Vec::new();
-            let mut right_highlights = Vec::new();
+            let mut left_highlights = Vec::with_capacity(diff_result.chunks.len());
+            let mut right_highlights = Vec::with_capacity(diff_result.chunks.len());
 
             for chunk in &diff_result.chunks {
                 if let DiffChunk::Modified { offset, length } = chunk {
@@ -211,6 +213,41 @@ impl DiffPanel {
         cx.notify();
     }
 
+    pub fn swap_documents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        std::mem::swap(&mut self.left_document, &mut self.right_document);
+        std::mem::swap(&mut self.left_view, &mut self.right_view);
+        self.refresh_diff(window, cx);
+        cx.notify();
+    }
+
+    pub fn refresh_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let left_doc = self.left_document.clone();
+        let right_doc = self.right_document.clone();
+        let app = AppState::global(cx).clone();
+        let task = app.editor_service.compute_diff(left_doc, right_doc, cx);
+        let view = cx.entity().downgrade();
+        cx.spawn_in(window, async move |_, window| {
+            let result = task.await;
+            let _ = window.update(|_, cx| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.set_diff_result(result, cx);
+                        cx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn on_action_swap_diff(&mut self, _: &SwapDiffFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.swap_documents(window, cx);
+    }
+
+    fn on_action_refresh_diff(&mut self, _: &RefreshDiff, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_diff(window, cx);
+    }
+
     fn scroll_to_current_diff(&mut self, cx: &mut Context<Self>) {
         if let Some(diff_result) = &self.diff_result {
             let modified_chunks: Vec<_> = diff_result.chunks.iter().filter(|c| matches!(c, DiffChunk::Modified { .. })).collect();
@@ -227,11 +264,11 @@ impl DiffPanel {
         }
     }
 
-    fn left_path(&self) -> std::path::PathBuf {
+    pub fn left_path(&self) -> std::path::PathBuf {
         self.left_document.read().expect("left document read lock").path().to_path_buf()
     }
 
-    fn right_path(&self) -> std::path::PathBuf {
+    pub fn right_path(&self) -> std::path::PathBuf {
         self.right_document.read().expect("right document read lock").path().to_path_buf()
     }
 }
@@ -367,6 +404,26 @@ impl Render for DiffPanel {
                             cx.notify();
                         })),
                     )
+                    .child(
+                        Button::new("swap-diff")
+                            .icon(IconName::GitCompare)
+                            .ghost()
+                            .label("Swap")
+                            .tooltip("Swap Left and Right (⇄)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.swap_documents(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("refresh-diff")
+                            .icon(IconName::Redo)
+                            .ghost()
+                            .label("Refresh")
+                            .tooltip("Recompute Diff (↻)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_diff(window, cx);
+                            })),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
@@ -415,5 +472,7 @@ impl Render for DiffPanel {
             .on_action(cx.listener(Self::next_difference))
             .on_action(cx.listener(Self::prev_difference))
             .on_action(cx.listener(Self::toggle_sync_scroll))
+            .on_action(cx.listener(Self::on_action_swap_diff))
+            .on_action(cx.listener(Self::on_action_refresh_diff))
     }
 }

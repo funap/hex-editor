@@ -109,7 +109,7 @@ pub struct Quit;
 pub struct SelectAll;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ToggleGoToOffset;
+pub struct ToggleGoToAddress;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct GoToBeginning;

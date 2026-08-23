@@ -475,7 +475,7 @@ impl StringsPanel {
         }
     }
 
-    fn copy_offset(&mut self, action: &CopyAddress, _: &mut Window, cx: &mut Context<Self>) {
+    fn copy_address(&mut self, action: &CopyAddress, _: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
     }
 
@@ -844,7 +844,7 @@ impl Render for StringsPanel {
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::select_current))
-            .on_action(cx.listener(Self::copy_offset))
+            .on_action(cx.listener(Self::copy_address))
             .on_action(cx.listener(Self::copy_value))
             .on_action(cx.listener(Self::clear_results))
             .child(header)

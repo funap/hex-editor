@@ -235,7 +235,7 @@ fn setup_menus(cx: &mut App) {
         gpui::Menu {
             name: "Go".into(),
             items: vec![
-                gpui::MenuItem::action("Go to Offset...", crate::actions::ToggleGoToOffset),
+                gpui::MenuItem::action("Go to Address...", crate::actions::ToggleGoToAddress),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Go to Beginning", crate::actions::GoToBeginning),
                 gpui::MenuItem::action("Go to End", crate::actions::GoToEnd),
@@ -388,9 +388,9 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("shift-f3", crate::actions::SearchPrev, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-g", crate::actions::SearchPrev, None),
-        gpui::KeyBinding::new("ctrl-g", crate::actions::ToggleGoToOffset, None),
+        gpui::KeyBinding::new("ctrl-g", crate::actions::ToggleGoToAddress, None),
         #[cfg(target_os = "macos")]
-        gpui::KeyBinding::new("cmd-l", crate::actions::ToggleGoToOffset, None),
+        gpui::KeyBinding::new("cmd-l", crate::actions::ToggleGoToAddress, None),
         // Clipboard & Selection
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-a", crate::actions::SelectAll, None),

@@ -2620,7 +2620,7 @@ impl Render for HexView {
                     h_flex()
                         .flex_shrink_0()
                         .w(px(OFFSET_WIDTH + SECTION_GAP))
-                        .child(div().w(px(OFFSET_WIDTH)).text_xs().text_color(theme.muted_foreground).child("Offset"))
+                        .child(div().w(px(OFFSET_WIDTH)).text_xs().text_color(theme.muted_foreground).child("Address"))
                         .child(
                             div()
                                 .w(px(SECTION_GAP))

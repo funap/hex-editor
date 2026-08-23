@@ -11,7 +11,7 @@ use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
     ClearAllCustomBreaks, ClearBookmark, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
     CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd, JoinLine, Paste, Redo,
-    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleGoToOffset, ToggleSearch, Undo,
+    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleGoToAddress, ToggleSearch, Undo,
 };
 use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
@@ -54,9 +54,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-g", ToggleGoToOffset, Some(CONTEXT)),
+        KeyBinding::new("ctrl-g", ToggleGoToAddress, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-l", ToggleGoToOffset, Some(CONTEXT)),
+        KeyBinding::new("cmd-l", ToggleGoToAddress, Some(CONTEXT)),
     ]);
 }
 
@@ -319,7 +319,7 @@ impl EditorPanel {
         cx.notify();
     }
 
-    pub fn toggle_goto_offset(&mut self, _: &ToggleGoToOffset, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_goto_address(&mut self, _: &ToggleGoToAddress, window: &mut Window, cx: &mut Context<Self>) {
         self.is_goto_visible = !self.is_goto_visible;
         if self.is_goto_visible {
             self.is_search_visible = false;
@@ -745,7 +745,7 @@ impl Render for EditorPanel {
 
         container
             .on_action(cx.listener(Self::toggle_search))
-            .on_action(cx.listener(Self::toggle_goto_offset))
+            .on_action(cx.listener(Self::toggle_goto_address))
             .on_action(cx.listener(Self::search_next))
             .on_action(cx.listener(Self::search_prev))
             .on_action(cx.listener(Self::focus_hex_view))

@@ -215,7 +215,7 @@ impl Render for StatusBar {
                             .text_color(theme.foreground)
                             .cursor_pointer()
                             .hover(|s| s.text_color(theme.accent))
-                            .tooltip(|_window, cx| cx.new(|_| gpui_component::tooltip::Tooltip::new("Click to copy position")).into())
+                            .tooltip(|_window, cx| cx.new(|_| gpui_component::tooltip::Tooltip::new("Click to copy address")).into())
                             .on_mouse_down(MouseButton::Left, {
                                 let copy_str = position_copy_val.clone();
                                 move |_, _, cx| {
@@ -230,14 +230,14 @@ impl Render for StatusBar {
                                     let off_h = offset_hex.clone();
                                     let off_d = offset_dec.clone();
                                     let p_str = pos_str.clone();
-                                    menu.menu_with_icon("Go to Offset...", IconName::Search, Box::new(ToggleGoToOffset))
+                                    menu.menu_with_icon("Go to Address...", IconName::Search, Box::new(ToggleGoToAddress))
                                         .separator()
                                         .menu_with_icon("Go to Beginning", IconName::ChevronUp, Box::new(GoToBeginning))
                                         .menu_with_icon("Go to End", IconName::ChevronDown, Box::new(GoToEnd))
                                         .separator()
-                                        .menu_with_icon(format!("Copy Position ({})", p_str), IconName::Copy, Box::new(Copy))
-                                        .menu_with_icon(format!("Copy Hex Offset ({})", off_h), IconName::Hash, Box::new(Copy))
-                                        .menu_with_icon(format!("Copy Dec Offset ({})", off_d), IconName::Hash, Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Address ({})", p_str), IconName::Copy, Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Hex Address ({})", off_h), IconName::Hash, Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Dec Address ({})", off_d), IconName::Hash, Box::new(Copy))
                                 }
                             })
                             .child(position_text),

@@ -52,8 +52,8 @@ pub enum GotoParseError {
 impl fmt::Display for GotoParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GotoParseError::Empty => write!(f, "Please enter an offset"),
-            GotoParseError::InvalidFormat(msg) => write!(f, "Invalid offset: {}", msg),
+            GotoParseError::Empty => write!(f, "Please enter an address"),
+            GotoParseError::InvalidFormat(msg) => write!(f, "Invalid address: {}", msg),
         }
     }
 }

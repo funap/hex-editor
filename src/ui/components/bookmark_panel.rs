@@ -603,7 +603,7 @@ impl BookmarkPanel {
                             .ghost()
                             .icon(IconName::Binoculars)
                             .with_size(Size::XSmall)
-                            .tooltip("Go to offset")
+                            .tooltip("Go to address")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.focus_handle.focus(window);
                                 this.navigate_to_bookmark(offset, size, cx);

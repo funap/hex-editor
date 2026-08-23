@@ -34,7 +34,7 @@ impl EventEmitter<GotoBarEvent> for GotoOffsetBar {}
 
 impl GotoOffsetBar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Offset (e.g. 0x100, 256, +0x20, 50%)..."));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Address (e.g. 0x100, 256, +0x20, 50%)..."));
 
         // Subscribe to input changes
         cx.subscribe(&input, |this, input, event: &input::InputEvent, cx| {

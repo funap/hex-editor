@@ -304,7 +304,7 @@ impl SearchPanel {
         cx.notify();
     }
 
-    fn copy_offset(&mut self, action: &CopyAddress, window: &mut Window, cx: &mut Context<Self>) {
+    fn copy_address(&mut self, action: &CopyAddress, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
         window.push_notification(gpui_component::notification::Notification::info(format!("Copied address {}", action.value)), cx);
     }
@@ -738,7 +738,7 @@ impl Render for SearchPanel {
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::select_current))
             .on_action(cx.listener(Self::clear_results_action))
-            .on_action(cx.listener(Self::copy_offset))
+            .on_action(cx.listener(Self::copy_address))
             .on_action(cx.listener(Self::copy_value))
             .on_action(cx.listener(Self::copy_text))
             .child(header)

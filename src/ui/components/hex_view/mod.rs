@@ -1203,13 +1203,7 @@ impl HexView {
                 }
             } else {
                 let position = editor.cursor_offset;
-                let existing_len = editor
-                    .document
-                    .read()
-                    .ok()
-                    .and_then(|document| editor.encoding.decode_char_at(document.buffer.data(), position).map(|(_, len)| len))
-                    .unwrap_or(1);
-                let range = position..position.saturating_add(existing_len).min(editor.total_size());
+                let range = position..position.saturating_add(replacement.len()).min(editor.total_size());
                 editor.replace_range(range, replacement)
             };
             if changed {

@@ -2666,6 +2666,49 @@ mod tests {
     }
 
     #[test]
+    fn test_overwrite_replacement_preserves_size_over_multibyte_utf8() {
+        // "あいう" in UTF-8 is 9 bytes: [0xE3, 0x81, 0x82, 0xE3, 0x81, 0x84, 0xE3, 0x81, 0x86]
+        let mut editor = create_editor_with_content("あいう".as_bytes());
+        assert_eq!(editor.total_size(), 9);
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Typing single-byte ASCII 'a' (0x61) at offset 0 in overwrite mode replaces exactly 1 byte
+        let pos = editor.cursor_offset;
+        let replacement = b"a".to_vec();
+        let range = pos..pos.saturating_add(replacement.len()).min(editor.total_size());
+        assert!(editor.replace_range(range, replacement));
+        assert_eq!(editor.total_size(), 9);
+        assert_eq!(editor.cursor_offset, 1);
+        assert_eq!(editor.document.read().unwrap().buffer.data()[0], b'a');
+
+        // Typing 'b' at offset 1
+        let pos = editor.cursor_offset;
+        let replacement = b"b".to_vec();
+        let range = pos..pos.saturating_add(replacement.len()).min(editor.total_size());
+        assert!(editor.replace_range(range, replacement));
+        assert_eq!(editor.total_size(), 9);
+        assert_eq!(editor.cursor_offset, 2);
+
+        // Typing 'c' at offset 2
+        let pos = editor.cursor_offset;
+        let replacement = b"c".to_vec();
+        let range = pos..pos.saturating_add(replacement.len()).min(editor.total_size());
+        assert!(editor.replace_range(range, replacement));
+        assert_eq!(editor.total_size(), 9);
+        assert_eq!(editor.cursor_offset, 3);
+        assert_eq!(&editor.document.read().unwrap().buffer.data()[0..3], b"abc");
+
+        // Overwriting with a 3-byte UTF-8 character "え" at offset 3
+        let pos = editor.cursor_offset;
+        let replacement = "え".as_bytes().to_vec();
+        let range = pos..pos.saturating_add(replacement.len()).min(editor.total_size());
+        assert!(editor.replace_range(range, replacement));
+        assert_eq!(editor.total_size(), 9);
+        assert_eq!(editor.cursor_offset, 6);
+        assert_eq!(editor.document.read().unwrap().buffer.data(), "abcえう".as_bytes());
+    }
+
+    #[test]
     fn test_insert_delete_and_selection_backspace_cursor() {
         let mut editor = create_editor_with_content(b"abcd");
         editor.set_cursor_offset(2);

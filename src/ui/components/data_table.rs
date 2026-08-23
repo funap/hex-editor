@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, Context, Div, ElementId, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, ScrollHandle, ScrollStrategy, SharedString, Stateful, Styled, UniformListScrollHandle, canvas, div, point, px, size,
+    Pixels, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Styled, UniformListScrollHandle, canvas, div, point, px, size,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarAxis};
 use gpui_component::{StyledExt, h_flex};
@@ -119,6 +119,7 @@ pub struct VirtualTableState {
     pub horizontal_scroll_handle: ScrollHandle,
     pub resizing_column: Option<ColumnResizeState>,
     pub scroll_offset_x: Pixels,
+    pub last_container_width: Pixels,
 }
 
 impl VirtualTableState {
@@ -130,6 +131,7 @@ impl VirtualTableState {
             horizontal_scroll_handle: ScrollHandle::new(),
             resizing_column: None,
             scroll_offset_x: px(0.0),
+            last_container_width: px(0.0),
         }
     }
 
@@ -292,22 +294,68 @@ impl VirtualTableState {
 pub struct VirtualTable;
 
 impl VirtualTable {
-    /// Returns a canvas overlay that registers window-level mouse move and mouse up handlers during paint.
-    /// This ensures dragging and mouse release are captured safely even when the cursor moves over other panels or components.
-    pub fn render_resize_overlay<V: 'static>(
+    /// Returns a canvas overlay that intercepts Shift+scroll wheel events during the Capture phase
+    /// (ensuring purely horizontal scrolling without unintended diagonal/vertical movement in uniform_list),
+    /// tracks container bounds, and manages column resize drag operations.
+    pub fn render_table_overlay<V: 'static>(
         state: &VirtualTableState,
         cx: &Context<V>,
         get_state_mut: impl Fn(&mut V) -> &mut VirtualTableState + 'static + Copy,
-    ) -> Option<AnyElement> {
-        if state.resizing_column.is_none() {
-            return None;
-        }
-
+    ) -> AnyElement {
+        let is_resizing = state.resizing_column.is_some();
         let view = cx.entity().clone();
-        Some(
-            canvas(
-                |_bounds, _window, _cx| {},
-                move |_bounds, _prepaint, window, _cx| {
+
+        canvas(
+            {
+                let view = view.clone();
+                move |bounds, _window, cx| {
+                    view.update(cx, |this, _| {
+                        let table_state = get_state_mut(this);
+                        table_state.last_container_width = bounds.size.width;
+                    });
+                }
+            },
+            move |bounds, _prepaint, window, _cx| {
+                let view_scroll = view.clone();
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _window, cx| {
+                    if !phase.capture() {
+                        return;
+                    }
+                    if !bounds.contains(&event.position) {
+                        return;
+                    }
+
+                    if event.modifiers.shift {
+                        let pixel_delta = event.delta.pixel_delta(px(20.0));
+                        let delta_x = pixel_delta.x;
+                        let delta_y = pixel_delta.y;
+                        let scroll_x = if delta_x != px(0.0) { delta_x } else { delta_y };
+
+                        // Stop propagation so uniform_list cannot receive this event and scroll vertically
+                        cx.stop_propagation();
+
+                        if scroll_x != px(0.0) {
+                            view_scroll.update(cx, |this, cx| {
+                                let table_state = get_state_mut(this);
+                                table_state.scroll_horizontally(scroll_x, bounds.size.width);
+                                cx.notify();
+                            });
+                        }
+                    } else {
+                        let pixel_delta = event.delta.pixel_delta(px(20.0));
+                        if pixel_delta.x != px(0.0) && pixel_delta.y == px(0.0) {
+                            // Pure horizontal gesture from trackpad
+                            cx.stop_propagation();
+                            view_scroll.update(cx, |this, cx| {
+                                let table_state = get_state_mut(this);
+                                table_state.scroll_horizontally(pixel_delta.x, bounds.size.width);
+                                cx.notify();
+                            });
+                        }
+                    }
+                });
+
+                if is_resizing {
                     let view_move = view.clone();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
                         if !phase.bubble() {
@@ -342,12 +390,26 @@ impl VirtualTable {
                             });
                         }
                     });
-                },
-            )
-            .absolute()
-            .inset_0()
-            .into_any_element(),
+                }
+            },
         )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+
+    /// Legacy resize overlay renderer for backward compatibility.
+    #[allow(dead_code)]
+    pub fn render_resize_overlay<V: 'static>(
+        state: &VirtualTableState,
+        cx: &Context<V>,
+        get_state_mut: impl Fn(&mut V) -> &mut VirtualTableState + 'static + Copy,
+    ) -> Option<AnyElement> {
+        if state.resizing_column.is_none() {
+            None
+        } else {
+            Some(Self::render_table_overlay(state, cx, get_state_mut))
+        }
     }
 
     /// Builds a table header container div with horizontal translation applied.
@@ -536,8 +598,13 @@ impl VirtualTable {
 
     /// Builds horizontal scrollbar element if content exceeds container width.
     pub fn render_horizontal_scrollbar(state: &VirtualTableState, container_width: Pixels) -> Option<impl IntoElement> {
+        let width = if container_width > px(0.0) {
+            container_width
+        } else {
+            state.last_container_width
+        };
         let total_w = state.total_visible_width();
-        if total_w <= container_width {
+        if total_w <= width || width <= px(0.0) {
             return None;
         }
 
@@ -706,5 +773,32 @@ mod tests {
         state.auto_fit_column_with_texts(0, ["abc", "xy"]);
         // Header "Field Name" (10 chars * 7.2 = 72.0) + 16.0 = 88.0px
         assert_eq!(state.column(0).unwrap().width, px(88.0));
+    }
+
+    #[test]
+    fn test_horizontal_scrolling() {
+        let columns = vec![TableColumn::new("col1", "Col 1", px(150.0)), TableColumn::new("col2", "Col 2", px(150.0))];
+
+        let mut state = VirtualTableState::new(columns);
+        assert_eq!(state.total_visible_width(), px(300.0));
+
+        let container_width = px(200.0);
+        // Max scroll offset is 300 - 200 = 100px
+
+        // Scroll right 40px (delta_x = -40)
+        state.scroll_horizontally(px(-40.0), container_width);
+        assert_eq!(state.scroll_offset_x, px(40.0));
+
+        // Scroll right another 80px -> should clamp to 100px
+        state.scroll_horizontally(px(-80.0), container_width);
+        assert_eq!(state.scroll_offset_x, px(100.0));
+
+        // Scroll left 50px
+        state.scroll_horizontally(px(50.0), container_width);
+        assert_eq!(state.scroll_offset_x, px(50.0));
+
+        // Scroll left 100px -> should clamp to 0px
+        state.scroll_horizontally(px(100.0), container_width);
+        assert_eq!(state.scroll_offset_x, px(0.0));
     }
 }

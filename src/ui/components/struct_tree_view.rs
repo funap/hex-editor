@@ -1051,7 +1051,7 @@ impl StructTreeView {
 
 impl Render for StructTreeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let resize_overlay = VirtualTable::render_resize_overlay(&self.table_state, cx, |this| &mut this.table_state);
+        let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
 
         let view = cx.entity().clone();
         let is_parsing = self.editor.as_ref().is_some_and(|ed| ed.read(cx).is_parsing_structure);
@@ -1521,14 +1521,7 @@ impl Render for StructTreeView {
                             }
                         }),
                     )
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                        let delta_x = event.delta.pixel_delta(px(1.0)).x;
-                        if delta_x != px(0.0) {
-                            this.table_state.scroll_horizontally(delta_x, this.last_container_width);
-                            cx.notify();
-                        }
-                    }))
-                    .children(resize_overlay)
+                    .child(table_overlay)
                     .child(column_header)
                     .child(
                         div()
@@ -1536,17 +1529,6 @@ impl Render for StructTreeView {
                             .flex_1()
                             .overflow_hidden()
                             .relative()
-                            .child(canvas(
-                                {
-                                    let view = cx.entity().clone();
-                                    move |bounds, _, cx| {
-                                        view.update(cx, |this, _| {
-                                            this.last_container_width = bounds.size.width;
-                                        });
-                                    }
-                                },
-                                |_, _, _, _| {},
-                            ))
                             .child(tree_list)
                             .child(vertical_scrollbar)
                             .children(horizontal_scrollbar),

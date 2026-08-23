@@ -262,8 +262,8 @@ fn check_structure_and_highlights() {
 
     let highlight_color = hsla(0.1, 0.8, 0.5, 0.35);
     let highlights = [(0..16, highlight_color)];
-    assert_eq!(highlight_color_for_range(4, 8, true, &highlights), None);
-    assert_eq!(highlight_color_for_range(4, 8, false, &highlights), Some(highlight_color));
+    assert_eq!(highlight_color_for_range(4, 8, &highlights), Some(highlight_color));
+    assert_eq!(highlight_color_for_range(20, 24, &highlights), None);
 }
 
 #[test]

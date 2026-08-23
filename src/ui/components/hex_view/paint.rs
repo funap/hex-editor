@@ -134,16 +134,9 @@ pub fn row_highlights(highlights: &[(Range<usize>, Hsla)], max_len: usize, offse
     &highlights[search_start..search_end]
 }
 
-/// Return the smallest matching highlight, unless the item is selected.
-///
-/// Selection is transient UI state and must remain visible while a persistent
-/// highlight is underneath it, so it takes precedence over highlight colors.
+/// Return the smallest matching highlight for the specified range.
 #[inline]
-pub fn highlight_color_for_range(item_start: usize, item_end: usize, is_selected: bool, active_highlights: &[(Range<usize>, Hsla)]) -> Option<Hsla> {
-    if is_selected {
-        return None;
-    }
-
+pub fn highlight_color_for_range(item_start: usize, item_end: usize, active_highlights: &[(Range<usize>, Hsla)]) -> Option<Hsla> {
     let mut smallest_len = usize::MAX;
     let mut color = None;
     for (range, highlight_color) in active_highlights {
@@ -330,9 +323,9 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         let theme = cx.theme();
         (
             if params.is_focused {
-                theme.selection
+                theme.selection.opacity(0.45)
             } else {
-                theme.muted_foreground.opacity(0.3)
+                theme.selection.opacity(0.2)
             },
             theme.caret,
             theme.muted_foreground,
@@ -456,7 +449,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     // grid during the text pass.
     let hex_source = build_hex_text_source(chunk, offset, params.radix, params.group_size, params.is_big_endian);
     let mut hex_runs: Vec<gpui::TextRun> = Vec::with_capacity(hex_source.groups.len() * 2);
-    let mut group_visuals: Vec<(Hsla, bool)> = Vec::with_capacity(hex_source.groups.len());
+    let mut group_visuals: Vec<(Option<Hsla>, bool, bool)> = Vec::with_capacity(hex_source.groups.len());
     let mut group_text_colors: Vec<Hsla> = Vec::with_capacity(hex_source.groups.len());
 
     for (group_idx, group) in hex_source.groups.iter().enumerate() {
@@ -479,13 +472,8 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
             false
         };
 
-        let current_hl_color = highlight_color_for_range(item_start_offset, item_end_offset, is_selected, active_row_highlights);
-        let bg_color = if is_selected {
-            selection_bg
-        } else {
-            current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
-        };
-        group_visuals.push((bg_color, is_cursor));
+        let current_hl_color = highlight_color_for_range(item_start_offset, item_end_offset, active_row_highlights);
+        group_visuals.push((current_hl_color, is_selected, is_cursor));
         group_text_colors.push(text_color);
 
         if group_idx > 0 {
@@ -522,48 +510,87 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         |window| {
             window.with_content_mask(Some(gpui::ContentMask { bounds: hex_mask_bounds }), |window| {
                 for (item_idx, group) in hex_source.groups.iter().enumerate() {
-                    let (bg_color, is_cursor) = group_visuals[item_idx];
+                    let (hl_color, is_selected, is_cursor) = group_visuals[item_idx];
                     let (group_start_x, group_end_x) = hex_group_x(*group, text_origin_x, params.hex_cell_width);
                     let previous_group_end_x = if item_idx > 0 {
                         hex_group_x(hex_source.groups[item_idx - 1], text_origin_x, params.hex_cell_width).1
                     } else {
                         group_start_x
                     };
-                    let previous_has_background = item_idx > 0 && group_visuals[item_idx - 1].0.a > 0.0;
                     let has_next = item_idx + 1 < hex_source.groups.len();
                     let next_group_start_x = if has_next {
                         hex_group_x(hex_source.groups[item_idx + 1], text_origin_x, params.hex_cell_width).0
                     } else {
                         group_end_x
                     };
-                    let next_has_background = has_next && group_visuals[item_idx + 1].0.a > 0.0;
-                    let fill_start_x = if previous_has_background {
-                        pixel_midpoint(previous_group_end_x, group_start_x)
-                    } else {
-                        group_start_x
-                    };
-                    let fill_end_x = if next_has_background {
-                        pixel_midpoint(group_end_x, next_group_start_x)
-                    } else {
-                        group_end_x
-                    };
 
-                    if bg_color.a > 0.0 {
-                        let item_fill_bounds = Bounds::new(
-                            point(fill_start_x, params.bounds.top() + px(1.0)),
-                            size(fill_end_x - fill_start_x, px(ROW_HEIGHT - 2.0)),
+                    // 1. Highlight (bookmark) background quad
+                    if let Some(color) = hl_color
+                        && color.a > 0.0
+                    {
+                        let prev_has_hl = item_idx > 0 && group_visuals[item_idx - 1].0.is_some();
+                        let next_has_hl = has_next && group_visuals[item_idx + 1].0.is_some();
+                        let hl_start_x = if prev_has_hl {
+                            pixel_midpoint(previous_group_end_x, group_start_x)
+                        } else {
+                            group_start_x
+                        };
+                        let hl_end_x = if next_has_hl {
+                            pixel_midpoint(group_end_x, next_group_start_x)
+                        } else {
+                            group_end_x
+                        };
+                        let hl_fill_bounds = Bounds::new(
+                            point(hl_start_x, params.bounds.top() + px(1.0)),
+                            size(hl_end_x - hl_start_x, px(ROW_HEIGHT - 2.0)),
                         );
-                        window.paint_quad(gpui::fill(item_fill_bounds, bg_color));
+                        window.paint_quad(gpui::fill(hl_fill_bounds, color));
                     }
 
+                    // 2. Translucent selection quad (overlaid on top of highlight)
+                    if is_selected && selection_bg.a > 0.0 {
+                        let prev_is_sel = item_idx > 0 && group_visuals[item_idx - 1].1;
+                        let next_is_sel = has_next && group_visuals[item_idx + 1].1;
+                        let sel_start_x = if prev_is_sel {
+                            pixel_midpoint(previous_group_end_x, group_start_x)
+                        } else {
+                            group_start_x
+                        };
+                        let sel_end_x = if next_is_sel {
+                            pixel_midpoint(group_end_x, next_group_start_x)
+                        } else {
+                            group_end_x
+                        };
+                        let sel_fill_bounds = Bounds::new(
+                            point(sel_start_x, params.bounds.top() + px(1.0)),
+                            size(sel_end_x - sel_start_x, px(ROW_HEIGHT - 2.0)),
+                        );
+                        window.paint_quad(gpui::fill(sel_fill_bounds, selection_bg));
+                    }
+
+                    // 3. Cursor border / underscore
                     if is_cursor && !params.insert_mode {
                         let cursor_border_color = if params.is_focused {
                             caret_color
                         } else {
                             darken_cursor_color(muted_color).opacity(0.8)
                         };
-                        let (cursor_start_x, cursor_end_x) = if bg_color.a > 0.0 {
-                            (fill_start_x, fill_end_x)
+                        let has_bg = hl_color.is_some() || is_selected;
+                        let prev_has_bg = item_idx > 0 && (group_visuals[item_idx - 1].0.is_some() || group_visuals[item_idx - 1].1);
+                        let next_has_bg = has_next && (group_visuals[item_idx + 1].0.is_some() || group_visuals[item_idx + 1].1);
+                        let (cursor_start_x, cursor_end_x) = if has_bg {
+                            (
+                                if prev_has_bg {
+                                    pixel_midpoint(previous_group_end_x, group_start_x)
+                                } else {
+                                    group_start_x
+                                },
+                                if next_has_bg {
+                                    pixel_midpoint(group_end_x, next_group_start_x)
+                                } else {
+                                    group_end_x
+                                },
+                            )
                         } else {
                             (group_start_x, group_end_x)
                         };
@@ -709,20 +736,23 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                             false
                         };
 
-                        let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), in_selected_group, active_row_highlights);
-                        let bg_color = if in_selected_group {
-                            selection_bg
-                        } else {
-                            current_hl_color.unwrap_or_else(|| hsla(0.0, 0.0, 0.0, 0.0))
-                        };
+                        let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), active_row_highlights);
 
                         let ascii_item_bounds = Bounds::new(
                             point(ascii_content_start_x + px(j as f32 * ASCII_CELL_WIDTH), params.bounds.top() + px(1.0)),
                             size(px(ASCII_CELL_WIDTH), px(ROW_HEIGHT - 2.0)),
                         );
 
-                        if bg_color.a > 0.0 {
-                            window.paint_quad(gpui::fill(ascii_item_bounds, bg_color));
+                        // Highlight (bookmark) quad
+                        if let Some(hl_color) = current_hl_color
+                            && hl_color.a > 0.0
+                        {
+                            window.paint_quad(gpui::fill(ascii_item_bounds, hl_color));
+                        }
+
+                        // Translucent selection quad (overlaid on top of highlight)
+                        if in_selected_group && selection_bg.a > 0.0 {
+                            window.paint_quad(gpui::fill(ascii_item_bounds, selection_bg));
                         }
                     }
 

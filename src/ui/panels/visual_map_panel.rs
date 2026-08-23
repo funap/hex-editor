@@ -2,21 +2,64 @@ use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::scroll::*;
-use gpui_component::{ActiveTheme, Icon, PixelsExt, button::Button, button::ButtonVariants, h_flex};
+use gpui_component::{ActiveTheme, Icon, PixelsExt, Sizable, Size, StyledExt, h_flex, v_flex};
 use std::cell::RefCell;
 use std::cmp;
+use std::ops::Range;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ColorMode {
     Grayscale,
     DataCategory,
     Rainbow,
 }
 
-pub type CachedImageKey = (usize, usize, usize, ColorMode, usize, f32, f32, u32);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteCategory {
+    Null,
+    Control,
+    Space,
+    Ascii,
+    Extended,
+}
+
+impl ByteCategory {
+    pub fn of(byte: u8) -> Self {
+        match byte {
+            0 => ByteCategory::Null,
+            1..=31 | 127 => ByteCategory::Control,
+            32 => ByteCategory::Space,
+            33..=126 => ByteCategory::Ascii,
+            _ => ByteCategory::Extended,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ByteCategory::Null => "Null (00)",
+            ByteCategory::Control => "Control",
+            ByteCategory::Space => "Space (20)",
+            ByteCategory::Ascii => "ASCII",
+            ByteCategory::Extended => "Extended",
+        }
+    }
+
+    pub fn color(self, theme: &gpui_component::Theme) -> Hsla {
+        match self {
+            ByteCategory::Null => theme.muted_foreground.opacity(0.4),
+            ByteCategory::Control => theme.red.opacity(0.85),
+            ByteCategory::Space => theme.blue.opacity(0.75),
+            ByteCategory::Ascii => theme.green.opacity(0.9),
+            ByteCategory::Extended => theme.accent.opacity(0.85),
+        }
+    }
+}
+
+pub type CachedImageKey = (usize, usize, usize, ColorMode, usize, usize, f32, f32, u32);
 pub type CachedImage = (Arc<RenderImage>, CachedImageKey);
 
 pub struct VisualMapPanel {
@@ -48,8 +91,8 @@ impl VisualMapPanel {
         Self {
             editor,
             focus_handle: cx.focus_handle(),
-            cols: 256,
-            pixel_size: 4,
+            cols: 64,
+            pixel_size: 2,
             scroll_offset: 0,
             scroll_remainder: 0.0,
             scroll_handle: ScrollHandle::new(),
@@ -87,6 +130,33 @@ impl VisualMapPanel {
             .unwrap_or(0)
     }
 
+    fn state_id(&self, cx: &App) -> usize {
+        self.editor
+            .as_ref()
+            .map(|ed| ed.read(cx).document.read().expect("document read lock").history.state_id())
+            .unwrap_or(0)
+    }
+
+    pub fn scroll_to_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = &self.editor else { return };
+        let cursor_offset = editor.read(cx).cursor_offset;
+        let buffer_len = self.buffer_len(cx);
+        if buffer_len == 0 {
+            return;
+        }
+        let total_rows = buffer_len.div_ceil(self.cols);
+        let cursor_row = cursor_offset / self.cols;
+        let visible_rows = if let Some(bounds) = self.last_bounds.get() {
+            (bounds.size.height.as_f32() / self.pixel_size as f32).ceil() as usize
+        } else {
+            30
+        };
+        let target_scroll = cursor_row.saturating_sub(visible_rows / 2);
+        self.scroll_offset = cmp::min(target_scroll, total_rows.saturating_sub(1));
+        self.update_scrollbar(cx);
+        cx.notify();
+    }
+
     fn update_scrollbar(&mut self, cx: &mut Context<Self>) {
         let buffer_len = self.buffer_len(cx);
         let total_rows = buffer_len.div_ceil(self.cols);
@@ -96,6 +166,35 @@ impl VisualMapPanel {
     }
 
     fn on_scroll_wheel(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.modifiers.platform || event.modifiers.control {
+            let delta = event.delta.pixel_delta(px(16.0)).y.as_f32();
+            if delta.abs() > 0.5 {
+                let current = self.pixel_size;
+                let new_size = if delta > 0.0 {
+                    match current {
+                        1 => 2,
+                        2 => 4,
+                        4 => 8,
+                        _ => 8,
+                    }
+                } else {
+                    match current {
+                        8 => 4,
+                        4 => 2,
+                        2 => 1,
+                        _ => 1,
+                    }
+                };
+                if new_size != self.pixel_size {
+                    self.pixel_size = new_size;
+                    self.update_scrollbar(cx);
+                    self.cached_image.borrow_mut().take();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
         let pixel_size_px = px(self.pixel_size as f32);
         let buffer_len = self.buffer_len(cx);
         if buffer_len == 0 {
@@ -151,7 +250,6 @@ impl VisualMapPanel {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Sync scroll handle to scroll offset if changed by scrollbar drag
         let pixel_size_px = px(self.pixel_size as f32);
         let handle_y = self.scroll_handle.offset().y;
         let handle_row = ((-handle_y).max(px(0.)) / pixel_size_px).round() as usize;
@@ -200,6 +298,294 @@ impl VisualMapPanel {
         if self.hovered_info != hovered {
             self.hovered_info = hovered;
             cx.notify();
+        }
+    }
+
+    fn render_width_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted_color = theme.muted_foreground;
+        h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::SlidersHorizontal).size(px(13.0)).text_color(muted_color))
+                    .child(div().text_xs().font_medium().text_color(muted_color).child("Width")),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Button::new("dec_w")
+                            .label("-")
+                            .ghost()
+                            .with_size(Size::XSmall)
+                            .tooltip("Decrease width by 16")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cols = cmp::max(4, this.cols.saturating_sub(16));
+                                this.update_scrollbar(cx);
+                                this.cached_image.borrow_mut().take();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .bg(theme.muted.opacity(0.4))
+                            .font_family("Courier New")
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme.foreground)
+                            .child(format!("{} B", self.cols)),
+                    )
+                    .child(
+                        Button::new("inc_w")
+                            .label("+")
+                            .ghost()
+                            .with_size(Size::XSmall)
+                            .tooltip("Increase width by 16")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cols = cmp::min(4096, this.cols.saturating_add(16));
+                                this.update_scrollbar(cx);
+                                this.cached_image.borrow_mut().take();
+                                cx.notify();
+                            })),
+                    ),
+            )
+    }
+
+    fn render_scale_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted_color = theme.muted_foreground;
+        let pixel_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
+            let is_selected = self.pixel_size == preset;
+            let mut btn = Button::new(("p_preset", preset)).label(label).with_size(Size::XSmall);
+            if is_selected {
+                btn = btn.primary();
+            } else {
+                btn = btn.ghost();
+            }
+            btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.pixel_size = preset;
+                this.update_scrollbar(cx);
+                this.cached_image.borrow_mut().take();
+                cx.notify();
+            }))
+        };
+
+        h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::Grid2x2).size(px(13.0)).text_color(muted_color))
+                    .child(div().text_xs().font_medium().text_color(muted_color).child("Scale")),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(pixel_button(1, "x1", cx))
+                    .child(pixel_button(2, "x2", cx))
+                    .child(pixel_button(4, "x4", cx))
+                    .child(pixel_button(8, "x8", cx)),
+            )
+    }
+
+    fn render_palette_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted_color = theme.muted_foreground;
+        let color_button = |mode: ColorMode, label: &'static str, id_str: &'static str, cx: &mut Context<Self>| {
+            let is_selected = self.color_mode == mode;
+            let mut btn = Button::new(id_str).label(label).with_size(Size::XSmall);
+            if is_selected {
+                btn = btn.primary();
+            } else {
+                btn = btn.ghost();
+            }
+            btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.color_mode = mode;
+                this.cached_image.borrow_mut().take();
+                cx.notify();
+            }))
+        };
+
+        h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::Palette).size(px(13.0)).text_color(muted_color))
+                    .child(div().text_xs().font_medium().text_color(muted_color).child("Palette")),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(color_button(ColorMode::Grayscale, "Gray", "c_gray", cx))
+                    .child(color_button(ColorMode::DataCategory, "Type", "c_type", cx))
+                    .child(color_button(ColorMode::Rainbow, "Rainbow", "c_rainbow", cx)),
+            )
+    }
+
+    fn render_toolbar(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        v_flex()
+            .p_2()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(self.render_width_section(theme, cx))
+            .child(self.render_scale_section(theme, cx))
+            .child(self.render_palette_section(theme, cx))
+    }
+
+    fn render_legend(&self, theme: &gpui_component::Theme) -> Option<impl IntoElement + use<>> {
+        if self.color_mode != ColorMode::DataCategory {
+            return None;
+        }
+        let muted_color = theme.muted_foreground;
+        Some(
+            h_flex()
+                .flex_wrap()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .border_t_1()
+                .border_color(theme.border)
+                .bg(theme.muted.opacity(0.15))
+                .text_xs()
+                .items_center()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Null.color(theme)))
+                        .child(div().text_color(muted_color).child("Null")),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Control.color(theme)))
+                        .child(div().text_color(muted_color).child("Control")),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Space.color(theme)))
+                        .child(div().text_color(muted_color).child("Space")),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Ascii.color(theme)))
+                        .child(div().text_color(muted_color).child("ASCII")),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Extended.color(theme)))
+                        .child(div().text_color(muted_color).child("Extended")),
+                ),
+        )
+    }
+
+    fn render_footer(&self, buffer_len: usize, total_rows: usize, theme: &gpui_component::Theme, cx: &App) -> impl IntoElement + use<> {
+        let border_color = theme.border;
+        let muted_color = theme.muted_foreground;
+
+        if let Some((offset, byte)) = self.hovered_info {
+            let cat = ByteCategory::of(byte);
+            let char_repr = if (32..=126).contains(&byte) {
+                format!("'{}'", byte as char)
+            } else if byte == 0 {
+                "NUL".to_string()
+            } else {
+                format!("0x{:02X}", byte)
+            };
+
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .p_2()
+                .border_t_1()
+                .border_color(border_color)
+                .text_xs()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().font_family("Courier New").text_color(theme.foreground).child(format!("0x{:08X}", offset)))
+                        .child(div().text_color(muted_color).child("|"))
+                        .child(
+                            div()
+                                .font_family("Courier New")
+                                .text_color(theme.foreground)
+                                .child(format!("0x{:02X} ({})", byte, byte)),
+                        )
+                        .child(
+                            div()
+                                .px_1()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(theme.muted.opacity(0.4))
+                                .font_family("Courier New")
+                                .text_color(theme.foreground)
+                                .child(char_repr),
+                        ),
+                )
+                .child(
+                    div()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded_sm()
+                        .bg(cat.color(theme).opacity(0.2))
+                        .text_color(cat.color(theme))
+                        .font_medium()
+                        .child(cat.label()),
+                )
+        } else {
+            let cursor_str = self.editor.as_ref().map(|ed| {
+                let cur = ed.read(cx).cursor_offset;
+                format!("Cursor: 0x{:08X}", cur)
+            });
+
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .p_2()
+                .border_t_1()
+                .border_color(border_color)
+                .text_xs()
+                .text_color(muted_color)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().child(crate::ui::style::format_size_friendly(buffer_len)))
+                        .child(div().child("|"))
+                        .child(div().child(format!("{} rows", crate::ui::style::format_with_commas(total_rows))))
+                        .children(cursor_str.map(|c| {
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().child("|"))
+                                .child(div().font_family("Courier New").child(c))
+                        })),
+                )
+                .child(div().child(format!("{} cols @ x{}", self.cols, self.pixel_size)))
         }
     }
 }
@@ -291,16 +677,27 @@ pub struct VisualMapPanelState {
 
 impl Render for VisualMapPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (border_color, muted_color) = (theme.border, theme.muted_foreground);
+        let theme = cx.theme().clone();
         let is_focused = self.focus_handle.is_focused(window);
 
-        let header = crate::ui::style::panel_header("2D VISUAL MAP", is_focused, theme, None, None);
+        let header_actions = self.editor.as_ref().map(|_| {
+            Button::new("center_cursor")
+                .ghost()
+                .with_size(Size::XSmall)
+                .icon(IconName::ScanEye)
+                .tooltip("Center on Cursor")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.scroll_to_cursor(cx);
+                }))
+                .into_any_element()
+        });
+
+        let header = crate::ui::style::panel_header("2D VISUAL MAP", is_focused, &theme, None, header_actions);
 
         let editor = match &self.editor {
             Some(ed) => ed,
             None => {
-                let container = crate::ui::style::panel_container(is_focused, theme);
+                let container = crate::ui::style::panel_container(is_focused, &theme);
 
                 return container
                     .id("visual-map-panel")
@@ -317,16 +714,16 @@ impl Render for VisualMapPanel {
                         "No Active File",
                         Some("Open a binary file to visualize byte distribution"),
                         None,
-                        theme,
+                        &theme,
                     )));
             }
         };
 
         let buffer_len = self.buffer_len(cx);
+        let state_id = self.state_id(cx);
         let total_rows = buffer_len.div_ceil(self.cols);
         let total_height = total_rows as f32 * self.pixel_size as f32;
 
-        // Sync scroll offset from scroll handle (e.g. if changed by scrollbar drag)
         let pixel_size_px = px(self.pixel_size as f32);
         let handle_y = self.scroll_handle.offset().y;
         let handle_row = ((-handle_y).max(px(0.)) / pixel_size_px).round() as usize;
@@ -335,78 +732,43 @@ impl Render for VisualMapPanel {
             self.scroll_offset = synced_offset;
         }
 
-        let width_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
-            let is_selected = self.cols == preset;
-            let mut btn = Button::new(("w_preset", preset)).label(label);
-            if is_selected {
-                btn = btn.primary();
-            } else {
-                btn = btn.ghost();
-            }
-            btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.cols = preset;
-                this.update_scrollbar(cx);
-                cx.notify();
-            }))
-        };
+        let toolbar = self.render_toolbar(&theme, cx);
+        let legend = self.render_legend(&theme);
+        let footer = self.render_footer(buffer_len, total_rows, &theme, cx);
 
-        let pixel_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
-            let is_selected = self.pixel_size == preset;
-            let mut btn = Button::new(("p_preset", preset)).label(label);
-            if is_selected {
-                btn = btn.primary();
-            } else {
-                btn = btn.ghost();
-            }
-            btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.pixel_size = preset;
-                this.update_scrollbar(cx);
-                cx.notify();
-            }))
-        };
+        let ed_ref = editor.read(cx);
+        let cursor_offset = Some(ed_ref.cursor_offset);
+        let selection_range = ed_ref.selection_range();
+        let hovered_offset = self.hovered_info.map(|(off, _)| off);
 
-        let color_button = |mode: ColorMode, label: &'static str, id_str: &'static str, cx: &mut Context<Self>| {
-            let is_selected = self.color_mode == mode;
-            let mut btn = Button::new(id_str).label(label);
-            if is_selected {
-                btn = btn.primary();
-            } else {
-                btn = btn.ghost();
-            }
-            btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.color_mode = mode;
-                cx.notify();
-            }))
-        };
+        let canvas = div()
+            .flex_1()
+            .relative()
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .child(VisualMapElement {
+                panel: cx.entity().downgrade(),
+                document: editor.read(cx).document.clone(),
+                cols: self.cols,
+                pixel_size: self.pixel_size,
+                scroll_offset: self.scroll_offset,
+                color_mode: self.color_mode,
+                state_id,
+                cursor_offset,
+                selection_range,
+                hovered_offset,
+            })
+            .child(
+                div().absolute().top_0().right_0().bottom_0().w_4().child(
+                    Scrollbar::vertical(&self.scroll_handle)
+                        .axis(ScrollbarAxis::Vertical)
+                        .scroll_size(size(px(0.), px(total_height))),
+                ),
+            );
 
-        let width_controls = h_flex()
-            .gap_1()
-            .items_center()
-            .child(div().text_xs().text_color(muted_color).child("Width: "))
-            .child(Button::new("dec_w").label("-").ghost().on_click(cx.listener(move |this, _, _, cx| {
-                this.cols = cmp::max(4, this.cols.saturating_sub(4));
-                this.update_scrollbar(cx);
-                cx.notify();
-            })))
-            .child(div().text_sm().px_1().child(format!("{}", self.cols)))
-            .child(Button::new("inc_w").label("+").ghost().on_click(cx.listener(move |this, _, _, cx| {
-                this.cols = this.cols.saturating_add(4);
-                this.update_scrollbar(cx);
-                cx.notify();
-            })));
-
-        let footer_text = if let Some((offset, byte)) = self.hovered_info {
-            let char_repr = if (32..=126).contains(&byte) {
-                format!("'{}'", byte as char)
-            } else {
-                ".".to_string()
-            };
-            format!("Offset: 0x{:08X} ({}) | Value: 0x{:02X} ({})", offset, offset, byte, char_repr)
-        } else {
-            "Hover over pixels to view details".to_string()
-        };
-
-        let container = crate::ui::style::panel_container(is_focused, theme);
+        let container = crate::ui::style::panel_container(is_focused, &theme);
 
         container
             .id("visual-map-panel")
@@ -418,83 +780,10 @@ impl Render for VisualMapPanel {
                 }),
             )
             .child(header)
-            .child(
-                // Toolbar row 1: Presets
-                h_flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(border_color)
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(width_button(64, "64", cx))
-                            .child(width_button(128, "128", cx))
-                            .child(width_button(256, "256", cx)),
-                    )
-                    .child(div().w_0p5().h_4().bg(border_color))
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(pixel_button(2, "2px", cx))
-                            .child(pixel_button(4, "4px", cx))
-                            .child(pixel_button(8, "8px", cx)),
-                    ),
-            )
-            .child(
-                // Toolbar row 2: Advanced Controls
-                h_flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(border_color)
-                    .child(width_controls)
-                    .child(div().w_0p5().h_4().bg(border_color))
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(color_button(ColorMode::Grayscale, "Gray", "c_gray", cx))
-                            .child(color_button(ColorMode::DataCategory, "Type", "c_type", cx))
-                            .child(color_button(ColorMode::Rainbow, "Rainbow", "c_rainbow", cx)),
-                    ),
-            )
-            .child(
-                // Canvas Area
-                div()
-                    .flex_1()
-                    .relative()
-                    .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                    .on_mouse_move(cx.listener(Self::on_mouse_move))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                    .child(VisualMapElement {
-                        panel: cx.entity().downgrade(),
-                        document: editor.read(cx).document.clone(),
-                        cols: self.cols,
-                        pixel_size: self.pixel_size,
-                        scroll_offset: self.scroll_offset,
-                        color_mode: self.color_mode,
-                    })
-                    .child(
-                        div().absolute().top_0().right_0().bottom_0().w_4().child(
-                            Scrollbar::vertical(&self.scroll_handle)
-                                .axis(ScrollbarAxis::Vertical)
-                                .scroll_size(size(px(0.), px(total_height))),
-                        ),
-                    ),
-            )
-            .child(
-                // Footer status bar
-                div()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(border_color)
-                    .text_xs()
-                    .text_color(muted_color)
-                    .child(footer_text),
-            )
+            .child(toolbar)
+            .child(canvas)
+            .children(legend)
+            .child(footer)
     }
 }
 
@@ -505,6 +794,10 @@ struct VisualMapElement {
     pixel_size: usize,
     scroll_offset: usize,
     color_mode: ColorMode,
+    state_id: usize,
+    cursor_offset: Option<usize>,
+    selection_range: Option<Range<usize>>,
+    hovered_offset: Option<usize>,
 }
 
 impl Element for VisualMapElement {
@@ -593,6 +886,7 @@ impl Element for VisualMapElement {
                 self.scroll_offset,
                 self.color_mode,
                 buffer_len,
+                self.state_id,
                 bounds.size.width.as_f32(),
                 bounds.size.height.as_f32(),
                 scale_factor.to_bits(),
@@ -606,7 +900,6 @@ impl Element for VisualMapElement {
             }
 
             if cached_image.is_none() {
-                // Pre-calculate RGBA color Lookup Table (LUT) for all 256 possible bytes directly
                 let mut rgba_lut = [[0u8; 4]; 256];
                 for byte in 0..=255 {
                     let color = match self.color_mode {
@@ -620,12 +913,11 @@ impl Element for VisualMapElement {
                             }
                         }
                         ColorMode::DataCategory => match byte {
-                            0 => theme.muted_foreground.opacity(0.15),
-                            1..=31 => theme.red.opacity(0.6),
-                            32 => theme.blue.opacity(0.4),
-                            33..=126 => theme.green.opacity(0.8),
-                            127 => theme.red.opacity(0.6),
-                            _ => theme.accent.opacity(0.7),
+                            0 => theme.muted_foreground.opacity(0.18),
+                            1..=31 | 127 => theme.red.opacity(0.75),
+                            32 => theme.blue.opacity(0.55),
+                            33..=126 => theme.green.opacity(0.85),
+                            _ => theme.accent.opacity(0.8),
                         },
                         ColorMode::Rainbow => {
                             let val = byte as f32 / 255.0;
@@ -704,6 +996,73 @@ impl Element for VisualMapElement {
                     false,
                 )
                 .ok();
+        }
+
+        // Selection Highlight Overlay
+        if let Some(sel) = &self.selection_range
+            && sel.start < sel.end
+        {
+            for r in start_row..end_row {
+                let row_start = r * cols;
+                let row_end = (r + 1) * cols;
+                let sel_row_start = cmp::max(sel.start, row_start);
+                let sel_row_end = cmp::min(sel.end, row_end);
+                if sel_row_start < sel_row_end {
+                    let c_start = sel_row_start - row_start;
+                    let c_count = sel_row_end - sel_row_start;
+                    let sel_x = bounds.origin.x + px(c_start as f32 * pixel_size);
+                    let sel_y = bounds.origin.y + px((r - start_row) as f32 * pixel_size);
+                    let sel_w = px(c_count as f32 * pixel_size);
+                    let sel_h = px(pixel_size);
+                    window.paint_quad(gpui::fill(Bounds::new(point(sel_x, sel_y), size(sel_w, sel_h)), theme.accent.opacity(0.35)));
+                }
+            }
+        }
+
+        // Hover Highlight
+        if let Some(hov) = self.hovered_offset {
+            let hov_row = hov / cols;
+            let hov_col = hov % cols;
+            if hov_row >= start_row && hov_row < end_row && hov < buffer_len {
+                let cell_x = bounds.origin.x + px(hov_col as f32 * pixel_size);
+                let cell_y = bounds.origin.y + px((hov_row - start_row) as f32 * pixel_size);
+                let cell_w = px(pixel_size);
+                let cell_h = px(pixel_size);
+                let cell_bounds = Bounds::new(point(cell_x, cell_y), size(cell_w, cell_h));
+
+                let outline_color = theme.foreground.opacity(0.75);
+                let border_w = if pixel_size >= 4.0 { px(1.0) } else { px(0.5) };
+                window.paint_quad(gpui::outline(cell_bounds, outline_color, gpui::BorderStyle::Solid).border_widths(border_w));
+            }
+        }
+
+        // Cursor Highlight
+        if let Some(cursor) = self.cursor_offset {
+            let cur_row = cursor / cols;
+            let cur_col = cursor % cols;
+            if cur_row >= start_row && cur_row < end_row && cursor <= buffer_len {
+                let cell_x = bounds.origin.x + px(cur_col as f32 * pixel_size);
+                let cell_y = bounds.origin.y + px((cur_row - start_row) as f32 * pixel_size);
+
+                if pixel_size <= 2.0 {
+                    let indicator_size = px(6.0);
+                    let center_x = cell_x + px(pixel_size * 0.5);
+                    let center_y = cell_y + px(pixel_size * 0.5);
+                    let cur_bounds = Bounds::new(
+                        point(center_x - indicator_size * 0.5, center_y - indicator_size * 0.5),
+                        size(indicator_size, indicator_size),
+                    );
+                    window.paint_quad(gpui::outline(cur_bounds, theme.accent, gpui::BorderStyle::Solid).border_widths(px(1.5)));
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(cell_x, cell_y), size(px(pixel_size), px(pixel_size))),
+                        theme.foreground,
+                    ));
+                } else {
+                    let cur_bounds = Bounds::new(point(cell_x, cell_y), size(px(pixel_size), px(pixel_size)));
+                    window.paint_quad(gpui::outline(cur_bounds, theme.accent, gpui::BorderStyle::Solid).border_widths(px(1.5)));
+                    window.paint_quad(gpui::fill(cur_bounds, theme.accent.opacity(0.3)));
+                }
+            }
         }
     }
 }

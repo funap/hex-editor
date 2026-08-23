@@ -96,6 +96,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-l", ViSelectRight, Some(CONTEXT)),
         KeyBinding::new("shift-k", ViSelectUp, Some(CONTEXT)),
         KeyBinding::new("shift-j", ViSelectDown, Some(CONTEXT)),
+        // Vi-like search commands
+        KeyBinding::new("/", TriggerSearch, Some(CONTEXT)),
+        KeyBinding::new("n", TriggerSearchNext, Some(CONTEXT)),
+        KeyBinding::new("shift-n", TriggerSearchPrev, Some(CONTEXT)),
         // Standard search shortcuts
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),

@@ -18,10 +18,10 @@ use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
     ClearAllCustomBreaks, ClearBookmark, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump,
     CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportBookmarks, ImportBookmarks, JoinLine,
-    LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian,
-    SetByteOrderLittleEndian, SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2, SetGroupSize4,
-    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView,
-    ToggleSearch, Undo,
+    LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll as AppSelectAll,
+    SetByteOrderBigEndian, SetByteOrderLittleEndian, SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2,
+    SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder,
+    ToggleInlineStructureView, ToggleSearch, Undo,
 };
 use crate::app_state::InsertModeState;
 use crate::core::clipboard::parse_paste_bytes;
@@ -1418,8 +1418,12 @@ impl HexView {
         self.edit_changed(changed, cx);
     }
 
+    fn can_handle_vi_action(&self, cx: &App) -> bool {
+        self.edit_column_is_hex() || self.editor.read(cx).is_read_only()
+    }
+
     fn vi_move_left(&mut self, _: &ViMoveLeft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             self.exec_move(window, cx, |editor| editor.move_left());
         } else {
             cx.propagate();
@@ -1427,7 +1431,7 @@ impl HexView {
     }
 
     fn vi_move_right(&mut self, _: &ViMoveRight, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_move(window, cx, move |editor| {
                 if insert_mode {
@@ -1442,7 +1446,7 @@ impl HexView {
     }
 
     fn vi_move_up(&mut self, _: &ViMoveUp, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             self.exec_move(window, cx, |editor| editor.move_up());
         } else {
             cx.propagate();
@@ -1450,7 +1454,7 @@ impl HexView {
     }
 
     fn vi_move_down(&mut self, _: &ViMoveDown, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_move(window, cx, move |editor| {
                 if insert_mode {
@@ -1465,7 +1469,7 @@ impl HexView {
     }
 
     fn vi_select_left(&mut self, _: &ViSelectLeft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_select(window, cx, move |editor| {
                 if insert_mode {
@@ -1480,7 +1484,7 @@ impl HexView {
     }
 
     fn vi_select_right(&mut self, _: &ViSelectRight, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_select(window, cx, move |editor| {
                 if insert_mode {
@@ -1495,7 +1499,7 @@ impl HexView {
     }
 
     fn vi_select_up(&mut self, _: &ViSelectUp, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_select(window, cx, move |editor| {
                 if insert_mode {
@@ -1510,7 +1514,7 @@ impl HexView {
     }
 
     fn vi_select_down(&mut self, _: &ViSelectDown, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit_column_is_hex() {
+        if self.can_handle_vi_action(cx) {
             let insert_mode = InsertModeState::is_enabled(cx);
             self.exec_select(window, cx, move |editor| {
                 if insert_mode {
@@ -1739,8 +1743,28 @@ impl HexView {
         });
     }
 
-    fn trigger_search(&mut self, _: &TriggerSearch, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.dispatch_action(&ToggleSearch);
+    fn trigger_search(&mut self, _: &TriggerSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_handle_vi_action(cx) {
+            window.dispatch_action(Box::new(ToggleSearch), cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn trigger_search_next(&mut self, _: &TriggerSearchNext, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_handle_vi_action(cx) {
+            window.dispatch_action(Box::new(SearchNext), cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn trigger_search_prev(&mut self, _: &TriggerSearchPrev, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_handle_vi_action(cx) {
+            window.dispatch_action(Box::new(SearchPrev), cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn notify_document_changed(&self, cx: &mut App) {
@@ -2962,6 +2986,8 @@ impl Render for HexView {
             .on_action(cx.listener(Self::select_home))
             .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::trigger_search))
+            .on_action(cx.listener(Self::trigger_search_next))
+            .on_action(cx.listener(Self::trigger_search_prev))
             .on_action(cx.listener(Self::add_custom_break))
             .on_action(cx.listener(Self::remove_custom_break_backward))
             .on_action(cx.listener(Self::remove_custom_break_forward))

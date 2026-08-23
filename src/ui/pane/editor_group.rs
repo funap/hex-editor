@@ -455,9 +455,7 @@ impl Render for EditorGroup {
                                     .cursor_pointer()
                                     .border_r_1()
                                     .border_color(theme.border)
-                                    .when(is_active, |s| {
-                                        s.bg(theme.background).text_color(theme.foreground).font_weight(gpui::FontWeight::MEDIUM)
-                                    })
+                                    .when(is_active, |s| s.bg(theme.background).text_color(theme.foreground))
                                     .when(!is_active, |s| {
                                         s.bg(tab_bar_bg)
                                             .text_color(theme.muted_foreground)
@@ -536,7 +534,7 @@ impl Render for EditorGroup {
                                                     Box::new(crate::actions::CloseSavedTabs),
                                                     !has_saved,
                                                 )
-                                                .menu("Close All", Box::new(crate::actions::CloseAllTabs))
+                                                .menu_with_icon("Close All", IconName::Close, Box::new(crate::actions::CloseAllTabs))
                                                 .separator()
                                                 .menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
                                                 .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown));
@@ -623,9 +621,17 @@ impl Render for EditorGroup {
                                             if tab_path.is_some() {
                                                 menu = menu
                                                     .separator()
-                                                    .menu("Copy Path", Box::new(crate::actions::CopyPath))
-                                                    .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
-                                                    .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer));
+                                                    .menu_with_icon("Copy Path", IconName::Copy, Box::new(crate::actions::CopyPath))
+                                                    .menu_with_icon("Copy File Name", IconName::FileText, Box::new(crate::actions::CopyFileName))
+                                                    .menu_with_icon(
+                                                        if cfg!(target_os = "macos") {
+                                                            "Reveal in Finder"
+                                                        } else {
+                                                            "Reveal in File Explorer"
+                                                        },
+                                                        IconName::FolderSearch,
+                                                        Box::new(crate::actions::RevealInExplorer),
+                                                    );
                                             }
                                             menu
                                         }
@@ -635,7 +641,15 @@ impl Render for EditorGroup {
                                             .size(px(14.0))
                                             .text_color(if is_active { theme.primary } else { theme.muted_foreground }),
                                     )
-                                    .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_sm()
+                                            .when(is_active, |s| s.font_weight(gpui::FontWeight::MEDIUM))
+                                            .child(title),
+                                    )
                                     .child(
                                         div()
                                             .group(close_group.clone())

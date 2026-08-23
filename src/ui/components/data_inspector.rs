@@ -1,13 +1,29 @@
 use crate::core::editor::Editor;
+use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme as _, Selectable as _, Sizable as _, button::Button, button::ButtonVariants, h_flex, v_flex};
+const CONTEXT: &str = "DataInspector";
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = data_inspector, no_json)]
+struct CopyValue {
+    value: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = data_inspector, no_json)]
+struct CopyFieldName {
+    name: String,
+}
+
 pub struct DataInspector {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
     pub is_big_endian: bool,
+    pub selected_row: Option<(&'static str, String)>,
     _editor_subscription: Option<Subscription>,
 }
 
@@ -24,6 +40,7 @@ impl DataInspector {
             editor,
             focus_handle,
             is_big_endian: false,
+            selected_row: None,
             _editor_subscription,
         }
     }
@@ -39,10 +56,21 @@ impl DataInspector {
         cx.notify();
     }
 
-    fn render_row(&self, label: &'static str, value: String, theme: &gpui_component::Theme) -> impl IntoElement {
-        let val_copy = value.clone();
+    fn copy_value(&mut self, action: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
+        if !action.value.is_empty() && action.value != "-" {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.value.clone()));
+        }
+    }
+
+    fn copy_field_name(&mut self, action: &CopyFieldName, _window: &mut Window, cx: &mut Context<Self>) {
+        if !action.name.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.name.clone()));
+        }
+    }
+
+    fn render_row(&self, label: &'static str, value: String, view: &Entity<Self>, window: &mut Window, theme: &gpui_component::Theme) -> impl IntoElement {
         let val_for_click = value.clone();
-        let lbl_copy = label.to_string();
+        let val_for_right_click = value.clone();
 
         h_flex()
             .id(label)
@@ -59,12 +87,14 @@ impl DataInspector {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(val_for_click.clone()));
                 }
             })
-            .context_menu(move |menu, _window, _cx| {
-                let v = val_copy.clone();
-                let l = lbl_copy.clone();
-                menu.menu(format!("Copy Value ({})", v), Box::new(crate::actions::Copy))
-                    .menu(format!("Copy Field Name ({})", l), Box::new(crate::actions::Copy))
-            })
+            .on_mouse_down(
+                MouseButton::Right,
+                window.listener_for(view, move |this, _, window, cx| {
+                    this.focus_handle.focus(window);
+                    this.selected_row = Some((label, val_for_right_click.clone()));
+                    cx.notify();
+                }),
+            )
             .child(div().flex_shrink_0().w(px(110.0)).text_xs().text_color(theme.muted_foreground).child(label))
             .child(
                 div()
@@ -313,18 +343,41 @@ impl Render for DataInspector {
                     })),
             );
 
+        let view = cx.entity().clone();
+        let context_view = view.clone();
+        let context_focus_handle = self.focus_handle.clone();
+
         let header = crate::ui::style::panel_header("DATA INSPECTOR", is_focused, theme, None, Some(endian_controls.into_any_element()));
         let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("data-inspector")
+            .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::copy_value))
+            .on_action(cx.listener(Self::copy_field_name))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
                     this.focus_handle.focus(window);
                 }),
             )
+            .context_menu(move |menu, _window, cx| {
+                let selected = {
+                    let this = context_view.read(cx);
+                    this.selected_row.clone()
+                };
+                let Some((label, value)) = selected else {
+                    return menu;
+                };
+                menu.action_context(context_focus_handle.clone())
+                    .menu_with_icon(format!("Copy Value ({})", value), IconName::Copy, Box::new(CopyValue { value }))
+                    .menu_with_icon(
+                        format!("Copy Field Name ({})", label),
+                        IconName::Copy,
+                        Box::new(CopyFieldName { name: label.to_string() }),
+                    )
+            })
             .child(header)
             .child(
                 v_flex()
@@ -333,29 +386,29 @@ impl Render for DataInspector {
                     .overflow_y_scrollbar()
                     .p_2()
                     .child(self.render_section_header("HEXADECIMAL", theme))
-                    .child(self.render_row("Hex (1 byte)", hex8_val, theme))
-                    .child(self.render_row("Hex (2 bytes)", hex16_val, theme))
-                    .child(self.render_row("Hex (4 bytes)", hex32_val, theme))
-                    .child(self.render_row("Hex (8 bytes)", hex64_val, theme))
+                    .child(self.render_row("Hex (1 byte)", hex8_val, &view, window, theme))
+                    .child(self.render_row("Hex (2 bytes)", hex16_val, &view, window, theme))
+                    .child(self.render_row("Hex (4 bytes)", hex32_val, &view, window, theme))
+                    .child(self.render_row("Hex (8 bytes)", hex64_val, &view, window, theme))
                     .child(self.render_section_header("INTEGERS", theme))
-                    .child(self.render_row("Int8", i8_val, theme))
-                    .child(self.render_row("UInt8", u8_val, theme))
-                    .child(self.render_row("Int16", i16_val, theme))
-                    .child(self.render_row("UInt16", u16_val, theme))
-                    .child(self.render_row("Int32", i32_val, theme))
-                    .child(self.render_row("UInt32", u32_val, theme))
-                    .child(self.render_row("Int64", i64_val, theme))
-                    .child(self.render_row("UInt64", u64_val, theme))
+                    .child(self.render_row("Int8", i8_val, &view, window, theme))
+                    .child(self.render_row("UInt8", u8_val, &view, window, theme))
+                    .child(self.render_row("Int16", i16_val, &view, window, theme))
+                    .child(self.render_row("UInt16", u16_val, &view, window, theme))
+                    .child(self.render_row("Int32", i32_val, &view, window, theme))
+                    .child(self.render_row("UInt32", u32_val, &view, window, theme))
+                    .child(self.render_row("Int64", i64_val, &view, window, theme))
+                    .child(self.render_row("UInt64", u64_val, &view, window, theme))
                     .child(self.render_section_header("FLOATS", theme))
-                    .child(self.render_row("Float32", f32_val, theme))
-                    .child(self.render_row("Float64", f64_val, theme))
+                    .child(self.render_row("Float32", f32_val, &view, window, theme))
+                    .child(self.render_row("Float64", f64_val, &view, window, theme))
                     .child(self.render_section_header("TIME", theme))
-                    .child(self.render_row("Unix Time (32-bit)", unix_time_32, theme))
-                    .child(self.render_row("Unix Time (64-bit)", unix_time_64, theme))
+                    .child(self.render_row("Unix Time (32-bit)", unix_time_32, &view, window, theme))
+                    .child(self.render_row("Unix Time (64-bit)", unix_time_64, &view, window, theme))
                     .child(self.render_section_header("TEXT", theme))
-                    .child(self.render_row("ASCII", ascii_val, theme))
-                    .child(self.render_row("UTF-8", utf8_val, theme))
-                    .child(self.render_row("UTF-16", utf16_val, theme)),
+                    .child(self.render_row("ASCII", ascii_val, &view, window, theme))
+                    .child(self.render_row("UTF-8", utf8_val, &view, window, theme))
+                    .child(self.render_row("UTF-16", utf16_val, &view, window, theme)),
             )
     }
 }

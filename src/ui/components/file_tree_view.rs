@@ -567,11 +567,19 @@ impl Render for FileTreeView {
                                     }
 
                                     menu.separator()
-                                        .menu("Copy Path", Box::new(crate::actions::CopyPath))
-                                        .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
-                                        .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer))
+                                        .menu_with_icon("Copy Path", IconName::Copy, Box::new(crate::actions::CopyPath))
+                                        .menu_with_icon("Copy File Name", IconName::FileText, Box::new(crate::actions::CopyFileName))
+                                        .menu_with_icon(
+                                            if cfg!(target_os = "macos") {
+                                                "Reveal in Finder"
+                                            } else {
+                                                "Reveal in File Explorer"
+                                            },
+                                            IconName::FolderSearch,
+                                            Box::new(crate::actions::RevealInExplorer),
+                                        )
                                         .separator()
-                                        .menu("Rename", Box::new(Rename))
+                                        .menu_with_icon("Rename", IconName::PenLine, Box::new(Rename))
                                 }
                             }))
                             .on_click(window.listener_for(&view, {

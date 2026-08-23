@@ -60,7 +60,6 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 .when(is_active, |s| {
                     s.bg(theme.background)
                         .text_color(theme.foreground)
-                        .font_weight(gpui::FontWeight::MEDIUM)
                         .child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(theme.primary))
                 })
                 .when(!is_active, |s| {
@@ -77,6 +76,7 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                 .context_menu({
                     let can_close_others = tabs.len() > 1;
                     let can_close_right = idx + 1 < tabs.len();
+                    let has_saved = tabs.iter().any(|t| !t.is_dirty);
                     let tab_path = tab.path.clone();
                     let active_tab_path = tabs.iter().find(|t| t.is_active).and_then(|t| t.path.clone());
                     let pending_compare_path = crate::app_state::PendingCompareState::path(cx);
@@ -103,7 +103,8 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                                 Box::new(crate::actions::CloseTabsToRight),
                                 !can_close_right,
                             )
-                            .menu("Close All", Box::new(crate::actions::CloseAllTabs))
+                            .menu_with_icon_and_disabled("Close Saved", IconName::Check, Box::new(crate::actions::CloseSavedTabs), !has_saved)
+                            .menu_with_icon("Close All", IconName::Close, Box::new(crate::actions::CloseAllTabs))
                             .separator()
                             .menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
                             .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown));
@@ -189,9 +190,17 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                         if tab_path.is_some() {
                             menu = menu
                                 .separator()
-                                .menu("Copy Path", Box::new(crate::actions::CopyPath))
-                                .menu("Copy File Name", Box::new(crate::actions::CopyFileName))
-                                .menu("Reveal in File Explorer", Box::new(crate::actions::RevealInExplorer));
+                                .menu_with_icon("Copy Path", IconName::Copy, Box::new(crate::actions::CopyPath))
+                                .menu_with_icon("Copy File Name", IconName::FileText, Box::new(crate::actions::CopyFileName))
+                                .menu_with_icon(
+                                    if cfg!(target_os = "macos") {
+                                        "Reveal in Finder"
+                                    } else {
+                                        "Reveal in File Explorer"
+                                    },
+                                    IconName::FolderSearch,
+                                    Box::new(crate::actions::RevealInExplorer),
+                                );
                         }
                         menu
                     }
@@ -201,7 +210,14 @@ pub fn render_zed_tab_bar(tabs: &[TabItemInfo], _window: &mut Window, cx: &mut A
                         .size(px(14.0))
                         .text_color(if is_active { theme.primary } else { theme.muted_foreground }),
                 )
-                .child(div().flex_1().truncate().text_sm().child(title))
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .text_sm()
+                        .when(is_active, |s| s.font_weight(gpui::FontWeight::MEDIUM))
+                        .child(title),
+                )
                 .child(
                     div()
                         .id(ElementId::NamedInteger("tab-close-area".into(), tab_id as u64))

@@ -39,6 +39,26 @@ pub struct ChecksumResults {
     pub range_end: usize,
 }
 
+const CONTEXT: &str = "ChecksumPanel";
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = checksum_panel, no_json)]
+struct CopyValue {
+    value: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = checksum_panel, no_json)]
+struct CopyRow {
+    text: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = checksum_panel, no_json)]
+struct CopyAllChecksums {
+    text: String,
+}
+
 pub struct ChecksumPanel {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
@@ -46,6 +66,7 @@ pub struct ChecksumPanel {
     pub auto_calculate: bool,
     pub is_calculating: bool,
     pub results: Option<ChecksumResults>,
+    pub selected_row: Option<(&'static str, String, Option<String>)>,
     _editor_subscription: Option<Subscription>,
     calculation_task: Option<Task<()>>,
 }
@@ -60,6 +81,7 @@ impl ChecksumPanel {
             auto_calculate: true,
             is_calculating: false,
             results: None,
+            selected_row: None,
             _editor_subscription: None,
             calculation_task: None,
         };
@@ -227,17 +249,35 @@ impl ChecksumPanel {
         ))
     }
 
+    fn copy_value(&mut self, action: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
+        if !action.value.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.value.clone()));
+        }
+    }
+
+    fn copy_row(&mut self, action: &CopyRow, _window: &mut Window, cx: &mut Context<Self>) {
+        if !action.text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.text.clone()));
+        }
+    }
+
+    fn copy_all_checksums(&mut self, action: &CopyAllChecksums, _window: &mut Window, cx: &mut Context<Self>) {
+        if !action.text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.text.clone()));
+        }
+    }
+
     fn render_row(
-        &self,
         label: &'static str,
         display_value: String,
         copy_value: String,
         all_text: Option<String>,
+        view: &Entity<Self>,
+        window: &mut Window,
         theme: &gpui_component::Theme,
     ) -> impl IntoElement {
-        let copy_val = copy_value.clone();
         let copy_val_for_click = copy_value.clone();
-        let row_copy = format!("{}: {}", label, copy_value);
+        let val_for_right_click = copy_value.clone();
         let all_copy = all_text.clone();
 
         h_flex()
@@ -253,19 +293,14 @@ impl ChecksumPanel {
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_val_for_click.clone()));
             })
-            .context_menu(move |menu, _window, _cx| {
-                let v = copy_val.clone();
-                let r = row_copy.clone();
-                let all = all_copy.clone();
-
-                let mut menu = menu
-                    .menu(format!("Copy Value ({})", v), Box::new(crate::actions::Copy))
-                    .menu(format!("Copy Row ({})", r), Box::new(crate::actions::Copy));
-                if all.is_some() {
-                    menu = menu.separator().menu("Copy All Checksums", Box::new(crate::actions::Copy));
-                }
-                menu
-            })
+            .on_mouse_down(
+                MouseButton::Right,
+                window.listener_for(view, move |this, _, window, cx| {
+                    this.focus_handle.focus(window);
+                    this.selected_row = Some((label, val_for_right_click.clone(), all_copy.clone()));
+                    cx.notify();
+                }),
+            )
             .child(div().flex_shrink_0().w(px(110.0)).text_xs().text_color(theme.muted_foreground).child(label))
             .child(
                 h_flex()
@@ -453,19 +488,77 @@ impl Render for ChecksumPanel {
             let sha256_str = res.sha256.iter().map(|b| format!("{:02x}", b)).collect::<String>();
             let all_opt = all_formatted.clone();
 
+            let view = cx.entity().clone();
+
             v_flex()
                 .flex_1()
                 .p_2()
-                .child(self.render_row("Sum 8-bit", sum8_str, format!("0x{:02X}", res.sum8), all_opt.clone(), theme))
-                .child(self.render_row("Sum 16-bit", sum16_str, format!("0x{:04X}", res.sum16), all_opt.clone(), theme))
-                .child(self.render_row("Sum 32-bit", sum32_str, format!("0x{:08X}", res.sum32), all_opt.clone(), theme))
-                .child(self.render_row("Sum 64-bit", sum64_str, format!("0x{:016X}", res.sum64), all_opt.clone(), theme))
-                .child(self.render_row("Adler-32", adler32_str.clone(), adler32_str, all_opt.clone(), theme))
-                .child(self.render_row("CRC-16 (CCITT)", crc16_ccitt_str.clone(), crc16_ccitt_str, all_opt.clone(), theme))
-                .child(self.render_row("CRC-16 (ARC)", crc16_arc_str.clone(), crc16_arc_str, all_opt.clone(), theme))
-                .child(self.render_row("CRC-32", crc32_str.clone(), crc32_str, all_opt.clone(), theme))
-                .child(self.render_row("MD5", md5_str.clone(), md5_str, all_opt.clone(), theme))
-                .child(self.render_row("SHA-256", sha256_str.clone(), sha256_str, all_opt, theme))
+                .child(Self::render_row(
+                    "Sum 8-bit",
+                    sum8_str,
+                    format!("0x{:02X}", res.sum8),
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "Sum 16-bit",
+                    sum16_str,
+                    format!("0x{:04X}", res.sum16),
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "Sum 32-bit",
+                    sum32_str,
+                    format!("0x{:08X}", res.sum32),
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "Sum 64-bit",
+                    sum64_str,
+                    format!("0x{:016X}", res.sum64),
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "Adler-32",
+                    adler32_str.clone(),
+                    adler32_str,
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "CRC-16 (CCITT)",
+                    crc16_ccitt_str.clone(),
+                    crc16_ccitt_str,
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "CRC-16 (ARC)",
+                    crc16_arc_str.clone(),
+                    crc16_arc_str,
+                    all_opt.clone(),
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row("CRC-32", crc32_str.clone(), crc32_str, all_opt.clone(), &view, window, theme))
+                .child(Self::render_row("MD5", md5_str.clone(), md5_str, all_opt.clone(), &view, window, theme))
+                .child(Self::render_row("SHA-256", sha256_str.clone(), sha256_str, all_opt, &view, window, theme))
                 .overflow_y_scrollbar()
                 .into_any_element()
         } else {
@@ -482,17 +575,44 @@ impl Render for ChecksumPanel {
             crate::ui::style::panel_empty_state(IconName::Hash, title, Some(msg), None, theme).into_any_element()
         };
 
+        let view = cx.entity().clone();
+        let context_view = view.clone();
+        let context_focus_handle = self.focus_handle.clone();
         let container = crate::ui::style::panel_container(is_focused, theme);
 
         container
             .id("checksum-panel")
+            .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::copy_value))
+            .on_action(cx.listener(Self::copy_row))
+            .on_action(cx.listener(Self::copy_all_checksums))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
                     this.focus_handle.focus(window);
                 }),
             )
+            .context_menu(move |menu, _window, cx| {
+                let selected = {
+                    let this = context_view.read(cx);
+                    this.selected_row.clone()
+                };
+                let Some((label, copy_val, all_opt)) = selected else {
+                    return menu;
+                };
+                let row_copy = format!("{}: {}", label, copy_val);
+                let mut menu = menu
+                    .action_context(context_focus_handle.clone())
+                    .menu_with_icon(format!("Copy Value ({})", copy_val), IconName::Copy, Box::new(CopyValue { value: copy_val }))
+                    .menu_with_icon(format!("Copy Row ({})", row_copy), IconName::Copy, Box::new(CopyRow { text: row_copy }));
+                if let Some(all) = all_opt {
+                    menu = menu
+                        .separator()
+                        .menu_with_icon("Copy All Checksums", IconName::Copy, Box::new(CopyAllChecksums { text: all }));
+                }
+                menu
+            })
             .child(header)
             .child(info_section)
             .child(range_selector)

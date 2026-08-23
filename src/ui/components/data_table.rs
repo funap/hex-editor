@@ -141,6 +141,7 @@ impl VirtualTableState {
     }
 
     /// Returns the number of currently visible columns.
+    #[allow(dead_code)]
     pub fn visible_columns_count(&self) -> usize {
         self.columns.iter().filter(|col| col.visible).count()
     }

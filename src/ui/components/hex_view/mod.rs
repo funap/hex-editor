@@ -498,12 +498,10 @@ impl HexView {
                     .map(|r| r.depth)
                     .or_else(|| container_structs.first().map(|container| container.depth))
                     .unwrap_or(struct_depth)
+            } else if active_ranges.is_empty() {
+                leaf_fields.first().map(|field| field.depth).unwrap_or(0)
             } else {
-                if active_ranges.is_empty() {
-                    leaf_fields.first().map(|field| field.depth).unwrap_or(0)
-                } else {
-                    active_ranges.len()
-                }
+                active_ranges.len()
             };
             let indent_px = indent_level as f32 * 14.0;
 

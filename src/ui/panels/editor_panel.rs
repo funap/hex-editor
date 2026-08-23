@@ -20,6 +20,7 @@ use crate::core::search::SearchMode;
 use crate::service::editor_service::EditorService;
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
+use crate::ui::icon::IconName;
 use std::path::PathBuf;
 
 const CONTEXT: &str = "EditorPanel";
@@ -666,10 +667,10 @@ impl Panel for EditorPanel {
     }
 
     fn dropdown_menu(&mut self, this: PopupMenu, _window: &mut Window, _cx: &mut Context<Self>) -> PopupMenu {
-        this.menu("Split Right", Box::new(crate::actions::SplitRight))
-            .menu("Split Down", Box::new(crate::actions::SplitDown))
+        this.menu_with_icon("Split Right", IconName::PanelRight, Box::new(crate::actions::SplitRight))
+            .menu_with_icon("Split Down", IconName::PanelBottom, Box::new(crate::actions::SplitDown))
             .separator()
-            .menu("Close Tab", Box::new(crate::actions::CloseActivePanel))
+            .menu_with_icon("Close Tab", IconName::Close, Box::new(crate::actions::CloseActivePanel))
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {

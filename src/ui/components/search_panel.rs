@@ -530,9 +530,10 @@ impl Render for SearchPanel {
             );
 
             let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+            let list_view = view.clone();
 
             let list = uniform_list("search-panel-results-list", self.results.len(), move |range, window, cx| {
-                let this = view.read(cx);
+                let this = list_view.read(cx);
                 let theme = cx.theme();
                 let buffer = this.editor.as_ref().and_then(|ed| {
                     let ed_ref = ed.read(cx);
@@ -562,11 +563,6 @@ impl Render for SearchPanel {
                             let offset = item.offset;
                             let offset_value = format!("0x{:08X}", offset);
                             let (preview_hex, preview_ascii) = format_row_previews(buffer.as_ref().map(|b| b.data()), offset, this.match_len);
-                            let context_focus_handle = context_focus_handle.clone();
-                            let menu_offset = offset_value.clone();
-                            let menu_hex = preview_hex.clone();
-                            let menu_ascii = preview_ascii.clone();
-
                             h_flex()
                                 .id(("search-result-item", idx))
                                 .w_full()
@@ -578,15 +574,15 @@ impl Render for SearchPanel {
                                 .bg(bg_color)
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(hover_bg))
-                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                .on_click(window.listener_for(&list_view, move |this, _, _, cx| {
                                     this.select_item(idx, cx);
                                 }))
-                                .context_menu(move |menu, _, _| {
-                                    menu.action_context(context_focus_handle.clone())
-                                        .menu("Copy Address", Box::new(CopyAddress { value: menu_offset.clone() }))
-                                        .menu("Copy Hex Value", Box::new(CopyValue { value: menu_hex.clone() }))
-                                        .menu("Copy Text", Box::new(CopyText { value: menu_ascii.clone() }))
-                                })
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    window.listener_for(&list_view, move |this, _, _, cx| {
+                                        this.select_item(idx, cx);
+                                    }),
+                                )
                                 .child(
                                     h_flex()
                                         .w(total_visible_width)
@@ -631,6 +627,7 @@ impl Render for SearchPanel {
 
             let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
             let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+            let context_view = view.clone();
 
             v_flex()
                 .id("search-table-container")
@@ -679,6 +676,29 @@ impl Render for SearchPanel {
                         .child(vertical_scrollbar)
                         .children(horizontal_scrollbar),
                 )
+                .context_menu(move |menu, _window, cx| {
+                    let selected_info = {
+                        let this = context_view.read(cx);
+                        this.selected_index.and_then(|idx| {
+                            let item = this.results.get(idx)?;
+                            let offset = item.offset;
+                            let offset_value = format!("0x{:08X}", offset);
+                            let buffer = this.editor.as_ref().and_then(|ed| {
+                                let ed_ref = ed.read(cx);
+                                ed_ref.document.read().ok().map(|d| d.buffer.clone())
+                            });
+                            let (preview_hex, preview_ascii) = format_row_previews(buffer.as_ref().map(|b| b.data()), offset, this.match_len);
+                            Some((offset_value, preview_hex, preview_ascii))
+                        })
+                    };
+                    let Some((menu_offset, menu_hex, menu_ascii)) = selected_info else {
+                        return menu;
+                    };
+                    menu.action_context(context_focus_handle.clone())
+                        .menu_with_icon("Copy Address", IconName::Hash, Box::new(CopyAddress { value: menu_offset }))
+                        .menu_with_icon("Copy Hex Value", IconName::Binary, Box::new(CopyValue { value: menu_hex }))
+                        .menu_with_icon("Copy Text", IconName::TextInitial, Box::new(CopyText { value: menu_ascii }))
+                })
                 .into_any_element()
         };
 

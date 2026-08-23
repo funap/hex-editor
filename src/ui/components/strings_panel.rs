@@ -645,9 +645,10 @@ impl Render for StringsPanel {
             );
 
             let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+            let list_view = view.clone();
 
             let list = uniform_list("strings-panel-results-list", visible_indices.len(), move |range, window, cx| {
-                let this = view.read(cx);
+                let this = list_view.read(cx);
                 let theme = cx.theme();
 
                 range
@@ -676,9 +677,6 @@ impl Render for StringsPanel {
                             let offset = item.offset;
                             let byte_len = item.byte_len;
                             let offset_value = format!("0x{:08X}", offset);
-                            let menu_offset = offset_value.clone();
-                            let value = item.text.clone();
-                            let context_focus_handle = context_focus_handle.clone();
 
                             h_flex()
                                 .id(("strings-result-item", index))
@@ -691,14 +689,15 @@ impl Render for StringsPanel {
                                 .bg(bg_color)
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(hover_bg))
-                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                .on_click(window.listener_for(&list_view, move |this, _, _, cx| {
                                     this.select_item(index, cx);
                                 }))
-                                .context_menu(move |menu, _, _| {
-                                    menu.action_context(context_focus_handle.clone())
-                                        .menu("Copy Address", Box::new(CopyAddress { value: menu_offset.clone() }))
-                                        .menu("Copy Value", Box::new(CopyValue { value: value.clone() }))
-                                })
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    window.listener_for(&list_view, move |this, _, _, cx| {
+                                        this.select_item(index, cx);
+                                    }),
+                                )
                                 .child(
                                     h_flex()
                                         .w(total_visible_width)
@@ -742,6 +741,7 @@ impl Render for StringsPanel {
 
             let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
             let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+            let context_view = view.clone();
 
             v_flex()
                 .id("strings-table-container")
@@ -789,6 +789,23 @@ impl Render for StringsPanel {
                         .child(vertical_scrollbar)
                         .children(horizontal_scrollbar),
                 )
+                .context_menu(move |menu, _window, cx| {
+                    let selected_info = {
+                        let this = context_view.read(cx);
+                        this.selected_index.and_then(|idx| {
+                            let item = this.results.get(idx)?;
+                            let offset_value = format!("0x{:08X}", item.offset);
+                            let value = item.text.clone();
+                            Some((offset_value, value))
+                        })
+                    };
+                    let Some((menu_offset, value)) = selected_info else {
+                        return menu;
+                    };
+                    menu.action_context(context_focus_handle.clone())
+                        .menu_with_icon("Copy Address", IconName::Hash, Box::new(CopyAddress { value: menu_offset }))
+                        .menu_with_icon("Copy Value", IconName::TextInitial, Box::new(CopyValue { value }))
+                })
                 .into_any_element()
         };
 

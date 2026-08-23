@@ -198,7 +198,7 @@ impl Render for StatusBar {
                             .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
                     })
                     .separator()
-                    .menu("Toggle Left Panel", Box::new(ToggleLeftPanel))
+                    .menu_with_icon("Toggle Left Panel", IconName::PanelLeft, Box::new(ToggleLeftPanel))
             })
             .child(
                 // Left side: cursor position / selection range, current byte
@@ -233,9 +233,9 @@ impl Render for StatusBar {
                                     menu.menu_with_icon("Go to Beginning", IconName::ChevronUp, Box::new(GoToBeginning))
                                         .menu_with_icon("Go to End", IconName::ChevronDown, Box::new(GoToEnd))
                                         .separator()
-                                        .menu(format!("Copy Position ({})", p_str), Box::new(Copy))
-                                        .menu(format!("Copy Hex Offset ({})", off_h), Box::new(Copy))
-                                        .menu(format!("Copy Dec Offset ({})", off_d), Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Position ({})", p_str), IconName::Copy, Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Hex Offset ({})", off_h), IconName::Hash, Box::new(Copy))
+                                        .menu_with_icon(format!("Copy Dec Offset ({})", off_d), IconName::Hash, Box::new(Copy))
                                 }
                             })
                             .child(position_text),

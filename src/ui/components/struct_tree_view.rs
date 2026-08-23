@@ -1553,13 +1553,17 @@ impl Render for StructTreeView {
 
                         let offset_hex = format!("0x{:08X}", field_offset);
                         menu.action_context(context_focus.clone())
-                            .menu(format!("Go to Offset ({})", offset_hex), Box::new(crate::actions::GoToBeginning))
+                            .menu_with_icon(
+                                format!("Go to Offset ({})", offset_hex),
+                                IconName::ChevronRight,
+                                Box::new(crate::actions::GoToBeginning),
+                            )
                             .separator()
-                            .menu(format!("Copy Value ({})", field_value), Box::new(crate::actions::Copy))
-                            .menu(format!("Copy Field Name ({})", field_id), Box::new(crate::actions::Copy))
-                            .menu(format!("Copy Offset ({})", offset_hex), Box::new(crate::actions::Copy))
+                            .menu_with_icon(format!("Copy Value ({})", field_value), IconName::Copy, Box::new(crate::actions::Copy))
+                            .menu_with_icon(format!("Copy Field Name ({})", field_id), IconName::Copy, Box::new(crate::actions::Copy))
+                            .menu_with_icon(format!("Copy Offset ({})", offset_hex), IconName::Hash, Box::new(crate::actions::Copy))
                             .separator()
-                            .submenu("VALUE format", window, cx, move |menu, _window, _cx| {
+                            .submenu("Value format", window, cx, move |menu, _window, _cx| {
                                 menu.menu_with_check(
                                     "Hexadecimal (16)",
                                     value_radix == DisplayRadix::Hexadecimal,
@@ -1574,11 +1578,15 @@ impl Render for StructTreeView {
                                 )
                             })
                             .separator()
-                            .menu("Copy Structure Analysis", Box::new(crate::actions::CopyStructureResult))
-                            .menu("Export Structure as TOML", Box::new(crate::actions::ExportStructureToml))
+                            .menu_with_icon("Copy Structure Analysis", IconName::Copy, Box::new(crate::actions::CopyStructureResult))
+                            .menu_with_icon(
+                                "Export Structure as TOML",
+                                IconName::HardDriveDownload,
+                                Box::new(crate::actions::ExportStructureToml),
+                            )
                             .separator()
-                            .menu("Expand All", Box::new(crate::actions::ExpandAllStructure))
-                            .menu("Collapse All", Box::new(crate::actions::CollapseAllStructure))
+                            .menu_with_icon("Expand All", IconName::ChevronDown, Box::new(crate::actions::ExpandAllStructure))
+                            .menu_with_icon("Collapse All", IconName::ChevronUp, Box::new(crate::actions::CollapseAllStructure))
                     })
                     .into_any_element()
             }))

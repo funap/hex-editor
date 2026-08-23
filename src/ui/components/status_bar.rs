@@ -230,7 +230,9 @@ impl Render for StatusBar {
                                     let off_h = offset_hex.clone();
                                     let off_d = offset_dec.clone();
                                     let p_str = pos_str.clone();
-                                    menu.menu_with_icon("Go to Beginning", IconName::ChevronUp, Box::new(GoToBeginning))
+                                    menu.menu_with_icon("Go to Offset...", IconName::Search, Box::new(ToggleGoToOffset))
+                                        .separator()
+                                        .menu_with_icon("Go to Beginning", IconName::ChevronUp, Box::new(GoToBeginning))
                                         .menu_with_icon("Go to End", IconName::ChevronDown, Box::new(GoToEnd))
                                         .separator()
                                         .menu_with_icon(format!("Copy Position ({})", p_str), IconName::Copy, Box::new(Copy))

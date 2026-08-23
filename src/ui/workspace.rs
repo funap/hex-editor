@@ -635,6 +635,14 @@ impl Workspace {
         }
     }
 
+    fn on_action_toggle_goto_offset(&mut self, action: &ToggleGoToOffset, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.toggle_goto_offset(action, window, cx);
+            });
+        }
+    }
+
     fn on_action_search_next(&mut self, action: &SearchNext, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
@@ -2021,6 +2029,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_select_all))
             .on_action(cx.listener(Self::on_action_go_to_beginning))
             .on_action(cx.listener(Self::on_action_go_to_end))
+            .on_action(cx.listener(Self::on_action_toggle_goto_offset))
             .on_action(cx.listener(Self::on_action_toggle_search))
             .on_action(cx.listener(Self::on_action_toggle_search_panel))
             .on_action(cx.listener(Self::on_action_search_next))

@@ -11,13 +11,14 @@ use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
     ClearAllCustomBreaks, ClearBookmark, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
     CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd, JoinLine, Paste, Redo,
-    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch, Undo,
+    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleGoToOffset, ToggleSearch, Undo,
 };
 use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::search::SearchMode;
 use crate::service::editor_service::EditorService;
+use crate::ui::components::goto_offset_bar::{GotoBarEvent, GotoOffsetBar};
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
 use crate::ui::icon::IconName;
@@ -48,13 +49,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
+        KeyBinding::new("ctrl-g", ToggleGoToOffset, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-l", ToggleGoToOffset, Some(CONTEXT)),
     ]);
 }
 
@@ -64,6 +66,8 @@ pub struct EditorPanel {
     hex_view: Entity<HexView>,
     is_search_visible: bool,
     search_bar: Entity<SearchBar>,
+    is_goto_visible: bool,
+    goto_bar: Entity<GotoOffsetBar>,
     structure_reparse_task: Option<Task<()>>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     _appearance_subscription: Subscription,
@@ -81,6 +85,7 @@ impl EditorPanel {
                 .font_size(px(appearance.font_size))
         });
         let search_bar = cx.new(|cx| SearchBar::new(window, cx));
+        let goto_bar = cx.new(|cx| GotoOffsetBar::new(window, cx));
 
         cx.subscribe(&search_bar, |this, _, event: &SearchBarEvent, cx| match event {
             SearchBarEvent::IncrementalSearch(query, mode) => {
@@ -98,6 +103,30 @@ impl EditorPanel {
             SearchBarEvent::Dismiss => {
                 this.is_search_visible = false;
                 this.update_highlights(cx);
+                cx.dispatch_action(&FocusHexView);
+                cx.notify();
+            }
+        })
+        .detach();
+
+        cx.subscribe(&goto_bar, |this, _, event: &GotoBarEvent, cx| match event {
+            GotoBarEvent::Jump { offset, extend_selection } => {
+                let target = *offset;
+                let extend = *extend_selection;
+                this.editor.update(cx, |editor, cx| {
+                    editor.go_to_offset(target, extend);
+                    cx.notify();
+                });
+                let cursor_offset = this.editor.read(cx).cursor_offset;
+                this.hex_view.update(cx, |view, cx| {
+                    view.scroll_to_byte(cursor_offset, cx);
+                });
+                this.is_goto_visible = false;
+                cx.dispatch_action(&FocusHexView);
+                cx.notify();
+            }
+            GotoBarEvent::Dismiss => {
+                this.is_goto_visible = false;
                 cx.dispatch_action(&FocusHexView);
                 cx.notify();
             }
@@ -181,6 +210,8 @@ impl EditorPanel {
             hex_view,
             is_search_visible: false,
             search_bar,
+            is_goto_visible: false,
+            goto_bar,
             structure_reparse_task: None,
             tab_panel: None,
             _appearance_subscription,
@@ -278,7 +309,24 @@ impl EditorPanel {
     pub fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.is_search_visible = !self.is_search_visible;
         if self.is_search_visible {
+            self.is_goto_visible = false;
             self.search_bar.update(cx, |bar, cx| {
+                bar.focus(window, cx);
+            });
+        } else {
+            self.hex_view.read(cx).focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_goto_offset(&mut self, _: &ToggleGoToOffset, window: &mut Window, cx: &mut Context<Self>) {
+        self.is_goto_visible = !self.is_goto_visible;
+        if self.is_goto_visible {
+            self.is_search_visible = false;
+            let cursor_offset = self.editor.read(cx).cursor_offset;
+            let total_size = self.editor.read(cx).total_size();
+            self.goto_bar.update(cx, |bar, cx| {
+                bar.set_context_info(cursor_offset, total_size, cx);
                 bar.focus(window, cx);
             });
         } else {
@@ -697,6 +745,7 @@ impl Render for EditorPanel {
 
         container
             .on_action(cx.listener(Self::toggle_search))
+            .on_action(cx.listener(Self::toggle_goto_offset))
             .on_action(cx.listener(Self::search_next))
             .on_action(cx.listener(Self::search_prev))
             .on_action(cx.listener(Self::focus_hex_view))
@@ -734,6 +783,7 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::join_line))
             .on_action(cx.listener(Self::clear_all_custom_breaks))
             .when(self.is_search_visible, |el| el.child(self.search_bar.clone()))
+            .when(self.is_goto_visible, |el| el.child(self.goto_bar.clone()))
             .child(div().flex_1().w_full().min_h_0().child(self.hex_view.clone()))
     }
 }

@@ -71,6 +71,7 @@ fn init_app_state(cx: &mut App) {
     settings::register_quit_handler(cx);
     ui::workspace::init(cx);
     ui::components::file_tree_view::init(cx);
+    ui::components::goto_offset_bar::init(cx);
     ui::components::search_bar::init(cx);
     ui::components::search_panel::init(cx);
     ui::components::strings_panel::init(cx);
@@ -234,6 +235,8 @@ fn setup_menus(cx: &mut App) {
         gpui::Menu {
             name: "Go".into(),
             items: vec![
+                gpui::MenuItem::action("Go to Offset...", crate::actions::ToggleGoToOffset),
+                gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Go to Beginning", crate::actions::GoToBeginning),
                 gpui::MenuItem::action("Go to End", crate::actions::GoToEnd),
                 gpui::MenuItem::separator(),
@@ -379,14 +382,15 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-g", crate::actions::SearchNext, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("f3", crate::actions::SearchNext, None),
-        #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-g", crate::actions::SearchNext, None),
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-shift-g", crate::actions::SearchPrev, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("shift-f3", crate::actions::SearchPrev, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-g", crate::actions::SearchPrev, None),
+        gpui::KeyBinding::new("ctrl-g", crate::actions::ToggleGoToOffset, None),
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-l", crate::actions::ToggleGoToOffset, None),
         // Clipboard & Selection
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-a", crate::actions::SelectAll, None),

@@ -1005,6 +1005,22 @@ impl Editor {
         self.clear_selection();
     }
 
+    /// Jumps the cursor to the specified byte offset.
+    /// If `extend_selection` is true, extends the selection from the current anchor to `offset`.
+    /// Otherwise, clears the selection and positions the cursor exactly at `offset`.
+    pub fn go_to_offset(&mut self, offset: usize, extend_selection: bool) {
+        let total = self.total_size();
+        let target = if total == 0 { 0 } else { offset.min(total.saturating_sub(1)) };
+        if extend_selection {
+            let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
+            self.cursor_offset = target;
+            self.set_selection(anchor, target);
+        } else {
+            self.set_cursor_offset_exact(target);
+            self.clear_selection();
+        }
+    }
+
     pub fn page_up(&mut self, visible_rows: usize) {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
@@ -3324,5 +3340,37 @@ mod tests {
         let line_starts = editor.line_starts();
         assert_eq!(line_starts.get(0), Some(0)); // 0..16
         assert_eq!(line_starts.get(1), Some(16)); // 16..32
+    }
+
+    #[test]
+    fn test_go_to_offset() {
+        let mut editor = create_editor_with_content(&[0u8; 64]);
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Jump to offset 30 without extending selection
+        editor.go_to_offset(30, false);
+        assert_eq!(editor.cursor_offset, 30);
+        assert!(!editor.has_selection());
+
+        // Jump beyond total size clamps to total_size - 1
+        editor.go_to_offset(100, false);
+        assert_eq!(editor.cursor_offset, 63);
+        assert!(!editor.has_selection());
+    }
+
+    #[test]
+    fn test_go_to_offset_extend_selection() {
+        let mut editor = create_editor_with_content(&[0u8; 64]);
+        editor.set_cursor_offset(10);
+
+        // Extend selection from 10 to 40
+        editor.go_to_offset(40, true);
+        assert_eq!(editor.cursor_offset, 40);
+        assert_eq!(editor.selection_range(), Some(10..40));
+
+        // Further extend selection to 50
+        editor.go_to_offset(50, true);
+        assert_eq!(editor.cursor_offset, 50);
+        assert_eq!(editor.selection_range(), Some(10..50));
     }
 }

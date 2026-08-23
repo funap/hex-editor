@@ -109,6 +109,9 @@ pub struct Quit;
 pub struct SelectAll;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct ToggleGoToOffset;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct GoToBeginning;
 
 #[derive(Clone, PartialEq, Action)]

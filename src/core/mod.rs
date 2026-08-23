@@ -12,6 +12,7 @@ pub mod format;
 pub mod goto;
 pub mod history;
 pub mod layout;
+pub mod new_file;
 pub mod radix;
 pub mod search;
 pub mod selection;

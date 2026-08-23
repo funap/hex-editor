@@ -100,6 +100,9 @@ pub struct ToggleLeftPanel;
 pub struct OpenSettings;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct NewFile;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct OpenFileDialog;
 
 #[derive(Clone, PartialEq, Action)]

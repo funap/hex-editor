@@ -6,6 +6,7 @@ pub mod data_table;
 pub mod file_tree_view;
 pub mod goto_offset_bar;
 pub mod hex_view;
+pub mod new_file_modal;
 pub mod search_bar;
 pub mod search_panel;
 pub mod status_bar;

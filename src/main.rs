@@ -70,6 +70,7 @@ fn init_app_state(cx: &mut App) {
     theme::set_mode(settings.theme_mode, None, cx);
     settings::register_quit_handler(cx);
     ui::workspace::init(cx);
+    ui::components::new_file_modal::init(cx);
     ui::components::file_tree_view::init(cx);
     ui::components::goto_offset_bar::init(cx);
     ui::components::search_bar::init(cx);
@@ -87,6 +88,7 @@ fn setup_menus(cx: &mut App) {
         gpui::Menu {
             name: "File".into(),
             items: vec![
+                gpui::MenuItem::action("New File...", crate::actions::NewFile),
                 gpui::MenuItem::action("Open File...", crate::actions::OpenFileDialog),
                 gpui::MenuItem::action("Open Folder...", crate::actions::OpenFolder),
                 gpui::MenuItem::action("Close Folder", crate::actions::CloseFolder),
@@ -295,6 +297,10 @@ fn setup_menus(cx: &mut App) {
 fn setup_keybindings(cx: &mut App) {
     cx.bind_keys([
         // File / Folder dialogs
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-n", crate::actions::NewFile, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-n", crate::actions::NewFile, None),
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-o", crate::actions::OpenFileDialog, None),
         #[cfg(not(target_os = "macos"))]

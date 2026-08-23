@@ -32,6 +32,8 @@ pub struct Workspace {
     pub recent_definition_history: crate::core::structure::DefinitionHistory,
     pub recent_file_history: crate::core::structure::FileHistory,
     pub is_left_panel_visible: bool,
+    pub new_file_modal: Option<Entity<crate::ui::components::new_file_modal::NewFileModal>>,
+    pub untitled_count: usize,
     focus_handle: FocusHandle,
     last_active_editor_id: Cell<Option<EntityId>>,
 }
@@ -194,6 +196,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("insert", crate::actions::ToggleInsertMode, None),
     ]);
 
+    cx.on_action::<NewFile>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_new_file(&NewFile, window, cx);
+        });
+    });
     cx.on_action::<OpenFile>(|action, cx| {
         let action = action.clone();
         defer_in_active_workspace(cx, move |workspace, window, cx| {
@@ -421,6 +428,8 @@ impl Workspace {
             recent_definition_history: recent_history.definitions,
             recent_file_history: recent_history.files,
             is_left_panel_visible: true,
+            new_file_modal: None,
+            untitled_count: 0,
             focus_handle: cx.focus_handle(),
             last_active_editor_id: Cell::new(None),
         };
@@ -570,6 +579,47 @@ impl Workspace {
         });
 
         self.sync_active_editor(window, cx);
+        cx.notify();
+    }
+
+    fn on_action_new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::components::new_file_modal::{NewFileModal, NewFileModalEvent};
+
+        let modal = cx.new(|cx| NewFileModal::new(window, cx));
+        cx.subscribe_in(&modal, window, |this, _, event: &NewFileModalEvent, window, cx| match event {
+            NewFileModalEvent::Create { size, fill_byte } => {
+                this.create_new_file(*size, *fill_byte, window, cx);
+            }
+            NewFileModalEvent::Cancel => {
+                this.close_new_file_modal(window, cx);
+            }
+        })
+        .detach();
+
+        modal.update(cx, |m, cx| {
+            m.focus(window, cx);
+        });
+
+        self.new_file_modal = Some(modal);
+        cx.notify();
+    }
+
+    fn close_new_file_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_file_modal = None;
+        self.sync_active_editor(window, cx);
+        cx.notify();
+    }
+
+    fn create_new_file(&mut self, size: usize, fill_byte: u8, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_file_modal = None;
+        self.untitled_count += 1;
+        let title = format!("Untitled-{}.bin", self.untitled_count);
+        let path = std::path::PathBuf::from(title);
+        let data = vec![fill_byte; size];
+        let buffer = crate::core::buffer::Buffer::new(data);
+        let document = Arc::new(RwLock::new(crate::core::document::Document::new(path, buffer)));
+
+        self.open_editor_panel(document, window, cx);
         cx.notify();
     }
 
@@ -1606,17 +1656,26 @@ impl Workspace {
         });
     }
 
-    fn on_action_save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor(cx) else {
             return;
         };
-        let (document, state_id, is_read_only) = {
+        let (document, state_id, is_read_only, path) = {
             let editor_read = editor.read(cx);
             let document = editor_read.document.clone();
             let document_read = document.read().expect("document read lock");
-            (document.clone(), document_read.history.state_id(), document_read.is_read_only())
+            (
+                document.clone(),
+                document_read.history.state_id(),
+                document_read.is_read_only(),
+                document_read.path().to_path_buf(),
+            )
         };
         if is_read_only {
+            return;
+        }
+        if !path.exists() {
+            self.on_action_save_as(&crate::actions::SaveAs, window, cx);
             return;
         }
         let service = AppState::global(cx).editor_service.clone();
@@ -1733,7 +1792,7 @@ impl Workspace {
         let Some(editor) = self.active_editor(cx) else {
             return;
         };
-        let (document, state_id, default_name) = {
+        let (document, state_id, default_name, parent_dir) = {
             let editor_read = editor.read(cx);
             let document = editor_read.document.clone();
             let document_read = document.read().expect("document read lock");
@@ -1742,37 +1801,40 @@ impl Workspace {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| "untitled.bin".to_string());
-            (document.clone(), document_read.history.state_id(), default_name)
+            let parent_dir = document_read
+                .path()
+                .parent()
+                .filter(|p| p.exists())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")));
+            (document.clone(), document_read.history.state_id(), default_name, parent_dir)
         };
-        let prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select destination file or directory".into()),
-        });
+        let prompt = cx.prompt_for_new_path(&parent_dir, Some(&default_name));
         let workspace = cx.entity().clone();
         let service = AppState::global(cx).editor_service.clone();
 
         cx.spawn_in(window, async move |_, window| {
-            let Some(mut path) = prompt.await.ok().and_then(|result| result.ok()).flatten().and_then(|mut paths| paths.pop()) else {
+            let Some(path) = prompt.await.ok().and_then(|result| result.ok()).flatten() else {
                 return;
             };
-            if path.is_dir() {
-                path = path.join(default_name);
-            }
             let task = window.update(|_, cx| service.save_document_to_path(document.clone(), path.clone(), cx)).ok();
             let Some(task) = task else {
                 return;
             };
             let result = task.await;
             let _ = window.update(|_, cx| {
-                workspace.update(cx, |_, cx| {
+                workspace.update(cx, |this, cx| {
                     match result {
                         Ok(()) => {
                             let mut document_write = document.write().expect("document write lock");
-                            document_write.set_path(path);
+                            document_write.set_path(path.clone());
                             if document_write.history.state_id() == state_id {
                                 document_write.mark_as_saved();
+                            }
+                            drop(document_write);
+                            service.notify_document_changed(&path, cx);
+                            for group in this.pane_tree.read(cx).all_groups() {
+                                group.update(cx, |_, cx| cx.notify());
                             }
                             editor.update(cx, |_, cx| cx.notify());
                         }
@@ -2019,6 +2081,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("workspace")
+            .on_action(cx.listener(Self::on_action_new_file))
             .on_action(cx.listener(Self::on_action_open_file))
             .on_action(cx.listener(Self::on_action_save))
             .on_action(cx.listener(Self::on_action_save_as))
@@ -2163,6 +2226,21 @@ impl Render for Workspace {
                     ),
             )
             .child(self.status_bar.clone())
+            .when_some(self.new_file_modal.clone(), |el, modal| {
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::rgba(0x00000080))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(modal),
+                )
+            })
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))

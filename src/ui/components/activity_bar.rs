@@ -11,7 +11,7 @@ pub enum Activity {
     Inspector = 3,
     Map = 4,
     Checksum = 5,
-    Highlights = 6,
+    Bookmarks = 6,
     Strings = 7,
 }
 
@@ -71,7 +71,7 @@ impl Render for ActivityBar {
                     .child(self.render_icon(Activity::Inspector, IconName::Binary, "Inspector", cx))
                     .child(self.render_icon(Activity::Map, IconName::Map, "Map", cx))
                     .child(self.render_icon(Activity::Checksum, IconName::Hash, "Checksum", cx))
-                    .child(self.render_icon(Activity::Highlights, IconName::Bookmark, "Highlights", cx)),
+                    .child(self.render_icon(Activity::Bookmarks, IconName::Bookmark, "Bookmarks", cx)),
             )
             .child(
                 div()

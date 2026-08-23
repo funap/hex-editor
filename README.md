@@ -55,10 +55,10 @@ Whether analyzing proprietary firmware, reverse engineering protocol packets, in
   - **Data Category:** Instantly distinguish null bytes, ASCII printable text, control characters, and high-byte sequences.
   - **Rainbow:** High-contrast spectrum for locating embedded assets, encrypted blocks, and compressed data streams.
 
-### 🎨 8-Color Multi-Layer Highlights & Annotation Management
-- Highlight byte ranges in 8 distinct colors (Red, Orange, Yellow, Green, Cyan, Blue, Purple, Pink).
-- Dedicated **Highlights Panel** to list, filter, jump between, and delete highlights.
-- **Import / Export Highlights:** Save and share analysis bookmarks as JSON files across sessions.
+### 🎨 8-Color Multi-Layer Bookmarks & Annotation Management
+- Bookmark byte ranges in 8 distinct colors (Red, Orange, Yellow, Green, Cyan, Blue, Purple, Pink).
+- Dedicated **Bookmarks Panel** to list, filter, jump between, and delete bookmarks.
+- **Import / Export Bookmarks:** Save and share analysis bookmarks as JSON files across sessions.
 
 ### 📐 Custom Line Breaks & Adaptive Grid Formatting
 Break free from rigid 16-byte hex rows:
@@ -95,7 +95,7 @@ Copy selected bytes in one click into ready-to-use formats:
 
 ### 🖥️ Modern IDE Workspace & Vim Keybindings
 - **Tab & Multi-Pane Layout:** Open multiple files in tabs, with horizontal (`Cmd+\`) and vertical (`Cmd+Shift+D`) split panes.
-- **Collapsible Sidebar:** Access File Tree, Kaitai Structure, Highlights, and Checksum panels via the Activity Bar.
+- **Collapsible Sidebar:** Access File Tree, Kaitai Structure, Bookmarks, and Checksum panels via the Activity Bar.
 - **Vim Navigation:** Use `h`, `j`, `k`, `l` to move, `Shift+H/J/K/L` to expand selection, `/` to search, and `n` / `N` for next/previous match.
 - **Full Search Support:** Incremental search with Hex, Text, and Regex modes.
 

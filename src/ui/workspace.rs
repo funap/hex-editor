@@ -310,7 +310,7 @@ impl Workspace {
         })
         .detach();
 
-        let (handles, highlight_panel, struct_tree) = {
+        let (handles, bookmark_panel, struct_tree) = {
             let left_read = left_panel.read(cx);
             (
                 [
@@ -321,9 +321,9 @@ impl Workspace {
                     left_read.data_inspector.read(cx).focus_handle(cx),
                     left_read.visual_map.read(cx).focus_handle(cx),
                     left_read.checksum_panel.read(cx).focus_handle(cx),
-                    left_read.highlight_panel.read(cx).focus_handle(cx),
+                    left_read.bookmark_panel.read(cx).focus_handle(cx),
                 ],
-                left_read.highlight_panel.clone(),
+                left_read.bookmark_panel.clone(),
                 left_read.struct_tree.clone(),
             )
         };
@@ -337,16 +337,16 @@ impl Workspace {
         }
 
         cx.subscribe_in(
-            &highlight_panel,
+            &bookmark_panel,
             window,
-            |this, _, event: &crate::ui::components::highlight_panel::HighlightPanelEvent, _window, cx| match event {
-                crate::ui::components::highlight_panel::HighlightPanelEvent::Export => {
-                    this.on_action_export_highlights(&crate::actions::ExportHighlights, _window, cx);
+            |this, _, event: &crate::ui::components::bookmark_panel::BookmarkPanelEvent, _window, cx| match event {
+                crate::ui::components::bookmark_panel::BookmarkPanelEvent::Export => {
+                    this.on_action_export_bookmarks(&crate::actions::ExportBookmarks, _window, cx);
                 }
-                crate::ui::components::highlight_panel::HighlightPanelEvent::Import => {
-                    this.on_action_import_highlights(&crate::actions::ImportHighlights, _window, cx);
+                crate::ui::components::bookmark_panel::BookmarkPanelEvent::Import => {
+                    this.on_action_import_bookmarks(&crate::actions::ImportBookmarks, _window, cx);
                 }
-                crate::ui::components::highlight_panel::HighlightPanelEvent::NavigateTo { offset, .. } => {
+                crate::ui::components::bookmark_panel::BookmarkPanelEvent::NavigateTo { offset, .. } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
                             panel.scroll_to_byte(*offset, cx);
@@ -739,82 +739,82 @@ impl Workspace {
         }
     }
 
-    fn on_action_highlight_red(&mut self, action: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_red(&mut self, action: &BookmarkRed, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_red(action, window, cx);
+                panel.bookmark_red(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_orange(&mut self, action: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_orange(&mut self, action: &BookmarkOrange, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_orange(action, window, cx);
+                panel.bookmark_orange(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_yellow(&mut self, action: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_yellow(&mut self, action: &BookmarkYellow, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_yellow(action, window, cx);
+                panel.bookmark_yellow(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_green(&mut self, action: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_green(&mut self, action: &BookmarkGreen, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_green(action, window, cx);
+                panel.bookmark_green(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_cyan(&mut self, action: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_cyan(&mut self, action: &BookmarkCyan, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_cyan(action, window, cx);
+                panel.bookmark_cyan(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_blue(&mut self, action: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_blue(&mut self, action: &BookmarkBlue, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_blue(action, window, cx);
+                panel.bookmark_blue(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_purple(&mut self, action: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_purple(&mut self, action: &BookmarkPurple, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_purple(action, window, cx);
+                panel.bookmark_purple(action, window, cx);
             });
         }
     }
 
-    fn on_action_highlight_pink(&mut self, action: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_bookmark_pink(&mut self, action: &BookmarkPink, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.highlight_pink(action, window, cx);
+                panel.bookmark_pink(action, window, cx);
             });
         }
     }
 
-    fn on_action_clear_highlight(&mut self, action: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_clear_bookmark(&mut self, action: &ClearBookmark, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.clear_highlight(action, window, cx);
+                panel.clear_bookmark(action, window, cx);
             });
         }
     }
 
-    fn on_action_clear_all_highlights(&mut self, action: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_clear_all_bookmarks(&mut self, action: &ClearAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_editor_panel(cx) {
             panel.update(cx, |panel, cx| {
-                panel.clear_all_highlights(action, window, cx);
+                panel.clear_all_bookmarks(action, window, cx);
             });
         }
     }
@@ -1322,18 +1322,18 @@ impl Workspace {
         self.select_activity(Activity::Checksum, window, cx);
     }
 
-    fn on_action_show_highlights_tab(&mut self, _: &ShowHighlightsTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_activity(Activity::Highlights, window, cx);
+    fn on_action_show_bookmarks_tab(&mut self, _: &ShowBookmarksTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_activity(Activity::Bookmarks, window, cx);
     }
 
-    fn on_action_export_highlights(&mut self, _: &ExportHighlights, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_export_bookmarks(&mut self, _: &ExportBookmarks, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor(cx) else { return };
         let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
         let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: true,
             multiple: false,
-            prompt: Some("Select destination JSON file or directory for highlights".into()),
+            prompt: Some("Select destination JSON file or directory for bookmarks".into()),
         });
 
         let view = cx.entity().clone();
@@ -1341,8 +1341,8 @@ impl Workspace {
             if let Some(mut path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
                 if path.is_dir() {
                     let default_name = doc_path
-                        .and_then(|p| p.file_name().map(|n| format!("{}.highlights.json", n.to_string_lossy())))
-                        .unwrap_or_else(|| "highlights.json".to_string());
+                        .and_then(|p| p.file_name().map(|n| format!("{}.bookmarks.json", n.to_string_lossy())))
+                        .unwrap_or_else(|| "bookmarks.json".to_string());
                     path = path.join(default_name);
                 } else if path.extension().is_none() {
                     path.set_extension("json");
@@ -1352,9 +1352,9 @@ impl Workspace {
                     .update(|_, cx| {
                         view.update(cx, |this, cx| {
                             if let Some(editor) = this.active_editor(cx)
-                                && let Err(e) = editor.read(cx).export_highlights_to_file(&path)
+                                && let Err(e) = editor.read(cx).export_bookmarks_to_file(&path)
                             {
-                                eprintln!("Failed to export highlights: {}", e);
+                                eprintln!("Failed to export bookmarks: {}", e);
                             }
                         });
                     })
@@ -1364,12 +1364,12 @@ impl Workspace {
         .detach();
     }
 
-    fn on_action_import_highlights(&mut self, _: &ImportHighlights, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_import_bookmarks(&mut self, _: &ImportBookmarks, window: &mut Window, cx: &mut Context<Self>) {
         let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select highlights JSON file to import".into()),
+            prompt: Some("Select bookmarks JSON file to import".into()),
         });
 
         let view = cx.entity().clone();
@@ -1380,12 +1380,12 @@ impl Workspace {
                         view.update(cx, |this, cx| {
                             if let Some(editor) = this.active_editor(cx) {
                                 let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
-                                editor.update(cx, |ed, cx| match ed.import_highlights_from_file(&path) {
+                                editor.update(cx, |ed, cx| match ed.import_bookmarks_from_file(&path) {
                                     Ok(_) => {
                                         cx.notify();
                                     }
                                     Err(e) => {
-                                        eprintln!("Failed to import highlights: {}", e);
+                                        eprintln!("Failed to import bookmarks: {}", e);
                                     }
                                 });
                                 if let Some(ref p) = doc_path {
@@ -1410,7 +1410,7 @@ impl Workspace {
             Activity::Inspector => LeftPanelTab::Inspector,
             Activity::Map => LeftPanelTab::Map,
             Activity::Checksum => LeftPanelTab::Checksum,
-            Activity::Highlights => LeftPanelTab::Highlights,
+            Activity::Bookmarks => LeftPanelTab::Bookmarks,
         };
 
         let current_tab = self.left_panel.read(cx).active_tab;
@@ -1998,7 +1998,7 @@ impl Workspace {
                     LeftPanelTab::Inspector => activity_bar.set_activity(Some(Activity::Inspector), cx),
                     LeftPanelTab::Map => activity_bar.set_activity(Some(Activity::Map), cx),
                     LeftPanelTab::Checksum => activity_bar.set_activity(Some(Activity::Checksum), cx),
-                    LeftPanelTab::Highlights => activity_bar.set_activity(Some(Activity::Highlights), cx),
+                    LeftPanelTab::Bookmarks => activity_bar.set_activity(Some(Activity::Bookmarks), cx),
                 }
             } else {
                 activity_bar.set_activity(None, cx);
@@ -2036,16 +2036,16 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_copy_as_binary))
             .on_action(cx.listener(Self::on_action_copy_as_rust_array))
             .on_action(cx.listener(Self::on_action_copy_as_json_array))
-            .on_action(cx.listener(Self::on_action_highlight_red))
-            .on_action(cx.listener(Self::on_action_highlight_orange))
-            .on_action(cx.listener(Self::on_action_highlight_yellow))
-            .on_action(cx.listener(Self::on_action_highlight_green))
-            .on_action(cx.listener(Self::on_action_highlight_cyan))
-            .on_action(cx.listener(Self::on_action_highlight_blue))
-            .on_action(cx.listener(Self::on_action_highlight_purple))
-            .on_action(cx.listener(Self::on_action_highlight_pink))
-            .on_action(cx.listener(Self::on_action_clear_highlight))
-            .on_action(cx.listener(Self::on_action_clear_all_highlights))
+            .on_action(cx.listener(Self::on_action_bookmark_red))
+            .on_action(cx.listener(Self::on_action_bookmark_orange))
+            .on_action(cx.listener(Self::on_action_bookmark_yellow))
+            .on_action(cx.listener(Self::on_action_bookmark_green))
+            .on_action(cx.listener(Self::on_action_bookmark_cyan))
+            .on_action(cx.listener(Self::on_action_bookmark_blue))
+            .on_action(cx.listener(Self::on_action_bookmark_purple))
+            .on_action(cx.listener(Self::on_action_bookmark_pink))
+            .on_action(cx.listener(Self::on_action_clear_bookmark))
+            .on_action(cx.listener(Self::on_action_clear_all_bookmarks))
             .on_action(cx.listener(Self::on_action_add_custom_break))
             .on_action(cx.listener(Self::on_action_remove_custom_break_backward))
             .on_action(cx.listener(Self::on_action_remove_custom_break_forward))
@@ -2078,9 +2078,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_show_strings_tab))
             .on_action(cx.listener(Self::on_action_show_structure_tab))
             .on_action(cx.listener(Self::on_action_show_checksum_tab))
-            .on_action(cx.listener(Self::on_action_show_highlights_tab))
-            .on_action(cx.listener(Self::on_action_export_highlights))
-            .on_action(cx.listener(Self::on_action_import_highlights))
+            .on_action(cx.listener(Self::on_action_show_bookmarks_tab))
+            .on_action(cx.listener(Self::on_action_export_bookmarks))
+            .on_action(cx.listener(Self::on_action_import_bookmarks))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
             .on_action(cx.listener(Self::on_action_load_structure_definition_from_history))
             .on_action(cx.listener(Self::on_action_remove_structure_definition_from_history))

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
+use crate::core::bookmark::BookmarkItem;
 use crate::core::buffer::Buffer;
-use crate::core::highlight::HighlightItem;
 use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +15,7 @@ pub struct Document {
     pub history: History,
     pub last_saved_version: usize,
     read_only: bool,
-    pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
+    pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
     pub ksy_definition: Arc<RwLock<Option<Arc<KsyDefinition>>>>,
     pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
     pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
@@ -31,7 +31,7 @@ impl Document {
             history: History::new(),
             last_saved_version: 0,
             read_only: false,
-            highlights: Arc::new(RwLock::new(Vec::new())),
+            bookmarks: Arc::new(RwLock::new(Vec::new())),
             ksy_definition: Arc::new(RwLock::new(None)),
             parse_result: Arc::new(RwLock::new(None)),
             custom_breaks: Arc::new(RwLock::new(BTreeSet::new())),

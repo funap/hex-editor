@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use crate::core::bookmark::{BookmarkColor, BookmarkFile, BookmarkItem, generate_bookmark_id};
 use crate::core::command::{Command, CursorState, ReplaceRangeCommand};
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
-use crate::core::highlight::{HighlightColor, HighlightFile, HighlightItem, generate_highlight_id};
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::selection::Selection;
 use crate::core::structure::{ParseResult, ParsedField};
@@ -64,16 +64,16 @@ pub struct Editor {
     pub structure_reparse_requested: bool,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
-    pub highlights: Arc<RwLock<Vec<HighlightItem>>>,
+    pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
 impl Editor {
     pub fn new(document: Arc<RwLock<Document>>) -> Self {
-        let (highlights, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
+        let (bookmarks, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
             let doc = document.read().expect("document read lock");
             (
-                doc.highlights.clone(),
+                doc.bookmarks.clone(),
                 doc.ksy_definition.clone(),
                 doc.parse_result.clone(),
                 doc.custom_breaks.clone(),
@@ -106,7 +106,7 @@ impl Editor {
             structure_reparse_requested: false,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
-            highlights,
+            bookmarks,
             cached_line_map: RefCell::new(None),
         }
     }
@@ -322,8 +322,8 @@ impl Editor {
         Some(start..start + 1)
     }
 
-    pub fn highlights_snapshot(&self) -> Vec<HighlightItem> {
-        self.highlights.read().expect("highlights read lock").clone()
+    pub fn bookmarks_snapshot(&self) -> Vec<BookmarkItem> {
+        self.bookmarks.read().expect("bookmarks read lock").clone()
     }
 
     pub fn parse_result(&self) -> Option<Arc<ParseResult>> {
@@ -334,7 +334,7 @@ impl Editor {
         self.ksy_definition.read().expect("ksy_definition read lock").clone()
     }
 
-    pub fn add_highlight(&mut self, item: HighlightItem) -> String {
+    pub fn add_bookmark(&mut self, item: BookmarkItem) -> String {
         if item.size == 0 {
             return String::new();
         }
@@ -349,10 +349,10 @@ impl Editor {
         item.offset = clamped_offset;
         item.size = clamped_size;
 
-        let mut highlights = self.highlights.write().expect("highlights write lock");
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
 
-        // If an existing highlight has the exact same range, update its color and/or comment
-        if let Some(existing) = highlights.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
+        // If an existing bookmark has the exact same range, update its color and/or comment
+        if let Some(existing) = bookmarks.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
             existing.color = item.color;
             if !item.comment.is_empty() {
                 existing.comment = item.comment;
@@ -361,17 +361,17 @@ impl Editor {
         }
 
         // Ensure ID is non-empty and unique within this editor
-        if item.id.is_empty() || highlights.iter().any(|h| h.id == item.id) {
-            item.id = generate_highlight_id();
+        if item.id.is_empty() || bookmarks.iter().any(|h| h.id == item.id) {
+            item.id = generate_bookmark_id();
         }
 
         let id = item.id.clone();
-        highlights.push(item);
-        highlights.sort_by_key(|h| (h.offset, h.size));
+        bookmarks.push(item);
+        bookmarks.sort_by_key(|h| (h.offset, h.size));
         id
     }
 
-    pub fn add_custom_highlight(&mut self, range: Range<usize>, color: Hsla) {
+    pub fn add_custom_bookmark(&mut self, range: Range<usize>, color: Hsla) {
         if range.is_empty() {
             return;
         }
@@ -382,38 +382,38 @@ impl Editor {
             return;
         }
         let new_range = clamped_start..clamped_end;
-        let hl_color = HighlightColor::from_hsla(color);
+        let hl_color = BookmarkColor::from_hsla(color);
 
-        let mut highlights = self.highlights.write().expect("highlights write lock");
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
         let mut updated = Vec::new();
-        for h in highlights.drain(..) {
+        for h in bookmarks.drain(..) {
             let h_range = h.range();
             if h_range.end <= new_range.start || h_range.start >= new_range.end {
                 updated.push(h);
             } else {
                 if h_range.start < new_range.start {
                     let mut left = h.clone();
-                    left.id = generate_highlight_id();
+                    left.id = generate_bookmark_id();
                     left.size = new_range.start - h_range.start;
                     updated.push(left);
                 }
                 if h_range.end > new_range.end {
                     let mut right = h.clone();
-                    right.id = generate_highlight_id();
+                    right.id = generate_bookmark_id();
                     right.offset = new_range.end;
                     right.size = h_range.end - new_range.end;
                     updated.push(right);
                 }
             }
         }
-        updated.push(HighlightItem::new(new_range.start, new_range.len(), hl_color, ""));
+        updated.push(BookmarkItem::new(new_range.start, new_range.len(), hl_color, ""));
         updated.sort_by_key(|h| (h.offset, h.size));
-        *highlights = updated;
+        *bookmarks = updated;
     }
 
-    pub fn update_highlight_comment(&mut self, id: &str, comment: impl Into<String>) -> bool {
-        let mut highlights = self.highlights.write().expect("highlights write lock");
-        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
+    pub fn update_bookmark_comment(&mut self, id: &str, comment: impl Into<String>) -> bool {
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
             item.comment = comment.into();
             true
         } else {
@@ -421,9 +421,9 @@ impl Editor {
         }
     }
 
-    pub fn update_highlight_color(&mut self, id: &str, color: HighlightColor) -> bool {
-        let mut highlights = self.highlights.write().expect("highlights write lock");
-        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
+    pub fn update_bookmark_color(&mut self, id: &str, color: BookmarkColor) -> bool {
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
             item.color = color;
             true
         } else {
@@ -431,7 +431,7 @@ impl Editor {
         }
     }
 
-    pub fn update_highlight_range(&mut self, id: &str, offset: usize, size: usize) -> bool {
+    pub fn update_bookmark_range(&mut self, id: &str, offset: usize, size: usize) -> bool {
         if size == 0 {
             return false;
         }
@@ -442,82 +442,82 @@ impl Editor {
             return false;
         }
 
-        let mut highlights = self.highlights.write().expect("highlights write lock");
-        if let Some(item) = highlights.iter_mut().find(|h| h.id == id) {
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
             item.offset = clamped_offset;
             item.size = clamped_size;
-            highlights.sort_by_key(|h| (h.offset, h.size));
+            bookmarks.sort_by_key(|h| (h.offset, h.size));
             true
         } else {
             false
         }
     }
 
-    pub fn remove_highlight_by_id(&mut self, id: &str) -> bool {
-        let mut highlights = self.highlights.write().expect("highlights write lock");
-        let initial_len = highlights.len();
-        highlights.retain(|h| h.id != id);
-        highlights.len() < initial_len
+    pub fn remove_bookmark_by_id(&mut self, id: &str) -> bool {
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let initial_len = bookmarks.len();
+        bookmarks.retain(|h| h.id != id);
+        bookmarks.len() < initial_len
     }
 
-    pub fn remove_highlight_by_index(&mut self, index: usize) -> Option<HighlightItem> {
-        let mut highlights = self.highlights.write().expect("highlights write lock");
-        if index < highlights.len() { Some(highlights.remove(index)) } else { None }
+    pub fn remove_bookmark_by_index(&mut self, index: usize) -> Option<BookmarkItem> {
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        if index < bookmarks.len() { Some(bookmarks.remove(index)) } else { None }
     }
 
-    pub fn clear_custom_highlight(&mut self, range: Range<usize>) {
+    pub fn clear_custom_bookmark(&mut self, range: Range<usize>) {
         if range.is_empty() {
             return;
         }
-        let mut highlights = self.highlights.write().expect("highlights write lock");
+        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
         let mut updated = Vec::new();
-        for h in highlights.drain(..) {
+        for h in bookmarks.drain(..) {
             let h_range = h.range();
             if h_range.end <= range.start || h_range.start >= range.end {
                 updated.push(h);
             } else {
                 if h_range.start < range.start {
                     let mut left = h.clone();
-                    left.id = generate_highlight_id();
+                    left.id = generate_bookmark_id();
                     left.size = range.start - h_range.start;
                     updated.push(left);
                 }
                 if h_range.end > range.end {
                     let mut right = h.clone();
-                    right.id = generate_highlight_id();
+                    right.id = generate_bookmark_id();
                     right.offset = range.end;
                     right.size = h_range.end - range.end;
                     updated.push(right);
                 }
             }
         }
-        *highlights = updated;
-        highlights.sort_by_key(|h| (h.offset, h.size));
+        *bookmarks = updated;
+        bookmarks.sort_by_key(|h| (h.offset, h.size));
     }
 
-    pub fn clear_all_custom_highlights(&mut self) {
-        self.highlights.write().expect("highlights write lock").clear();
+    pub fn clear_all_custom_bookmarks(&mut self) {
+        self.bookmarks.write().expect("bookmarks write lock").clear();
     }
 
-    pub fn custom_highlights_for_rendering(&self) -> Vec<(Range<usize>, Hsla)> {
-        self.highlights
+    pub fn custom_bookmarks_for_rendering(&self) -> Vec<(Range<usize>, Hsla)> {
+        self.bookmarks
             .read()
-            .expect("highlights read lock")
+            .expect("bookmarks read lock")
             .iter()
             .map(|h| (h.range(), h.hsla_color()))
             .collect()
     }
 
-    pub fn export_highlights_to_file(&self, path: &Path) -> anyhow::Result<()> {
+    pub fn export_bookmarks_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let doc_path = self.document.read().ok().map(|d| d.path().to_path_buf());
-        HighlightFile::save_to_path(path, &self.highlights.read().expect("highlights read lock"), doc_path.as_deref())
+        BookmarkFile::save_to_path(path, &self.bookmarks.read().expect("bookmarks read lock"), doc_path.as_deref())
     }
 
-    pub fn import_highlights_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
-        let loaded = HighlightFile::load_from_path(path)?;
+    pub fn import_bookmarks_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
+        let loaded = BookmarkFile::load_from_path(path)?;
         let count = loaded.len();
         for item in loaded {
-            self.add_highlight(item);
+            self.add_bookmark(item);
         }
         Ok(count)
     }
@@ -585,8 +585,8 @@ impl Editor {
             *lines = shifted;
         }
         {
-            let mut highlights = self.highlights.write().expect("highlights write lock");
-            for item in highlights.iter_mut() {
+            let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+            for item in bookmarks.iter_mut() {
                 let item_start = item.offset;
                 let item_end = item.offset.saturating_add(item.size);
                 if old_len == 0 {
@@ -611,8 +611,8 @@ impl Editor {
                 item.offset = item_start.min(start);
                 item.size = prefix.saturating_add(new_len).saturating_add(suffix);
             }
-            highlights.retain(|item| item.size > 0);
-            highlights.sort_by_key(|item| (item.offset, item.size));
+            bookmarks.retain(|item| item.size > 0);
+            bookmarks.sort_by_key(|item| (item.offset, item.size));
         }
     }
 
@@ -2706,36 +2706,36 @@ mod tests {
     }
 
     #[test]
-    fn test_edit_adjusts_layout_and_highlight_offsets() {
+    fn test_edit_adjusts_layout_and_bookmark_offsets() {
         let mut editor = create_editor_with_content(&[0; 32]);
         editor.add_custom_break(8);
-        editor.add_custom_highlight(4..12, gpui::hsla(0.0, 1.0, 0.5, 0.5));
-        let highlight_id = editor.highlights.read().unwrap()[0].id.clone();
+        editor.add_custom_bookmark(4..12, gpui::hsla(0.0, 1.0, 0.5, 0.5));
+        let bookmark_id = editor.bookmarks.read().unwrap()[0].id.clone();
 
         assert!(editor.insert_bytes(4, vec![1, 2]));
         assert!(editor.custom_breaks.read().unwrap().contains(&10));
-        let highlight_range = editor
-            .highlights
+        let bookmark_range = editor
+            .bookmarks
             .read()
             .unwrap()
             .iter()
-            .find(|item| item.id == highlight_id)
+            .find(|item| item.id == bookmark_id)
             .map(|item| item.range())
-            .expect("highlight remains after insertion");
-        assert_eq!(highlight_range, 6..14);
+            .expect("bookmark remains after insertion");
+        assert_eq!(bookmark_range, 6..14);
 
         assert!(editor.undo());
         assert!(editor.custom_breaks.read().unwrap().contains(&8));
-        let (highlight_range, highlight_color) = editor
-            .highlights
+        let (bookmark_range, bookmark_color) = editor
+            .bookmarks
             .read()
             .unwrap()
             .iter()
-            .find(|item| item.id == highlight_id)
+            .find(|item| item.id == bookmark_id)
             .map(|item| (item.range(), item.color))
-            .expect("highlight remains after undo");
-        assert_eq!(highlight_range, 4..12);
-        assert_eq!(highlight_color, crate::core::highlight::HighlightColor::Red);
+            .expect("bookmark remains after undo");
+        assert_eq!(bookmark_range, 4..12);
+        assert_eq!(bookmark_color, crate::core::bookmark::BookmarkColor::Red);
     }
 
     #[test]
@@ -3043,134 +3043,134 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_highlights() {
+    fn test_custom_bookmarks() {
         use gpui::hsla;
         let mut editor = create_editor_with_content(b"01234567890123456789"); // 20 bytes
         let red = hsla(0.0, 1.0, 0.5, 0.5);
         let blue = hsla(0.6, 1.0, 0.5, 0.5);
 
-        // Add red highlight on 0..10
-        editor.add_custom_highlight(0..10, red);
-        assert_eq!(editor.highlights.read().unwrap().len(), 1);
-        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..10);
-        assert_eq!(editor.highlights.read().unwrap()[0].color, HighlightColor::Red);
+        // Add red bookmark on 0..10
+        editor.add_custom_bookmark(0..10, red);
+        assert_eq!(editor.bookmarks.read().unwrap().len(), 1);
+        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..10);
+        assert_eq!(editor.bookmarks.read().unwrap()[0].color, BookmarkColor::Red);
 
         // Update comment
-        let id = editor.highlights.read().unwrap()[0].id.clone();
-        assert!(editor.update_highlight_comment(&id, "Header block"));
-        assert_eq!(editor.highlights.read().unwrap()[0].comment, "Header block");
+        let id = editor.bookmarks.read().unwrap()[0].id.clone();
+        assert!(editor.update_bookmark_comment(&id, "Header block"));
+        assert_eq!(editor.bookmarks.read().unwrap()[0].comment, "Header block");
 
-        // Add blue highlight on 5..15
-        editor.add_custom_highlight(5..15, blue);
-        assert_eq!(editor.highlights.read().unwrap().len(), 2);
-        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..5);
-        assert_eq!(editor.highlights.read().unwrap()[1].range(), 5..15);
-        assert_eq!(editor.highlights.read().unwrap()[1].color, HighlightColor::Blue);
+        // Add blue bookmark on 5..15
+        editor.add_custom_bookmark(5..15, blue);
+        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
+        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..5);
+        assert_eq!(editor.bookmarks.read().unwrap()[1].range(), 5..15);
+        assert_eq!(editor.bookmarks.read().unwrap()[1].color, BookmarkColor::Blue);
 
         // Clear sub-range 3..7
-        editor.clear_custom_highlight(3..7);
-        assert_eq!(editor.highlights.read().unwrap().len(), 2);
-        assert_eq!(editor.highlights.read().unwrap()[0].range(), 0..3);
-        assert_eq!(editor.highlights.read().unwrap()[1].range(), 7..15);
+        editor.clear_custom_bookmark(3..7);
+        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
+        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..3);
+        assert_eq!(editor.bookmarks.read().unwrap()[1].range(), 7..15);
 
         // Clear all
-        editor.clear_all_custom_highlights();
-        assert!(editor.highlights.read().unwrap().is_empty());
+        editor.clear_all_custom_bookmarks();
+        assert!(editor.bookmarks.read().unwrap().is_empty());
     }
 
     #[test]
-    fn test_editor_highlights_crud_and_file_io() {
+    fn test_editor_bookmarks_crud_and_file_io() {
         let mut editor = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"); // 36 bytes
 
-        // Add highlights
-        let item1 = HighlightItem::new(0, 4, HighlightColor::Red, "Magic bytes");
+        // Add bookmarks
+        let item1 = BookmarkItem::new(0, 4, BookmarkColor::Red, "Magic bytes");
         let id1 = item1.id.clone();
-        editor.add_highlight(item1);
+        editor.add_bookmark(item1);
 
-        let item2 = HighlightItem::new(10, 8, HighlightColor::Green, "Payload");
+        let item2 = BookmarkItem::new(10, 8, BookmarkColor::Green, "Payload");
         let id2 = item2.id.clone();
-        editor.add_highlight(item2);
+        editor.add_bookmark(item2);
 
-        assert_eq!(editor.highlights.read().unwrap().len(), 2);
+        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
 
         // Update comment
-        assert!(editor.update_highlight_comment(&id1, "ELF Magic"));
-        assert_eq!(editor.highlights.read().unwrap()[0].comment, "ELF Magic");
+        assert!(editor.update_bookmark_comment(&id1, "ELF Magic"));
+        assert_eq!(editor.bookmarks.read().unwrap()[0].comment, "ELF Magic");
 
         // Update color
-        assert!(editor.update_highlight_color(&id1, HighlightColor::Cyan));
-        assert_eq!(editor.highlights.read().unwrap()[0].color, HighlightColor::Cyan);
+        assert!(editor.update_bookmark_color(&id1, BookmarkColor::Cyan));
+        assert_eq!(editor.bookmarks.read().unwrap()[0].color, BookmarkColor::Cyan);
 
         // Update range
-        assert!(editor.update_highlight_range(&id2, 12, 10));
-        assert_eq!(editor.highlights.read().unwrap()[1].offset, 12);
-        assert_eq!(editor.highlights.read().unwrap()[1].size, 10);
+        assert!(editor.update_bookmark_range(&id2, 12, 10));
+        assert_eq!(editor.bookmarks.read().unwrap()[1].offset, 12);
+        assert_eq!(editor.bookmarks.read().unwrap()[1].size, 10);
 
         // Test export and import
-        let temp_file = std::env::temp_dir().join("editor_highlights_test.json");
-        editor.export_highlights_to_file(&temp_file).unwrap();
+        let temp_file = std::env::temp_dir().join("editor_bookmarks_test.json");
+        editor.export_bookmarks_to_file(&temp_file).unwrap();
         assert!(temp_file.exists());
 
         // Create new editor and import
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-        let count = editor2.import_highlights_from_file(&temp_file).unwrap();
+        let count = editor2.import_bookmarks_from_file(&temp_file).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(editor2.highlights.read().unwrap().len(), 2);
-        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "ELF Magic");
-        assert_eq!(editor2.highlights.read().unwrap()[0].color, HighlightColor::Cyan);
-        assert_eq!(editor2.highlights.read().unwrap()[1].offset, 12);
-        assert_eq!(editor2.highlights.read().unwrap()[1].size, 10);
+        assert_eq!(editor2.bookmarks.read().unwrap().len(), 2);
+        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "ELF Magic");
+        assert_eq!(editor2.bookmarks.read().unwrap()[0].color, BookmarkColor::Cyan);
+        assert_eq!(editor2.bookmarks.read().unwrap()[1].offset, 12);
+        assert_eq!(editor2.bookmarks.read().unwrap()[1].size, 10);
 
         // Remove by id
-        assert!(editor.remove_highlight_by_id(&id1));
-        assert_eq!(editor.highlights.read().unwrap().len(), 1);
-        assert_eq!(editor.highlights.read().unwrap()[0].id, id2);
+        assert!(editor.remove_bookmark_by_id(&id1));
+        assert_eq!(editor.bookmarks.read().unwrap().len(), 1);
+        assert_eq!(editor.bookmarks.read().unwrap()[0].id, id2);
 
         // Remove by index
-        let removed = editor.remove_highlight_by_index(0);
+        let removed = editor.remove_bookmark_by_index(0);
         assert!(removed.is_some());
-        assert!(editor.highlights.read().unwrap().is_empty());
+        assert!(editor.bookmarks.read().unwrap().is_empty());
 
         let _ = std::fs::remove_file(temp_file);
     }
 
     #[test]
-    fn test_import_and_add_highlight_no_id_collision() {
+    fn test_import_and_add_bookmark_no_id_collision() {
         let mut editor = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-        let item1 = HighlightItem::new(0, 4, HighlightColor::Red, "Magic bytes");
-        editor.add_highlight(item1);
+        let item1 = BookmarkItem::new(0, 4, BookmarkColor::Red, "Magic bytes");
+        editor.add_bookmark(item1);
 
         let temp_file = std::env::temp_dir().join("collision_test.json");
-        editor.export_highlights_to_file(&temp_file).unwrap();
+        editor.export_bookmarks_to_file(&temp_file).unwrap();
 
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-        editor2.import_highlights_from_file(&temp_file).unwrap();
-        assert_eq!(editor2.highlights.read().unwrap().len(), 1);
+        editor2.import_bookmarks_from_file(&temp_file).unwrap();
+        assert_eq!(editor2.bookmarks.read().unwrap().len(), 1);
 
-        // Now add a new highlight
-        let new_item = HighlightItem::new(10, 4, HighlightColor::Yellow, "New highlight");
-        let added_id = editor2.add_highlight(new_item);
+        // Now add a new bookmark
+        let new_item = BookmarkItem::new(10, 4, BookmarkColor::Yellow, "New bookmark");
+        let added_id = editor2.add_bookmark(new_item);
 
         // Must have 2 distinct IDs
-        assert_eq!(editor2.highlights.read().unwrap().len(), 2);
-        assert_ne!(editor2.highlights.read().unwrap()[0].id, editor2.highlights.read().unwrap()[1].id);
-        assert_eq!(editor2.highlights.read().unwrap()[1].id, added_id);
+        assert_eq!(editor2.bookmarks.read().unwrap().len(), 2);
+        assert_ne!(editor2.bookmarks.read().unwrap()[0].id, editor2.bookmarks.read().unwrap()[1].id);
+        assert_eq!(editor2.bookmarks.read().unwrap()[1].id, added_id);
 
         // Editing one must not affect the other
-        assert!(editor2.update_highlight_comment(&added_id, "Updated new comment"));
-        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "Magic bytes");
-        assert_eq!(editor2.highlights.read().unwrap()[1].comment, "Updated new comment");
+        assert!(editor2.update_bookmark_comment(&added_id, "Updated new comment"));
+        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "Magic bytes");
+        assert_eq!(editor2.bookmarks.read().unwrap()[1].comment, "Updated new comment");
 
         // Deleting the new one must leave the first intact
-        assert!(editor2.remove_highlight_by_id(&added_id));
-        assert_eq!(editor2.highlights.read().unwrap().len(), 1);
-        assert_eq!(editor2.highlights.read().unwrap()[0].comment, "Magic bytes");
+        assert!(editor2.remove_bookmark_by_id(&added_id));
+        assert_eq!(editor2.bookmarks.read().unwrap().len(), 1);
+        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "Magic bytes");
 
         let _ = std::fs::remove_file(temp_file);
     }
 
     #[test]
-    fn test_shared_highlights_across_split_editors() {
+    fn test_shared_bookmarks_across_split_editors() {
         use crate::core::buffer::Buffer;
         use std::path::PathBuf;
         let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("shared.bin"), Buffer::new(vec![0xAA; 128]))));
@@ -3178,25 +3178,25 @@ mod tests {
         let editor2 = Editor::new(doc.clone());
 
         // Both start empty
-        assert_eq!(editor1.highlights_snapshot().len(), 0);
-        assert_eq!(editor2.highlights_snapshot().len(), 0);
+        assert_eq!(editor1.bookmarks_snapshot().len(), 0);
+        assert_eq!(editor2.bookmarks_snapshot().len(), 0);
 
-        // Add highlight in editor1
-        let hl = HighlightItem::new(0, 16, HighlightColor::Red, "Header");
-        let id = editor1.add_highlight(hl);
+        // Add bookmark in editor1
+        let hl = BookmarkItem::new(0, 16, BookmarkColor::Red, "Header");
+        let id = editor1.add_bookmark(hl);
 
-        // editor2 immediately sees the highlight from shared instance
-        assert_eq!(editor2.highlights_snapshot().len(), 1);
-        assert_eq!(editor2.highlights_snapshot()[0].comment, "Header");
-        assert_eq!(editor2.highlights_snapshot()[0].color, HighlightColor::Red);
+        // editor2 immediately sees the bookmark from shared instance
+        assert_eq!(editor2.bookmarks_snapshot().len(), 1);
+        assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Header");
+        assert_eq!(editor2.bookmarks_snapshot()[0].color, BookmarkColor::Red);
 
         // Update comment in editor1
-        assert!(editor1.update_highlight_comment(&id, "Updated Header"));
-        assert_eq!(editor2.highlights_snapshot()[0].comment, "Updated Header");
+        assert!(editor1.update_bookmark_comment(&id, "Updated Header"));
+        assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Updated Header");
 
         // Clear in editor1
-        editor1.clear_all_custom_highlights();
-        assert_eq!(editor2.highlights_snapshot().len(), 0);
+        editor1.clear_all_custom_bookmarks();
+        assert_eq!(editor2.bookmarks_snapshot().len(), 0);
     }
 
     #[test]

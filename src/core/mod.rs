@@ -1,4 +1,5 @@
 pub mod appearance;
+pub mod bookmark;
 pub mod buffer;
 pub mod checksum;
 pub mod clipboard;
@@ -8,7 +9,6 @@ pub mod document;
 pub mod editor;
 pub mod encoding;
 pub mod format;
-pub mod highlight;
 pub mod history;
 pub mod layout;
 pub mod radix;

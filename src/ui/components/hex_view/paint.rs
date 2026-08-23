@@ -1,9 +1,9 @@
 use super::layout::*;
 use super::types::*;
+use crate::core::bookmark::BookmarkItem;
 use crate::core::document::Document;
 use crate::core::editor::LineMap;
 use crate::core::encoding::Encoding;
-use crate::core::highlight::HighlightItem;
 use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, is_group_zero};
 use crate::core::structure::{IndexedField, ParseResult};
 use gpui::*;
@@ -286,7 +286,7 @@ pub struct RowPaintParams<'a> {
     pub min_sel: usize,
     pub max_sel: usize,
     pub highlights: &'a [(Range<usize>, Hsla)],
-    pub highlight_items: &'a [HighlightItem],
+    pub bookmark_items: &'a [BookmarkItem],
     pub max_highlight_len: usize,
     pub show_offset: bool,
     pub show_ascii: bool,
@@ -1013,9 +1013,9 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         }
     }
 
-    // 5. Highlight Comments Column
-    let row_highlight_comments: Vec<(gpui::Hsla, SharedString)> = params
-        .highlight_items
+    // 5. Bookmark Comments Column
+    let row_bookmark_comments: Vec<(gpui::Hsla, SharedString)> = params
+        .bookmark_items
         .iter()
         .filter(|h| {
             if h.comment.trim().is_empty() {
@@ -1031,7 +1031,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         .map(|h| (h.color.to_badge_hsla(), SharedString::from(h.comment.trim().to_string())))
         .collect();
 
-    if !row_highlight_comments.is_empty() {
+    if !row_bookmark_comments.is_empty() {
         let comment_mask_bounds = Bounds::new(point(comment_start_x, params.bounds.top()), size(px(params.comment_col_width), px(ROW_HEIGHT)));
         let comment_end_x = comment_start_x + px(params.comment_col_width);
 
@@ -1043,7 +1043,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         let mut shaped_items = Vec::new();
         let mut total_content_width = 4.0;
 
-        for (badge_color, comment_shared) in &row_highlight_comments {
+        for (badge_color, comment_shared) in &row_bookmark_comments {
             let run = gpui::TextRun {
                 len: comment_shared.len(),
                 font: font.clone(),

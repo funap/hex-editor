@@ -8,9 +8,9 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::{ActiveTheme, Sizable};
 
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString,
-    CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd,
-    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, JoinLine, Paste, Redo,
+    AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
+    ClearAllCustomBreaks, ClearBookmark, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
+    CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd, JoinLine, Paste, Redo,
     RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleSearch, Undo,
 };
 use crate::app_state::{AppState, InsertModeState};
@@ -317,9 +317,9 @@ impl EditorPanel {
     fn update_highlights(&mut self, cx: &mut Context<Self>) {
         let mut highlights = Vec::new();
 
-        // 1. Add user custom highlights from editor
+        // 1. Add user custom bookmarks from editor
         let editor = self.editor.read(cx);
-        highlights.extend(editor.custom_highlights_for_rendering());
+        highlights.extend(editor.custom_bookmarks_for_rendering());
 
         // 2. Add search highlights if search is active (either in search bar or search state)
         let (query, mode) = if self.is_search_visible && !self.search_bar.read(cx).query(cx).is_empty() {
@@ -507,44 +507,44 @@ impl EditorPanel {
         self.hex_view.update(cx, |hv, cx| hv.copy_as_json_array(action, window, cx));
     }
 
-    pub fn highlight_red(&mut self, action: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_red(action, window, cx));
+    pub fn bookmark_red(&mut self, action: &BookmarkRed, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_red(action, window, cx));
     }
 
-    pub fn highlight_orange(&mut self, action: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_orange(action, window, cx));
+    pub fn bookmark_orange(&mut self, action: &BookmarkOrange, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_orange(action, window, cx));
     }
 
-    pub fn highlight_yellow(&mut self, action: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_yellow(action, window, cx));
+    pub fn bookmark_yellow(&mut self, action: &BookmarkYellow, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_yellow(action, window, cx));
     }
 
-    pub fn highlight_green(&mut self, action: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_green(action, window, cx));
+    pub fn bookmark_green(&mut self, action: &BookmarkGreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_green(action, window, cx));
     }
 
-    pub fn highlight_cyan(&mut self, action: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_cyan(action, window, cx));
+    pub fn bookmark_cyan(&mut self, action: &BookmarkCyan, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_cyan(action, window, cx));
     }
 
-    pub fn highlight_blue(&mut self, action: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_blue(action, window, cx));
+    pub fn bookmark_blue(&mut self, action: &BookmarkBlue, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_blue(action, window, cx));
     }
 
-    pub fn highlight_purple(&mut self, action: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_purple(action, window, cx));
+    pub fn bookmark_purple(&mut self, action: &BookmarkPurple, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_purple(action, window, cx));
     }
 
-    pub fn highlight_pink(&mut self, action: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.highlight_pink(action, window, cx));
+    pub fn bookmark_pink(&mut self, action: &BookmarkPink, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.bookmark_pink(action, window, cx));
     }
 
-    pub fn clear_highlight(&mut self, action: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.clear_highlight(action, window, cx));
+    pub fn clear_bookmark(&mut self, action: &ClearBookmark, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.clear_bookmark(action, window, cx));
     }
 
-    pub fn clear_all_highlights(&mut self, action: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.update(cx, |hv, cx| hv.clear_all_highlights(action, window, cx));
+    pub fn clear_all_bookmarks(&mut self, action: &ClearAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.clear_all_bookmarks(action, window, cx));
     }
 
     pub fn add_custom_break(&mut self, action: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
@@ -718,16 +718,16 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::copy_as_binary))
             .on_action(cx.listener(Self::copy_as_rust_array))
             .on_action(cx.listener(Self::copy_as_json_array))
-            .on_action(cx.listener(Self::highlight_red))
-            .on_action(cx.listener(Self::highlight_orange))
-            .on_action(cx.listener(Self::highlight_yellow))
-            .on_action(cx.listener(Self::highlight_green))
-            .on_action(cx.listener(Self::highlight_cyan))
-            .on_action(cx.listener(Self::highlight_blue))
-            .on_action(cx.listener(Self::highlight_purple))
-            .on_action(cx.listener(Self::highlight_pink))
-            .on_action(cx.listener(Self::clear_highlight))
-            .on_action(cx.listener(Self::clear_all_highlights))
+            .on_action(cx.listener(Self::bookmark_red))
+            .on_action(cx.listener(Self::bookmark_orange))
+            .on_action(cx.listener(Self::bookmark_yellow))
+            .on_action(cx.listener(Self::bookmark_green))
+            .on_action(cx.listener(Self::bookmark_cyan))
+            .on_action(cx.listener(Self::bookmark_blue))
+            .on_action(cx.listener(Self::bookmark_purple))
+            .on_action(cx.listener(Self::bookmark_pink))
+            .on_action(cx.listener(Self::clear_bookmark))
+            .on_action(cx.listener(Self::clear_all_bookmarks))
             .on_action(cx.listener(Self::add_custom_break))
             .on_action(cx.listener(Self::remove_custom_break_backward))
             .on_action(cx.listener(Self::remove_custom_break_forward))

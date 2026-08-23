@@ -1,10 +1,10 @@
 use gpui::*;
 
 use crate::core::editor::Editor;
+use crate::ui::components::bookmark_panel::BookmarkPanel;
 use crate::ui::components::checksum_panel::ChecksumPanel;
 use crate::ui::components::data_inspector::DataInspector;
 use crate::ui::components::file_tree_view::{FileTreeView, FileTreeViewEvent};
-use crate::ui::components::highlight_panel::HighlightPanel;
 use crate::ui::components::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::ui::components::strings_panel::{StringsPanel, StringsPanelEvent};
 use crate::ui::components::struct_tree_view::StructTreeView;
@@ -20,7 +20,7 @@ pub enum LeftPanelTab {
     Inspector,
     Map,
     Checksum,
-    Highlights,
+    Bookmarks,
 }
 
 pub struct LeftPanel {
@@ -31,7 +31,7 @@ pub struct LeftPanel {
     pub data_inspector: Entity<DataInspector>,
     pub visual_map: Entity<VisualMapPanel>,
     pub checksum_panel: Entity<ChecksumPanel>,
-    pub highlight_panel: Entity<HighlightPanel>,
+    pub bookmark_panel: Entity<BookmarkPanel>,
     pub active_tab: LeftPanelTab,
 }
 
@@ -47,7 +47,7 @@ impl LeftPanel {
         let data_inspector = cx.new(|cx| DataInspector::new(None, cx));
         let visual_map = cx.new(|cx| VisualMapPanel::new(None, cx));
         let checksum_panel = cx.new(|cx| ChecksumPanel::new(None, cx));
-        let highlight_panel = cx.new(|cx| HighlightPanel::new(None, window, cx));
+        let bookmark_panel = cx.new(|cx| BookmarkPanel::new(None, window, cx));
 
         cx.subscribe(&file_tree, |_, _, event: &FileTreeViewEvent, cx| match event {
             FileTreeViewEvent::OpenFile(path) => cx.emit(FileTreeViewEvent::OpenFile(path.clone())),
@@ -76,7 +76,7 @@ impl LeftPanel {
             data_inspector,
             visual_map,
             checksum_panel,
-            highlight_panel,
+            bookmark_panel,
             active_tab: LeftPanelTab::Files,
         }
     }
@@ -100,7 +100,7 @@ impl LeftPanel {
         self.checksum_panel.update(cx, |panel, cx| {
             panel.set_editor(editor.clone(), cx);
         });
-        self.highlight_panel.update(cx, |panel, cx| {
+        self.bookmark_panel.update(cx, |panel, cx| {
             panel.set_editor(editor, cx);
         });
     }
@@ -142,7 +142,7 @@ impl Render for LeftPanel {
                 LeftPanelTab::Inspector => self.data_inspector.clone().into_any_element(),
                 LeftPanelTab::Map => self.visual_map.clone().into_any_element(),
                 LeftPanelTab::Checksum => self.checksum_panel.clone().into_any_element(),
-                LeftPanelTab::Highlights => self.highlight_panel.clone().into_any_element(),
+                LeftPanelTab::Bookmarks => self.bookmark_panel.clone().into_any_element(),
             })
     }
 }
@@ -157,7 +157,7 @@ impl Focusable for LeftPanel {
             LeftPanelTab::Inspector => self.data_inspector.read(cx).focus_handle(cx),
             LeftPanelTab::Map => self.visual_map.read(cx).focus_handle(cx),
             LeftPanelTab::Checksum => self.checksum_panel.read(cx).focus_handle(cx),
-            LeftPanelTab::Highlights => self.highlight_panel.read(cx).focus_handle(cx),
+            LeftPanelTab::Bookmarks => self.bookmark_panel.read(cx).focus_handle(cx),
         }
     }
 }

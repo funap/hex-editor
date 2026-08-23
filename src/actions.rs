@@ -354,40 +354,40 @@ pub struct CopyAsRustArray;
 pub struct CopyAsJsonArray;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightRed;
+pub struct BookmarkRed;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightOrange;
+pub struct BookmarkOrange;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightYellow;
+pub struct BookmarkYellow;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightGreen;
+pub struct BookmarkGreen;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightCyan;
+pub struct BookmarkCyan;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightBlue;
+pub struct BookmarkBlue;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightPurple;
+pub struct BookmarkPurple;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct HighlightPink;
+pub struct BookmarkPink;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ClearHighlight;
+pub struct ClearBookmark;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ClearAllHighlights;
+pub struct ClearAllBookmarks;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ShowHighlightsTab;
+pub struct ShowBookmarksTab;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ExportHighlights;
+pub struct ExportBookmarks;
 
 #[derive(Clone, PartialEq, Action)]
-pub struct ImportHighlights;
+pub struct ImportBookmarks;

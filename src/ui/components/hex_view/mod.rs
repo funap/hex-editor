@@ -15,12 +15,12 @@ pub use paint::{RowPaintParams, paint_hex_row, paint_scrollbar};
 pub use types::*;
 
 use crate::actions::{
-    AddCustomBreak, ClearAllCustomBreaks, ClearAllHighlights, ClearHighlight, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray,
-    CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportHighlights,
-    HighlightBlue, HighlightCyan, HighlightGreen, HighlightOrange, HighlightPink, HighlightPurple, HighlightRed, HighlightYellow, ImportHighlights, JoinLine,
+    AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
+    ClearAllCustomBreaks, ClearBookmark, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump,
+    CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportBookmarks, ImportBookmarks, JoinLine,
     LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SelectAll as AppSelectAll, SetByteOrderBigEndian,
     SetByteOrderLittleEndian, SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2, SetGroupSize4,
-    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowHighlightsTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView,
+    SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView,
     ToggleSearch, Undo,
 };
 use crate::app_state::InsertModeState;
@@ -542,20 +542,20 @@ impl HexView {
         }
 
         let line_starts = editor.line_starts();
-        let highlights_guard = editor.highlights.read().expect("highlights read lock");
-        let highlights = &*highlights_guard;
-        let mut start_idx = highlights.partition_point(|highlight| highlight.offset < scan_range.start);
+        let bookmarks_guard = editor.bookmarks.read().expect("bookmarks read lock");
+        let bookmarks = &*bookmarks_guard;
+        let mut start_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.start);
         start_idx = start_idx.saturating_sub(1);
-        let end_idx = highlights.partition_point(|highlight| highlight.offset < scan_range.end);
+        let end_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.end);
 
         use std::collections::HashMap;
         let mut row_widths: HashMap<usize, f32> = HashMap::new();
-        for highlight in highlights[start_idx..end_idx].iter().take(AUTO_FIT_MAX_ITEMS) {
-            let trimmed = highlight.comment.trim();
+        for bookmark in bookmarks[start_idx..end_idx].iter().take(AUTO_FIT_MAX_ITEMS) {
+            let trimmed = bookmark.comment.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            let row = Editor::find_line_index(highlight.offset, &line_starts);
+            let row = Editor::find_line_index(bookmark.offset, &line_starts);
             let item_width = 8.0 + 5.0 + weighted_text_width(trimmed, char_w) + 14.0;
             *row_widths.entry(row).or_insert(8.0) += item_width;
         }
@@ -1908,14 +1908,14 @@ impl HexView {
         self.copy_formatted(CopyFormat::JsonArray, window, cx);
     }
 
-    fn apply_highlight(&mut self, color: Option<Hsla>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_bookmark(&mut self, color: Option<Hsla>, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window);
         self.editor.update(cx, |editor, cx| {
             if let Some(range) = editor.selected_range_or_cursor() {
                 if let Some(color) = color {
-                    editor.add_custom_highlight(range, color);
+                    editor.add_custom_bookmark(range, color);
                 } else {
-                    editor.clear_custom_highlight(range);
+                    editor.clear_custom_bookmark(range);
                 }
                 cx.notify();
             }
@@ -1923,53 +1923,53 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
-    pub fn highlight_red(&mut self, _: &HighlightRed, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(0.0, 0.75, 0.55, 0.35)), window, cx);
+    pub fn bookmark_red(&mut self, _: &BookmarkRed, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(0.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    pub fn highlight_orange(&mut self, _: &HighlightOrange, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(30.0 / 360.0, 0.85, 0.55, 0.35)), window, cx);
+    pub fn bookmark_orange(&mut self, _: &BookmarkOrange, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(30.0 / 360.0, 0.85, 0.55, 0.35)), window, cx);
     }
 
-    pub fn highlight_yellow(&mut self, _: &HighlightYellow, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(50.0 / 360.0, 0.85, 0.50, 0.35)), window, cx);
+    pub fn bookmark_yellow(&mut self, _: &BookmarkYellow, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(50.0 / 360.0, 0.85, 0.50, 0.35)), window, cx);
     }
 
-    pub fn highlight_green(&mut self, _: &HighlightGreen, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(120.0 / 360.0, 0.65, 0.45, 0.35)), window, cx);
+    pub fn bookmark_green(&mut self, _: &BookmarkGreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(120.0 / 360.0, 0.65, 0.45, 0.35)), window, cx);
     }
 
-    pub fn highlight_cyan(&mut self, _: &HighlightCyan, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(180.0 / 360.0, 0.70, 0.45, 0.35)), window, cx);
+    pub fn bookmark_cyan(&mut self, _: &BookmarkCyan, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(180.0 / 360.0, 0.70, 0.45, 0.35)), window, cx);
     }
 
-    pub fn highlight_blue(&mut self, _: &HighlightBlue, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(215.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
+    pub fn bookmark_blue(&mut self, _: &BookmarkBlue, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(215.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    pub fn highlight_purple(&mut self, _: &HighlightPurple, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(280.0 / 360.0, 0.70, 0.55, 0.35)), window, cx);
+    pub fn bookmark_purple(&mut self, _: &BookmarkPurple, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(280.0 / 360.0, 0.70, 0.55, 0.35)), window, cx);
     }
 
-    pub fn highlight_pink(&mut self, _: &HighlightPink, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(Some(hsla(330.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
+    pub fn bookmark_pink(&mut self, _: &BookmarkPink, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(Some(hsla(330.0 / 360.0, 0.75, 0.55, 0.35)), window, cx);
     }
 
-    pub fn clear_highlight(&mut self, _: &ClearHighlight, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_highlight(None, window, cx);
+    pub fn clear_bookmark(&mut self, _: &ClearBookmark, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_bookmark(None, window, cx);
     }
 
-    pub fn clear_all_highlights(&mut self, _: &ClearAllHighlights, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.editor.read(cx).highlights_snapshot().len();
+    pub fn clear_all_bookmarks(&mut self, _: &ClearAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.editor.read(cx).bookmarks_snapshot().len();
         if count == 0 {
             return;
         }
 
         let prompt = window.prompt(
             gpui::PromptLevel::Warning,
-            "Clear all highlights?",
+            "Clear all bookmarks?",
             Some(&format!(
-                "Are you sure you want to clear all {} highlight{} and comments? This action cannot be undone.",
+                "Are you sure you want to clear all {} bookmark{} and comments? This action cannot be undone.",
                 count,
                 if count == 1 { "" } else { "s" }
             )),
@@ -1984,7 +1984,7 @@ impl HexView {
                 window
                     .update(|_, cx| {
                         editor.update(cx, |editor, cx| {
-                            editor.clear_all_custom_highlights();
+                            editor.clear_all_custom_bookmarks();
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
@@ -2967,16 +2967,16 @@ impl Render for HexView {
             .on_action(cx.listener(Self::remove_custom_break_forward))
             .on_action(cx.listener(Self::join_line))
             .on_action(cx.listener(Self::clear_all_custom_breaks))
-            .on_action(cx.listener(Self::highlight_red))
-            .on_action(cx.listener(Self::highlight_orange))
-            .on_action(cx.listener(Self::highlight_yellow))
-            .on_action(cx.listener(Self::highlight_green))
-            .on_action(cx.listener(Self::highlight_cyan))
-            .on_action(cx.listener(Self::highlight_blue))
-            .on_action(cx.listener(Self::highlight_purple))
-            .on_action(cx.listener(Self::highlight_pink))
-            .on_action(cx.listener(Self::clear_highlight))
-            .on_action(cx.listener(Self::clear_all_highlights))
+            .on_action(cx.listener(Self::bookmark_red))
+            .on_action(cx.listener(Self::bookmark_orange))
+            .on_action(cx.listener(Self::bookmark_yellow))
+            .on_action(cx.listener(Self::bookmark_green))
+            .on_action(cx.listener(Self::bookmark_cyan))
+            .on_action(cx.listener(Self::bookmark_blue))
+            .on_action(cx.listener(Self::bookmark_purple))
+            .on_action(cx.listener(Self::bookmark_pink))
+            .on_action(cx.listener(Self::clear_bookmark))
+            .on_action(cx.listener(Self::clear_all_bookmarks))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(
                 MouseButton::Left,
@@ -3261,7 +3261,7 @@ impl Render for HexView {
                             }
                         });
 
-                        let (parse_result, collapsed_structs, highlight_items, doc_arc, line_starts, cursor_offset, insert_cursor_offset, min_sel, max_sel) = {
+                        let (parse_result, collapsed_structs, bookmark_items, doc_arc, line_starts, cursor_offset, insert_cursor_offset, min_sel, max_sel) = {
                             let editor = editor_entity.read(cx);
                             let (min_sel, max_sel) = editor
                                 .selection_range()
@@ -3270,7 +3270,7 @@ impl Render for HexView {
                             (
                                 if editor.show_inline_structure_view { editor.parse_result() } else { None },
                                 Arc::new(editor.collapsed_struct_ids.clone()),
-                                Arc::new(editor.highlights_snapshot()),
+                                Arc::new(editor.bookmarks_snapshot()),
                                 editor.document.clone(),
                                 editor.line_starts(),
                                 editor.cursor_offset,
@@ -3282,7 +3282,7 @@ impl Render for HexView {
                         let doc = doc_arc.read().expect("document read lock");
 
                         // Construct combined highlights from the shared snapshot and search results
-                        let mut effective_highlights: Vec<(Range<usize>, Hsla)> = highlight_items.iter().map(|h| (h.range(), h.hsla_color())).collect();
+                        let mut effective_highlights: Vec<(Range<usize>, Hsla)> = bookmark_items.iter().map(|h| (h.range(), h.hsla_color())).collect();
                         for (search_range, search_color) in highlights.iter() {
                             if !effective_highlights.iter().any(|(r, _)| r == search_range) {
                                 effective_highlights.push((search_range.clone(), *search_color));
@@ -3317,7 +3317,7 @@ impl Render for HexView {
                                     min_sel,
                                     max_sel,
                                     highlights: effective_highlights.as_slice(),
-                                    highlight_items: highlight_items.as_slice(),
+                                    bookmark_items: bookmark_items.as_slice(),
                                     max_highlight_len: effective_max_hl_len,
                                     show_offset,
                                     show_ascii,
@@ -3412,22 +3412,22 @@ impl Render for HexView {
                                 .menu("as JSON Array", Box::new(CopyAsJsonArray))
                         })
                         .separator()
-                        .submenu("Highlight", window, cx, move |menu, _window, _cx| {
-                            menu.menu("Red", Box::new(HighlightRed))
-                                .menu("Orange", Box::new(HighlightOrange))
-                                .menu("Yellow", Box::new(HighlightYellow))
-                                .menu("Green", Box::new(HighlightGreen))
-                                .menu("Cyan", Box::new(HighlightCyan))
-                                .menu("Blue", Box::new(HighlightBlue))
-                                .menu("Purple", Box::new(HighlightPurple))
-                                .menu("Pink", Box::new(HighlightPink))
+                        .submenu("Bookmark", window, cx, move |menu, _window, _cx| {
+                            menu.menu("Red", Box::new(BookmarkRed))
+                                .menu("Orange", Box::new(BookmarkOrange))
+                                .menu("Yellow", Box::new(BookmarkYellow))
+                                .menu("Green", Box::new(BookmarkGreen))
+                                .menu("Cyan", Box::new(BookmarkCyan))
+                                .menu("Blue", Box::new(BookmarkBlue))
+                                .menu("Purple", Box::new(BookmarkPurple))
+                                .menu("Pink", Box::new(BookmarkPink))
                                 .separator()
-                                .menu("Clear Highlight", Box::new(ClearHighlight))
-                                .menu("Clear All Highlights", Box::new(ClearAllHighlights))
+                                .menu("Clear Bookmark", Box::new(ClearBookmark))
+                                .menu("Clear All Bookmarks", Box::new(ClearAllBookmarks))
                                 .separator()
-                                .menu("Show Highlights Panel", Box::new(ShowHighlightsTab))
-                                .menu("Export Highlights...", Box::new(ExportHighlights))
-                                .menu("Import Highlights...", Box::new(ImportHighlights))
+                                .menu("Show Bookmarks Panel", Box::new(ShowBookmarksTab))
+                                .menu("Export Bookmarks...", Box::new(ExportBookmarks))
+                                .menu("Import Bookmarks...", Box::new(ImportBookmarks))
                         })
                         .submenu("Structure", window, cx, move |menu, _window, _cx| {
                             menu.menu("Toggle Inline Structure View", Box::new(ToggleInlineStructureView))

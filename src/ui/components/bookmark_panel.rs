@@ -1,5 +1,5 @@
+use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::editor::Editor;
-use crate::core::highlight::{HighlightColor, HighlightItem};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
@@ -8,35 +8,35 @@ use gpui_component::input::{self, Input, InputState};
 use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
 
 actions!(
-    highlight_panel,
+    bookmark_panel,
     [MoveUp, MoveDown, SelectCurrent, EditComment, CancelEdit, SaveEdit, DeleteSelected]
 );
 
-const CONTEXT: &str = "HighlightPanel";
+const CONTEXT: &str = "BookmarkPanel";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("down", MoveDown, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("k", MoveUp, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("j", MoveDown, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("f2", EditComment, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("enter", SelectCurrent, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("backspace", DeleteSelected, Some("HighlightPanel && !CommentEdit")),
-        KeyBinding::new("delete", DeleteSelected, Some("HighlightPanel && !CommentEdit")),
+        KeyBinding::new("up", MoveUp, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("down", MoveDown, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("k", MoveUp, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("j", MoveDown, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("f2", EditComment, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("enter", SelectCurrent, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("backspace", DeleteSelected, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("delete", DeleteSelected, Some("BookmarkPanel && !CommentEdit")),
         KeyBinding::new("escape", CancelEdit, Some("CommentEdit")),
         KeyBinding::new("enter", SaveEdit, Some("CommentEdit")),
     ]);
 }
 
 #[allow(dead_code)]
-pub enum HighlightPanelEvent {
+pub enum BookmarkPanelEvent {
     NavigateTo { offset: usize, size: usize },
     Export,
     Import,
 }
 
-pub struct HighlightPanel {
+pub struct BookmarkPanel {
     pub editor: Option<Entity<Editor>>,
     pub focus_handle: FocusHandle,
     pub selected_id: Option<String>,
@@ -47,9 +47,9 @@ pub struct HighlightPanel {
     _input_subscription: Option<Subscription>,
 }
 
-impl EventEmitter<HighlightPanelEvent> for HighlightPanel {}
+impl EventEmitter<BookmarkPanelEvent> for BookmarkPanel {}
 
-impl HighlightPanel {
+impl BookmarkPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let comment_input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a comment..."));
@@ -96,18 +96,18 @@ impl HighlightPanel {
         if self.editing_id.is_some() {
             return;
         }
-        let (cursor_offset, highlights) = {
+        let (cursor_offset, bookmarks) = {
             let ed = editor.read(cx);
-            (ed.cursor_offset, ed.highlights_snapshot())
+            (ed.cursor_offset, ed.bookmarks_snapshot())
         };
 
-        if highlights.is_empty() {
+        if bookmarks.is_empty() {
             self.selected_id = None;
             return;
         }
 
         if let Some(ref sel_id) = self.selected_id
-            && let Some(item) = highlights.iter().find(|h| &h.id == sel_id)
+            && let Some(item) = bookmarks.iter().find(|h| &h.id == sel_id)
         {
             let range = item.offset..item.offset + item.size;
             if (item.size > 0 && range.contains(&cursor_offset)) || (item.size == 0 && item.offset == cursor_offset) {
@@ -115,7 +115,7 @@ impl HighlightPanel {
             }
         }
 
-        if let Some(item) = highlights.iter().find(|h| {
+        if let Some(item) = bookmarks.iter().find(|h| {
             let range = h.offset..h.offset + h.size;
             (h.size > 0 && range.contains(&cursor_offset)) || (h.size == 0 && h.offset == cursor_offset)
         }) {
@@ -123,7 +123,7 @@ impl HighlightPanel {
         }
     }
 
-    fn add_highlight_from_selection(&mut self, cx: &mut Context<Self>) {
+    fn add_bookmark_from_selection(&mut self, cx: &mut Context<Self>) {
         let Some(editor_entity) = &self.editor else { return };
         let (range, _) = {
             let editor = editor_entity.read(cx);
@@ -134,11 +134,11 @@ impl HighlightPanel {
             }
         };
 
-        let new_item = HighlightItem::new(range.start, range.len(), HighlightColor::Yellow, "");
+        let new_item = BookmarkItem::new(range.start, range.len(), BookmarkColor::Yellow, "");
         let mut actual_id = String::new();
 
         editor_entity.update(cx, |editor, cx| {
-            actual_id = editor.add_highlight(new_item);
+            actual_id = editor.add_bookmark(new_item);
             cx.notify();
         });
 
@@ -155,9 +155,9 @@ impl HighlightPanel {
             .and_then(|ed| {
                 let editor = ed.read(cx);
                 editor
-                    .highlights
+                    .bookmarks
                     .read()
-                    .expect("highlights read lock")
+                    .expect("bookmarks read lock")
                     .iter()
                     .find(|h| h.id == id)
                     .map(|h| h.comment.clone())
@@ -192,7 +192,7 @@ impl HighlightPanel {
 
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.update_highlight_comment(&editing_id, new_comment);
+                editor.update_bookmark_comment(&editing_id, new_comment);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -207,10 +207,10 @@ impl HighlightPanel {
         cx.notify();
     }
 
-    fn set_highlight_color(&mut self, id: &str, color: HighlightColor, cx: &mut Context<Self>) {
+    fn set_bookmark_color(&mut self, id: &str, color: BookmarkColor, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.update_highlight_color(id, color);
+                editor.update_bookmark_color(id, color);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -219,10 +219,10 @@ impl HighlightPanel {
         cx.notify();
     }
 
-    fn delete_highlight(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn delete_bookmark(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.remove_highlight_by_id(id);
+                editor.remove_bookmark_by_id(id);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -239,18 +239,18 @@ impl HighlightPanel {
         cx.notify();
     }
 
-    fn clear_all_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn clear_all_bookmarks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor_entity) = &self.editor else { return };
-        let count = editor_entity.read(cx).highlights_snapshot().len();
+        let count = editor_entity.read(cx).bookmarks_snapshot().len();
         if count == 0 {
             return;
         }
 
         let prompt = window.prompt(
             gpui::PromptLevel::Warning,
-            "Clear all highlights?",
+            "Clear all bookmarks?",
             Some(&format!(
-                "Are you sure you want to clear all {} highlight{} and comments? This action cannot be undone.",
+                "Are you sure you want to clear all {} bookmark{} and comments? This action cannot be undone.",
                 count,
                 if count == 1 { "" } else { "s" }
             )),
@@ -265,7 +265,7 @@ impl HighlightPanel {
                 window
                     .update(|_, cx| {
                         editor_entity.update(cx, |editor, cx| {
-                            editor.clear_all_custom_highlights();
+                            editor.clear_all_custom_bookmarks();
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
@@ -285,7 +285,7 @@ impl HighlightPanel {
         .detach();
     }
 
-    fn navigate_to_highlight(&mut self, offset: usize, size: usize, cx: &mut Context<Self>) {
+    fn navigate_to_bookmark(&mut self, offset: usize, size: usize, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
                 editor.set_cursor_offset(offset);
@@ -295,7 +295,7 @@ impl HighlightPanel {
                 cx.notify();
             });
         }
-        cx.emit(HighlightPanelEvent::NavigateTo { offset, size });
+        cx.emit(BookmarkPanelEvent::NavigateTo { offset, size });
         cx.notify();
     }
 
@@ -304,22 +304,22 @@ impl HighlightPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let highlights = ed.read(cx).highlights_snapshot();
-        if highlights.is_empty() {
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
             return;
         }
 
-        let curr_idx = self.selected_id.as_ref().and_then(|id| highlights.iter().position(|h| &h.id == id));
+        let curr_idx = self.selected_id.as_ref().and_then(|id| bookmarks.iter().position(|h| &h.id == id));
 
         let next_idx = match curr_idx {
             Some(idx) => idx.saturating_sub(1),
             None => 0,
         };
 
-        let target_item = &highlights[next_idx];
+        let target_item = &bookmarks[next_idx];
         self.selected_id = Some(target_item.id.clone());
         self.color_picker_id = None;
-        self.navigate_to_highlight(target_item.offset, target_item.size, cx);
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
     }
 
     fn move_down(&mut self, _: &MoveDown, _window: &mut Window, cx: &mut Context<Self>) {
@@ -327,23 +327,23 @@ impl HighlightPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let highlights = ed.read(cx).highlights_snapshot();
-        if highlights.is_empty() {
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
             return;
         }
 
-        let max_idx = highlights.len() - 1;
-        let curr_idx = self.selected_id.as_ref().and_then(|id| highlights.iter().position(|h| &h.id == id));
+        let max_idx = bookmarks.len() - 1;
+        let curr_idx = self.selected_id.as_ref().and_then(|id| bookmarks.iter().position(|h| &h.id == id));
 
         let next_idx = match curr_idx {
             Some(idx) => (idx + 1).min(max_idx),
             None => 0,
         };
 
-        let target_item = &highlights[next_idx];
+        let target_item = &bookmarks[next_idx];
         self.selected_id = Some(target_item.id.clone());
         self.color_picker_id = None;
-        self.navigate_to_highlight(target_item.offset, target_item.size, cx);
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
     }
 
     fn select_current(&mut self, _: &SelectCurrent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -351,12 +351,12 @@ impl HighlightPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let highlights = ed.read(cx).highlights_snapshot();
-        if let Some(item) = self.selected_id.as_ref().and_then(|id| highlights.iter().find(|h| &h.id == id)) {
-            self.navigate_to_highlight(item.offset, item.size, cx);
-        } else if let Some(first) = highlights.first() {
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if let Some(item) = self.selected_id.as_ref().and_then(|id| bookmarks.iter().find(|h| &h.id == id)) {
+            self.navigate_to_bookmark(item.offset, item.size, cx);
+        } else if let Some(first) = bookmarks.first() {
             self.selected_id = Some(first.id.clone());
-            self.navigate_to_highlight(first.offset, first.size, cx);
+            self.navigate_to_bookmark(first.offset, first.size, cx);
         }
     }
 
@@ -374,30 +374,30 @@ impl HighlightPanel {
             return;
         }
         if let Some(id) = self.selected_id.clone() {
-            self.delete_highlight(&id, cx);
+            self.delete_bookmark(&id, cx);
         }
     }
 }
 
-impl Focusable for HighlightPanel {
+impl Focusable for BookmarkPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for HighlightPanel {
+impl Render for BookmarkPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let is_focused = self.focus_handle.is_focused(window);
 
-        let (highlights, has_editor) = if let Some(ed) = &self.editor {
+        let (bookmarks, has_editor) = if let Some(ed) = &self.editor {
             let editor = ed.read(cx);
-            (editor.highlights_snapshot(), true)
+            (editor.bookmarks_snapshot(), true)
         } else {
             (Vec::new(), false)
         };
 
-        let count = highlights.len();
+        let count = bookmarks.len();
 
         // Header toolbar
         let badge = Some(crate::ui::style::panel_badge(count.to_string(), &theme).into_any_element());
@@ -406,66 +406,66 @@ impl Render for HighlightPanel {
             .items_center()
             .gap_1()
             .child(
-                Button::new("add-hl")
+                Button::new("add-bm")
                     .ghost()
                     .icon(IconName::BookmarkPlus)
                     .with_size(Size::XSmall)
-                    .tooltip("Add highlight at current selection / cursor")
+                    .tooltip("Add bookmark at current selection / cursor")
                     .disabled(!has_editor)
                     .on_click(cx.listener(|this, _, _window, cx| {
-                        this.add_highlight_from_selection(cx);
+                        this.add_bookmark_from_selection(cx);
                     })),
             )
             .child(
-                Button::new("import-hl")
+                Button::new("import-bm")
                     .ghost()
                     .icon(IconName::Import)
                     .with_size(Size::XSmall)
-                    .tooltip("Import highlights from JSON file")
+                    .tooltip("Import bookmarks from JSON file")
                     .disabled(!has_editor)
                     .on_click(cx.listener(|_, _, _window, cx| {
-                        cx.emit(HighlightPanelEvent::Import);
+                        cx.emit(BookmarkPanelEvent::Import);
                     })),
             )
             .child(
-                Button::new("export-hl")
+                Button::new("export-bm")
                     .ghost()
                     .icon(IconName::HardDriveDownload)
                     .with_size(Size::XSmall)
-                    .tooltip("Export highlights to JSON file")
+                    .tooltip("Export bookmarks to JSON file")
                     .disabled(!has_editor || count == 0)
                     .on_click(cx.listener(|_, _, _window, cx| {
-                        cx.emit(HighlightPanelEvent::Export);
+                        cx.emit(BookmarkPanelEvent::Export);
                     })),
             )
             .child(
-                Button::new("clear-hl")
+                Button::new("clear-bm")
                     .ghost()
                     .icon(IconName::Eraser)
                     .with_size(Size::XSmall)
-                    .tooltip("Clear all highlights")
+                    .tooltip("Clear all bookmarks")
                     .disabled(!has_editor || count == 0)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.clear_all_highlights(window, cx);
+                        this.clear_all_bookmarks(window, cx);
                     })),
             );
 
-        let header = crate::ui::style::panel_header("HIGHLIGHTS", is_focused, &theme, badge, Some(actions.into_any_element()));
+        let header = crate::ui::style::panel_header("BOOKMARKS", is_focused, &theme, badge, Some(actions.into_any_element()));
 
         // Content body
         let body = if !has_editor {
             crate::ui::style::panel_empty_state(
                 IconName::Bookmark,
                 "No Active File",
-                Some("Open a binary file to view and manage highlights"),
+                Some("Open a binary file to view and manage bookmarks"),
                 None,
                 &theme,
             )
             .into_any_element()
-        } else if highlights.is_empty() {
+        } else if bookmarks.is_empty() {
             crate::ui::style::panel_empty_state(
                 IconName::Bookmark,
-                "No Highlights",
+                "No Bookmarks",
                 Some("Select bytes in hex view and choose a color, or click the add icon above"),
                 None,
                 &theme,
@@ -474,14 +474,14 @@ impl Render for HighlightPanel {
         } else {
             let mut list = v_flex().flex_1().gap_1().p_1();
 
-            for item in highlights {
-                list = list.child(self.render_highlight_item(&item, &theme, window, cx));
+            for item in bookmarks {
+                list = list.child(self.render_bookmark_item(&item, &theme, window, cx));
             }
 
             v_flex()
                 .flex_1()
                 .overflow_hidden()
-                .child(div().id("highlights-scroll").flex_1().overflow_y_scroll().child(list))
+                .child(div().id("bookmarks-scroll").flex_1().overflow_y_scroll().child(list))
                 .into_any_element()
         };
 
@@ -500,8 +500,8 @@ impl Render for HighlightPanel {
     }
 }
 
-impl HighlightPanel {
-    fn render_highlight_item(&self, item: &HighlightItem, theme: &gpui_component::Theme, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl BookmarkPanel {
+    fn render_bookmark_item(&self, item: &BookmarkItem, theme: &gpui_component::Theme, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let item_id = item.id.clone();
         let is_selected = self.selected_id.as_deref() == Some(&item_id);
         let is_editing = self.editing_id.as_deref() == Some(&item_id);
@@ -565,7 +565,7 @@ impl HighlightPanel {
                                 move |this, _, window, cx| {
                                     this.focus_handle.focus(window);
                                     this.selected_id = Some(item_id.clone());
-                                    this.navigate_to_highlight(offset, size, cx);
+                                    this.navigate_to_bookmark(offset, size, cx);
                                 }
                             }))
                             .child(
@@ -606,7 +606,7 @@ impl HighlightPanel {
                             .tooltip("Go to offset")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.focus_handle.focus(window);
-                                this.navigate_to_highlight(offset, size, cx);
+                                this.navigate_to_bookmark(offset, size, cx);
                             })),
                     )
                     .child(
@@ -627,11 +627,11 @@ impl HighlightPanel {
                             .ghost()
                             .icon(IconName::BookmarkX)
                             .with_size(Size::XSmall)
-                            .tooltip("Delete highlight")
+                            .tooltip("Delete bookmark")
                             .on_click(cx.listener({
                                 let item_id = item_id_del.clone();
                                 move |this, _, _window, cx| {
-                                    this.delete_highlight(&item_id, cx);
+                                    this.delete_bookmark(&item_id, cx);
                                 }
                             })),
                     ),
@@ -642,7 +642,7 @@ impl HighlightPanel {
         // 2. Optional Color Picker row
         if show_color_picker {
             let mut picker_row = h_flex().items_center().gap_1().py_1().px_1().bg(theme.muted.opacity(0.3)).rounded_sm();
-            for &preset in HighlightColor::ALL_PRESETS {
+            for &preset in BookmarkColor::ALL_PRESETS {
                 let p_badge = preset.to_badge_hsla();
                 let item_id_for_preset = item_id.clone();
                 let is_current = item.color == preset;
@@ -661,7 +661,7 @@ impl HighlightPanel {
                         .on_click(cx.listener({
                             let item_id = item_id_for_preset.clone();
                             move |this, _, _window, cx| {
-                                this.set_highlight_color(&item_id, preset, cx);
+                                this.set_bookmark_color(&item_id, preset, cx);
                             }
                         })),
                 );

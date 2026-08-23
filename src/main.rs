@@ -75,7 +75,7 @@ fn init_app_state(cx: &mut App) {
     ui::components::search_panel::init(cx);
     ui::components::strings_panel::init(cx);
     ui::components::struct_tree_view::init(cx);
-    ui::components::highlight_panel::init(cx);
+    ui::components::bookmark_panel::init(cx);
     ui::panels::editor_panel::init(cx);
     ui::panels::diff_panel::init(cx);
 }
@@ -144,22 +144,22 @@ fn setup_menus(cx: &mut App) {
                 gpui::MenuItem::action("Find Previous", crate::actions::SearchPrev),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::submenu(gpui::Menu {
-                    name: "Highlight".into(),
+                    name: "Bookmark".into(),
                     items: vec![
-                        gpui::MenuItem::action("Red", crate::actions::HighlightRed),
-                        gpui::MenuItem::action("Orange", crate::actions::HighlightOrange),
-                        gpui::MenuItem::action("Yellow", crate::actions::HighlightYellow),
-                        gpui::MenuItem::action("Green", crate::actions::HighlightGreen),
-                        gpui::MenuItem::action("Cyan", crate::actions::HighlightCyan),
-                        gpui::MenuItem::action("Blue", crate::actions::HighlightBlue),
-                        gpui::MenuItem::action("Purple", crate::actions::HighlightPurple),
-                        gpui::MenuItem::action("Pink", crate::actions::HighlightPink),
+                        gpui::MenuItem::action("Red", crate::actions::BookmarkRed),
+                        gpui::MenuItem::action("Orange", crate::actions::BookmarkOrange),
+                        gpui::MenuItem::action("Yellow", crate::actions::BookmarkYellow),
+                        gpui::MenuItem::action("Green", crate::actions::BookmarkGreen),
+                        gpui::MenuItem::action("Cyan", crate::actions::BookmarkCyan),
+                        gpui::MenuItem::action("Blue", crate::actions::BookmarkBlue),
+                        gpui::MenuItem::action("Purple", crate::actions::BookmarkPurple),
+                        gpui::MenuItem::action("Pink", crate::actions::BookmarkPink),
                         gpui::MenuItem::separator(),
-                        gpui::MenuItem::action("Clear Highlight", crate::actions::ClearHighlight),
-                        gpui::MenuItem::action("Clear All Highlights", crate::actions::ClearAllHighlights),
+                        gpui::MenuItem::action("Clear Bookmark", crate::actions::ClearBookmark),
+                        gpui::MenuItem::action("Clear All Bookmarks", crate::actions::ClearAllBookmarks),
                         gpui::MenuItem::separator(),
-                        gpui::MenuItem::action("Import Highlights...", crate::actions::ImportHighlights),
-                        gpui::MenuItem::action("Export Highlights...", crate::actions::ExportHighlights),
+                        gpui::MenuItem::action("Import Bookmarks...", crate::actions::ImportBookmarks),
+                        gpui::MenuItem::action("Export Bookmarks...", crate::actions::ExportBookmarks),
                     ],
                 }),
             ],
@@ -174,7 +174,7 @@ fn setup_menus(cx: &mut App) {
                         gpui::MenuItem::action("Files", crate::actions::ShowFilesTab),
                         gpui::MenuItem::action("Strings", crate::actions::ShowStringsTab),
                         gpui::MenuItem::action("Structure", crate::actions::ShowStructureTab),
-                        gpui::MenuItem::action("Highlights", crate::actions::ShowHighlightsTab),
+                        gpui::MenuItem::action("Bookmarks", crate::actions::ShowBookmarksTab),
                         gpui::MenuItem::action("Checksum", crate::actions::ShowChecksumTab),
                         gpui::MenuItem::action("2D Visual Map", crate::actions::OpenVisualMap),
                     ],

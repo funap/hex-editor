@@ -5,15 +5,15 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-static HIGHLIGHT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+static BOOKMARK_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-pub fn generate_highlight_id() -> String {
-    let id = HIGHLIGHT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("hl-{}", id)
+pub fn generate_bookmark_id() -> String {
+    let id = BOOKMARK_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("bm-{}", id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum HighlightColor {
+pub enum BookmarkColor {
     Red,
     Orange,
     #[default]
@@ -31,29 +31,29 @@ pub enum HighlightColor {
     },
 }
 
-impl HighlightColor {
-    pub const ALL_PRESETS: &'static [HighlightColor] = &[
-        HighlightColor::Red,
-        HighlightColor::Orange,
-        HighlightColor::Yellow,
-        HighlightColor::Green,
-        HighlightColor::Cyan,
-        HighlightColor::Blue,
-        HighlightColor::Purple,
-        HighlightColor::Pink,
+impl BookmarkColor {
+    pub const ALL_PRESETS: &'static [BookmarkColor] = &[
+        BookmarkColor::Red,
+        BookmarkColor::Orange,
+        BookmarkColor::Yellow,
+        BookmarkColor::Green,
+        BookmarkColor::Cyan,
+        BookmarkColor::Blue,
+        BookmarkColor::Purple,
+        BookmarkColor::Pink,
     ];
 
     pub fn to_hsla(self) -> Hsla {
         match self {
-            HighlightColor::Red => gpui::hsla(0.0, 0.75, 0.55, 0.35),
-            HighlightColor::Orange => gpui::hsla(30.0 / 360.0, 0.85, 0.55, 0.35),
-            HighlightColor::Yellow => gpui::hsla(50.0 / 360.0, 0.85, 0.50, 0.35),
-            HighlightColor::Green => gpui::hsla(120.0 / 360.0, 0.65, 0.45, 0.35),
-            HighlightColor::Cyan => gpui::hsla(180.0 / 360.0, 0.70, 0.45, 0.35),
-            HighlightColor::Blue => gpui::hsla(215.0 / 360.0, 0.75, 0.55, 0.35),
-            HighlightColor::Purple => gpui::hsla(280.0 / 360.0, 0.70, 0.55, 0.35),
-            HighlightColor::Pink => gpui::hsla(330.0 / 360.0, 0.75, 0.55, 0.35),
-            HighlightColor::Custom { r, g, b, a } => {
+            BookmarkColor::Red => gpui::hsla(0.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Orange => gpui::hsla(30.0 / 360.0, 0.85, 0.55, 0.35),
+            BookmarkColor::Yellow => gpui::hsla(50.0 / 360.0, 0.85, 0.50, 0.35),
+            BookmarkColor::Green => gpui::hsla(120.0 / 360.0, 0.65, 0.45, 0.35),
+            BookmarkColor::Cyan => gpui::hsla(180.0 / 360.0, 0.70, 0.45, 0.35),
+            BookmarkColor::Blue => gpui::hsla(215.0 / 360.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Purple => gpui::hsla(280.0 / 360.0, 0.70, 0.55, 0.35),
+            BookmarkColor::Pink => gpui::hsla(330.0 / 360.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Custom { r, g, b, a } => {
                 let rf = r as f32 / 255.0;
                 let gf = g as f32 / 255.0;
                 let bf = b as f32 / 255.0;
@@ -66,15 +66,15 @@ impl HighlightColor {
     /// Solid / opaque color for badges, icon swatches, or UI indicator dots.
     pub fn to_badge_hsla(self) -> Hsla {
         match self {
-            HighlightColor::Red => gpui::hsla(0.0, 0.85, 0.60, 1.0),
-            HighlightColor::Orange => gpui::hsla(30.0 / 360.0, 0.90, 0.60, 1.0),
-            HighlightColor::Yellow => gpui::hsla(50.0 / 360.0, 0.90, 0.55, 1.0),
-            HighlightColor::Green => gpui::hsla(120.0 / 360.0, 0.75, 0.50, 1.0),
-            HighlightColor::Cyan => gpui::hsla(180.0 / 360.0, 0.80, 0.50, 1.0),
-            HighlightColor::Blue => gpui::hsla(215.0 / 360.0, 0.85, 0.60, 1.0),
-            HighlightColor::Purple => gpui::hsla(280.0 / 360.0, 0.80, 0.60, 1.0),
-            HighlightColor::Pink => gpui::hsla(330.0 / 360.0, 0.85, 0.60, 1.0),
-            HighlightColor::Custom { r, g, b, .. } => {
+            BookmarkColor::Red => gpui::hsla(0.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Orange => gpui::hsla(30.0 / 360.0, 0.90, 0.60, 1.0),
+            BookmarkColor::Yellow => gpui::hsla(50.0 / 360.0, 0.90, 0.55, 1.0),
+            BookmarkColor::Green => gpui::hsla(120.0 / 360.0, 0.75, 0.50, 1.0),
+            BookmarkColor::Cyan => gpui::hsla(180.0 / 360.0, 0.80, 0.50, 1.0),
+            BookmarkColor::Blue => gpui::hsla(215.0 / 360.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Purple => gpui::hsla(280.0 / 360.0, 0.80, 0.60, 1.0),
+            BookmarkColor::Pink => gpui::hsla(330.0 / 360.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Custom { r, g, b, .. } => {
                 let rf = r as f32 / 255.0;
                 let gf = g as f32 / 255.0;
                 let bf = b as f32 / 255.0;
@@ -85,55 +85,55 @@ impl HighlightColor {
 
     pub fn name(&self) -> &'static str {
         match self {
-            HighlightColor::Red => "Red",
-            HighlightColor::Orange => "Orange",
-            HighlightColor::Yellow => "Yellow",
-            HighlightColor::Green => "Green",
-            HighlightColor::Cyan => "Cyan",
-            HighlightColor::Blue => "Blue",
-            HighlightColor::Purple => "Purple",
-            HighlightColor::Pink => "Pink",
-            HighlightColor::Custom { .. } => "Custom",
+            BookmarkColor::Red => "Red",
+            BookmarkColor::Orange => "Orange",
+            BookmarkColor::Yellow => "Yellow",
+            BookmarkColor::Green => "Green",
+            BookmarkColor::Cyan => "Cyan",
+            BookmarkColor::Blue => "Blue",
+            BookmarkColor::Purple => "Purple",
+            BookmarkColor::Pink => "Pink",
+            BookmarkColor::Custom { .. } => "Custom",
         }
     }
 
     pub fn from_hsla(hsla: Hsla) -> Self {
         let h_deg = hsla.h * 360.0;
         if (0.0..15.0).contains(&h_deg) || (345.0..=360.0).contains(&h_deg) {
-            HighlightColor::Red
+            BookmarkColor::Red
         } else if (15.0..40.0).contains(&h_deg) {
-            HighlightColor::Orange
+            BookmarkColor::Orange
         } else if (40.0..80.0).contains(&h_deg) {
-            HighlightColor::Yellow
+            BookmarkColor::Yellow
         } else if (80.0..150.0).contains(&h_deg) {
-            HighlightColor::Green
+            BookmarkColor::Green
         } else if (150.0..200.0).contains(&h_deg) {
-            HighlightColor::Cyan
+            BookmarkColor::Cyan
         } else if (200.0..250.0).contains(&h_deg) {
-            HighlightColor::Blue
+            BookmarkColor::Blue
         } else if (250.0..310.0).contains(&h_deg) {
-            HighlightColor::Purple
+            BookmarkColor::Purple
         } else {
-            HighlightColor::Pink
+            BookmarkColor::Pink
         }
     }
 }
 
-impl Serialize for HighlightColor {
+impl Serialize for BookmarkColor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         match self {
-            HighlightColor::Red => serializer.serialize_str("red"),
-            HighlightColor::Orange => serializer.serialize_str("orange"),
-            HighlightColor::Yellow => serializer.serialize_str("yellow"),
-            HighlightColor::Green => serializer.serialize_str("green"),
-            HighlightColor::Cyan => serializer.serialize_str("cyan"),
-            HighlightColor::Blue => serializer.serialize_str("blue"),
-            HighlightColor::Purple => serializer.serialize_str("purple"),
-            HighlightColor::Pink => serializer.serialize_str("pink"),
-            HighlightColor::Custom { r, g, b, a } => {
+            BookmarkColor::Red => serializer.serialize_str("red"),
+            BookmarkColor::Orange => serializer.serialize_str("orange"),
+            BookmarkColor::Yellow => serializer.serialize_str("yellow"),
+            BookmarkColor::Green => serializer.serialize_str("green"),
+            BookmarkColor::Cyan => serializer.serialize_str("cyan"),
+            BookmarkColor::Blue => serializer.serialize_str("blue"),
+            BookmarkColor::Purple => serializer.serialize_str("purple"),
+            BookmarkColor::Pink => serializer.serialize_str("pink"),
+            BookmarkColor::Custom { r, g, b, a } => {
                 if *a == 255 {
                     serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", r, g, b))
                 } else {
@@ -144,7 +144,7 @@ impl Serialize for HighlightColor {
     }
 }
 
-impl<'de> Deserialize<'de> for HighlightColor {
+impl<'de> Deserialize<'de> for BookmarkColor {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -152,7 +152,7 @@ impl<'de> Deserialize<'de> for HighlightColor {
         struct ColorVisitor;
 
         impl<'de> serde::de::Visitor<'de> for ColorVisitor {
-            type Value = HighlightColor;
+            type Value = BookmarkColor;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a color string (e.g. 'red', 'blue', '#ff0000') or an RGBA object")
@@ -164,14 +164,14 @@ impl<'de> Deserialize<'de> for HighlightColor {
             {
                 let lower = v.trim().to_lowercase();
                 match lower.as_str() {
-                    "red" => Ok(HighlightColor::Red),
-                    "orange" => Ok(HighlightColor::Orange),
-                    "yellow" => Ok(HighlightColor::Yellow),
-                    "green" => Ok(HighlightColor::Green),
-                    "cyan" => Ok(HighlightColor::Cyan),
-                    "blue" => Ok(HighlightColor::Blue),
-                    "purple" => Ok(HighlightColor::Purple),
-                    "pink" => Ok(HighlightColor::Pink),
+                    "red" => Ok(BookmarkColor::Red),
+                    "orange" => Ok(BookmarkColor::Orange),
+                    "yellow" => Ok(BookmarkColor::Yellow),
+                    "green" => Ok(BookmarkColor::Green),
+                    "cyan" => Ok(BookmarkColor::Cyan),
+                    "blue" => Ok(BookmarkColor::Blue),
+                    "purple" => Ok(BookmarkColor::Purple),
+                    "pink" => Ok(BookmarkColor::Pink),
                     hex if hex.starts_with('#') => {
                         let hex_body = &hex[1..];
                         match hex_body.len() {
@@ -179,25 +179,25 @@ impl<'de> Deserialize<'de> for HighlightColor {
                                 let r = u8::from_str_radix(&hex_body[0..1].repeat(2), 16).map_err(E::custom)?;
                                 let g = u8::from_str_radix(&hex_body[1..2].repeat(2), 16).map_err(E::custom)?;
                                 let b = u8::from_str_radix(&hex_body[2..3].repeat(2), 16).map_err(E::custom)?;
-                                Ok(HighlightColor::Custom { r, g, b, a: 255 })
+                                Ok(BookmarkColor::Custom { r, g, b, a: 255 })
                             }
                             6 => {
                                 let r = u8::from_str_radix(&hex_body[0..2], 16).map_err(E::custom)?;
                                 let g = u8::from_str_radix(&hex_body[2..4], 16).map_err(E::custom)?;
                                 let b = u8::from_str_radix(&hex_body[4..6], 16).map_err(E::custom)?;
-                                Ok(HighlightColor::Custom { r, g, b, a: 255 })
+                                Ok(BookmarkColor::Custom { r, g, b, a: 255 })
                             }
                             8 => {
                                 let r = u8::from_str_radix(&hex_body[0..2], 16).map_err(E::custom)?;
                                 let g = u8::from_str_radix(&hex_body[2..4], 16).map_err(E::custom)?;
                                 let b = u8::from_str_radix(&hex_body[4..6], 16).map_err(E::custom)?;
                                 let a = u8::from_str_radix(&hex_body[6..8], 16).map_err(E::custom)?;
-                                Ok(HighlightColor::Custom { r, g, b, a })
+                                Ok(BookmarkColor::Custom { r, g, b, a })
                             }
                             _ => Err(E::custom(format!("Invalid hex color format: {}", hex))),
                         }
                     }
-                    _ => Err(E::custom(format!("Unknown highlight color: {}", lower))),
+                    _ => Err(E::custom(format!("Unknown bookmark color: {}", lower))),
                 }
             }
 
@@ -227,7 +227,7 @@ impl<'de> Deserialize<'de> for HighlightColor {
                 let b = b.ok_or_else(|| serde::de::Error::missing_field("b"))?;
                 let a = a.unwrap_or(255);
 
-                Ok(HighlightColor::Custom { r, g, b, a })
+                Ok(BookmarkColor::Custom { r, g, b, a })
             }
         }
 
@@ -235,8 +235,8 @@ impl<'de> Deserialize<'de> for HighlightColor {
     }
 }
 
-fn default_highlight_color() -> HighlightColor {
-    HighlightColor::Yellow
+fn default_bookmark_color() -> BookmarkColor {
+    BookmarkColor::Yellow
 }
 
 fn deserialize_offset_or_hex<'de, D>(deserializer: D) -> Result<usize, D::Error>
@@ -283,23 +283,23 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HighlightItem {
-    #[serde(default = "generate_highlight_id", skip_serializing)]
+pub struct BookmarkItem {
+    #[serde(default = "generate_bookmark_id", skip_serializing)]
     pub id: String,
     #[serde(deserialize_with = "deserialize_offset_or_hex")]
     pub offset: usize,
     #[serde(deserialize_with = "deserialize_offset_or_hex")]
     pub size: usize,
-    #[serde(default = "default_highlight_color")]
-    pub color: HighlightColor,
+    #[serde(default = "default_bookmark_color")]
+    pub color: BookmarkColor,
     #[serde(default)]
     pub comment: String,
 }
 
-impl HighlightItem {
-    pub fn new(offset: usize, size: usize, color: HighlightColor, comment: impl Into<String>) -> Self {
+impl BookmarkItem {
+    pub fn new(offset: usize, size: usize, color: BookmarkColor, comment: impl Into<String>) -> Self {
         Self {
-            id: generate_highlight_id(),
+            id: generate_bookmark_id(),
             offset,
             size,
             color,
@@ -334,53 +334,53 @@ impl HighlightItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighlightFile {
+pub struct BookmarkFile {
     #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
-    pub highlights: Vec<HighlightItem>,
+    pub bookmarks: Vec<BookmarkItem>,
 }
 
 fn default_version() -> u32 {
     1
 }
 
-impl HighlightFile {
-    pub fn from_json(json: &str) -> anyhow::Result<Vec<HighlightItem>> {
-        // First attempt: HighlightFile wrapped format
-        let mut items = if let Ok(file) = serde_json::from_str::<HighlightFile>(json) {
-            file.highlights
-        } else if let Ok(items) = serde_json::from_str::<Vec<HighlightItem>>(json) {
+impl BookmarkFile {
+    pub fn from_json(json: &str) -> anyhow::Result<Vec<BookmarkItem>> {
+        // First attempt: BookmarkFile wrapped format
+        let mut items = if let Ok(file) = serde_json::from_str::<BookmarkFile>(json) {
+            file.bookmarks
+        } else if let Ok(items) = serde_json::from_str::<Vec<BookmarkItem>>(json) {
             items
         } else {
-            let err = serde_json::from_str::<HighlightFile>(json).unwrap_err();
-            anyhow::bail!("Failed to parse highlights JSON: {}", err)
+            let err = serde_json::from_str::<BookmarkFile>(json).unwrap_err();
+            anyhow::bail!("Failed to parse bookmarks JSON: {}", err)
         };
 
         // Guarantee distinct, fresh unique runtime IDs for all loaded items
         for item in &mut items {
-            item.id = generate_highlight_id();
+            item.id = generate_bookmark_id();
         }
         Ok(items)
     }
 
-    pub fn to_json(highlights: &[HighlightItem], file_path: Option<&Path>) -> anyhow::Result<String> {
-        let file = HighlightFile {
+    pub fn to_json(bookmarks: &[BookmarkItem], file_path: Option<&Path>) -> anyhow::Result<String> {
+        let file = BookmarkFile {
             version: 1,
             file_path: file_path.map(|p| p.to_string_lossy().to_string()),
-            highlights: highlights.to_vec(),
+            bookmarks: bookmarks.to_vec(),
         };
         Ok(serde_json::to_string_pretty(&file)?)
     }
 
-    pub fn save_to_path(path: &Path, highlights: &[HighlightItem], file_path: Option<&Path>) -> anyhow::Result<()> {
-        let json = Self::to_json(highlights, file_path)?;
+    pub fn save_to_path(path: &Path, bookmarks: &[BookmarkItem], file_path: Option<&Path>) -> anyhow::Result<()> {
+        let json = Self::to_json(bookmarks, file_path)?;
         fs::write(path, json)?;
         Ok(())
     }
 
-    pub fn load_from_path(path: &Path) -> anyhow::Result<Vec<HighlightItem>> {
+    pub fn load_from_path(path: &Path) -> anyhow::Result<Vec<BookmarkItem>> {
         let content = fs::read_to_string(path)?;
         Self::from_json(&content)
     }
@@ -391,8 +391,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_highlight_color_presets_and_names() {
-        for color in HighlightColor::ALL_PRESETS {
+    fn test_bookmark_color_presets_and_names() {
+        for color in BookmarkColor::ALL_PRESETS {
             let hsla = color.to_hsla();
             assert!(hsla.a > 0.0);
             let badge = color.to_badge_hsla();
@@ -402,16 +402,16 @@ mod tests {
     }
 
     #[test]
-    fn test_highlight_color_serde() {
-        let json = serde_json::to_string(&HighlightColor::Red).unwrap();
+    fn test_bookmark_color_serde() {
+        let json = serde_json::to_string(&BookmarkColor::Red).unwrap();
         assert_eq!(json, "\"red\"");
-        let color: HighlightColor = serde_json::from_str("\"blue\"").unwrap();
-        assert_eq!(color, HighlightColor::Blue);
+        let color: BookmarkColor = serde_json::from_str("\"blue\"").unwrap();
+        assert_eq!(color, BookmarkColor::Blue);
 
-        let hex_color: HighlightColor = serde_json::from_str("\"#112233\"").unwrap();
+        let hex_color: BookmarkColor = serde_json::from_str("\"#112233\"").unwrap();
         assert_eq!(
             hex_color,
-            HighlightColor::Custom {
+            BookmarkColor::Custom {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -419,12 +419,12 @@ mod tests {
             }
         );
 
-        let rgba_color: HighlightColor = serde_json::from_str(r#"{"r": 10, "g": 20, "b": 30, "a": 128}"#).unwrap();
-        assert_eq!(rgba_color, HighlightColor::Custom { r: 10, g: 20, b: 30, a: 128 });
+        let rgba_color: BookmarkColor = serde_json::from_str(r#"{"r": 10, "g": 20, "b": 30, "a": 128}"#).unwrap();
+        assert_eq!(rgba_color, BookmarkColor::Custom { r: 10, g: 20, b: 30, a: 128 });
     }
 
     #[test]
-    fn test_highlight_item_serde_with_hex_offsets() {
+    fn test_bookmark_item_serde_with_hex_offsets() {
         let json = r#"[
             {
                 "offset": "0x0010",
@@ -440,77 +440,77 @@ mod tests {
             }
         ]"#;
 
-        let items = HighlightFile::from_json(json).unwrap();
+        let items = BookmarkFile::from_json(json).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].offset, 16);
         assert_eq!(items[0].size, 32);
-        assert_eq!(items[0].color, HighlightColor::Green);
+        assert_eq!(items[0].color, BookmarkColor::Green);
         assert_eq!(items[0].comment, "Header section");
 
         assert_eq!(items[1].offset, 100);
         assert_eq!(items[1].size, 4);
-        assert_eq!(items[1].color, HighlightColor::Pink);
+        assert_eq!(items[1].color, BookmarkColor::Pink);
         assert_eq!(items[1].comment, "Magic number");
     }
 
     #[test]
-    fn test_highlight_file_roundtrip() {
+    fn test_bookmark_file_roundtrip() {
         let items = vec![
-            HighlightItem::new(0, 16, HighlightColor::Red, "File header"),
-            HighlightItem::new(64, 4, HighlightColor::Cyan, "Checksum"),
+            BookmarkItem::new(0, 16, BookmarkColor::Red, "File header"),
+            BookmarkItem::new(64, 4, BookmarkColor::Cyan, "Checksum"),
         ];
 
-        let json = HighlightFile::to_json(&items, Some(Path::new("test.bin"))).unwrap();
-        let loaded = HighlightFile::from_json(&json).unwrap();
+        let json = BookmarkFile::to_json(&items, Some(Path::new("test.bin"))).unwrap();
+        let loaded = BookmarkFile::from_json(&json).unwrap();
 
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].offset, 0);
         assert_eq!(loaded[0].size, 16);
-        assert_eq!(loaded[0].color, HighlightColor::Red);
+        assert_eq!(loaded[0].color, BookmarkColor::Red);
         assert_eq!(loaded[0].comment, "File header");
         assert_eq!(loaded[1].offset, 64);
         assert_eq!(loaded[1].size, 4);
-        assert_eq!(loaded[1].color, HighlightColor::Cyan);
+        assert_eq!(loaded[1].color, BookmarkColor::Cyan);
         assert_eq!(loaded[1].comment, "Checksum");
     }
 
     #[test]
-    fn test_highlight_file_disk_io() {
+    fn test_bookmark_file_disk_io() {
         let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_xvw_highlights.json");
+        let temp_path = temp_dir.join("test_xvw_bookmarks.json");
 
         let items = vec![
-            HighlightItem::new(1024, 256, HighlightColor::Yellow, "Data block"),
-            HighlightItem::new(2048, 128, HighlightColor::Purple, "Signature"),
+            BookmarkItem::new(1024, 256, BookmarkColor::Yellow, "Data block"),
+            BookmarkItem::new(2048, 128, BookmarkColor::Purple, "Signature"),
         ];
 
-        HighlightFile::save_to_path(&temp_path, &items, Some(Path::new("firmware.bin"))).unwrap();
+        BookmarkFile::save_to_path(&temp_path, &items, Some(Path::new("firmware.bin"))).unwrap();
         assert!(temp_path.exists());
 
-        let loaded = HighlightFile::load_from_path(&temp_path).unwrap();
+        let loaded = BookmarkFile::load_from_path(&temp_path).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].offset, 1024);
         assert_eq!(loaded[0].size, 256);
-        assert_eq!(loaded[0].color, HighlightColor::Yellow);
+        assert_eq!(loaded[0].color, BookmarkColor::Yellow);
         assert_eq!(loaded[0].comment, "Data block");
         assert_eq!(loaded[1].offset, 2048);
         assert_eq!(loaded[1].size, 128);
-        assert_eq!(loaded[1].color, HighlightColor::Purple);
+        assert_eq!(loaded[1].color, BookmarkColor::Purple);
         assert_eq!(loaded[1].comment, "Signature");
 
         let _ = std::fs::remove_file(temp_path);
     }
 
     #[test]
-    fn test_highlight_item_formatting() {
-        let item = HighlightItem::new(0x1234, 16, HighlightColor::Green, "Test");
+    fn test_bookmark_item_formatting() {
+        let item = BookmarkItem::new(0x1234, 16, BookmarkColor::Green, "Test");
         assert_eq!(item.format_offset(), "0x00001234");
         assert_eq!(item.format_size(), "16 bytes");
 
-        let single = HighlightItem::new(0, 1, HighlightColor::Blue, "");
+        let single = BookmarkItem::new(0, 1, BookmarkColor::Blue, "");
         assert_eq!(single.format_size(), "1 byte");
 
-        let kb = HighlightItem::new(0, 2048, HighlightColor::Orange, "");
+        let kb = BookmarkItem::new(0, 2048, BookmarkColor::Orange, "");
         assert_eq!(kb.format_size(), "2.0 KB");
     }
 }

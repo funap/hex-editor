@@ -2456,6 +2456,35 @@ mod tests {
     }
 
     #[test]
+    fn test_set_selection_range() {
+        let mut editor = create_editor_with_content(b"0123456789");
+
+        // Multi-byte range selection
+        editor.set_selection_range(2..6);
+        assert!(editor.has_selection());
+        assert_eq!(editor.selection_range(), Some(2..6));
+        assert_eq!(editor.cursor_offset, 2);
+
+        // 1-byte range selection
+        editor.set_selection_range(5..6);
+        assert!(editor.has_selection());
+        assert_eq!(editor.selection_range(), Some(5..6));
+        assert_eq!(editor.cursor_offset, 5);
+
+        // Empty range
+        editor.set_selection_range(3..3);
+        assert!(!editor.has_selection());
+        assert_eq!(editor.selection_range(), None);
+        assert_eq!(editor.cursor_offset, 3);
+
+        // Out-of-bounds clamping
+        editor.set_selection_range(8..20);
+        assert!(editor.has_selection());
+        assert_eq!(editor.selection_range(), Some(8..10));
+        assert_eq!(editor.cursor_offset, 8);
+    }
+
+    #[test]
     fn test_search_navigation() {
         let mut editor = create_editor_with_content(b"test match test");
         editor.search_state.results = vec![0, 11];

@@ -288,9 +288,10 @@ impl BookmarkPanel {
     fn navigate_to_bookmark(&mut self, offset: usize, size: usize, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.set_cursor_offset(offset);
-                if size > 1 {
+                if size > 0 {
                     editor.set_selection_range(offset..offset.saturating_add(size));
+                } else {
+                    editor.set_cursor_offset(offset);
                 }
                 cx.notify();
             });

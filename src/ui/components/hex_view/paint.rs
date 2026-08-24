@@ -323,9 +323,9 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         let theme = cx.theme();
         (
             if params.is_focused {
-                theme.selection.opacity(0.45)
+                theme.selection.opacity(0.70)
             } else {
-                theme.selection.opacity(0.2)
+                theme.selection.opacity(0.45)
             },
             theme.caret,
             theme.muted_foreground,

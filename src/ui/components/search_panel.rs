@@ -246,7 +246,11 @@ impl SearchPanel {
 
             if let Some(ed) = &self.editor {
                 ed.update(cx, |editor, cx| {
-                    editor.set_cursor_offset(offset);
+                    if len > 0 {
+                        editor.set_selection_range(offset..offset.saturating_add(len));
+                    } else {
+                        editor.set_cursor_offset(offset);
+                    }
                     if let Some(cur_idx) = editor.search_state.current_result_index.as_mut() {
                         *cur_idx = index;
                     }

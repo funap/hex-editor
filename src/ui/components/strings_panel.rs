@@ -421,7 +421,11 @@ impl StringsPanel {
             let len = item.byte_len;
             if let Some(ed) = &self.editor {
                 ed.update(cx, |editor, cx| {
-                    editor.set_cursor_offset(offset);
+                    if len > 0 {
+                        editor.set_selection_range(offset..offset.saturating_add(len));
+                    } else {
+                        editor.set_cursor_offset(offset);
+                    }
                     cx.notify();
                 });
             }

@@ -454,6 +454,10 @@ fn setup_keybindings(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-d", crate::actions::SplitDown, None),
         #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-j", crate::actions::JoinLine, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-j", crate::actions::JoinLine, None),
+        #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-shift-backspace", crate::actions::ClearAllCustomBreaks, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-backspace", crate::actions::ClearAllCustomBreaks, None),

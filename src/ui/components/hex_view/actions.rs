@@ -1,5 +1,5 @@
 use super::types::CONTEXT;
-use crate::actions::{ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, Paste, Redo, SearchNext, SearchPrev, ToggleSearch, Undo};
+use crate::actions::{AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, JoinLine, Paste, Redo, SearchNext, SearchPrev, ToggleSearch, Undo};
 use gpui::*;
 
 actions!(
@@ -115,7 +115,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        // Custom breaks & layout are available from the menu and context menu.
+        // Custom line breaks & joins
+        KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-j", JoinLine, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-j", JoinLine, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]

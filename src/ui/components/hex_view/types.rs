@@ -14,6 +14,7 @@ pub const COMMENT_WIDTH: f32 = 300.0;
 pub const VERTICAL_SCROLLBAR_WIDTH: f32 = 12.0;
 pub const HORIZONTAL_SCROLLBAR_HEIGHT: f32 = 12.0;
 pub const ASCII_CELL_WIDTH: f32 = 10.0;
+pub const ASCII_EXTRA_WIDTH: f32 = ASCII_CELL_WIDTH * 0.5;
 pub const CURSOR_BORDER_WIDTH: f32 = 1.0;
 pub const CURSOR_PADDING_X: f32 = 0.0;
 pub const CURSOR_PADDING_Y: f32 = 0.0;

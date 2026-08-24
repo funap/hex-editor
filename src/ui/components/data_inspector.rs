@@ -1,4 +1,5 @@
 use crate::core::editor::Editor;
+use crate::core::encoding::Encoding;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
@@ -309,6 +310,24 @@ impl Render for DataInspector {
             }
         }
 
+        let (current_encoding, current_enc_val) = if let Some(ed) = &self.editor {
+            let ed = ed.read(cx);
+            let enc = ed.encoding;
+            if !matches!(enc, Encoding::Ascii | Encoding::Utf8 | Encoding::Utf16Le | Encoding::Utf16Be) {
+                let mut val = ".".to_string();
+                if !bytes_at_cursor.is_empty()
+                    && let Some((c, _)) = enc.decode_char_at(&bytes_at_cursor, 0)
+                {
+                    val = format!("'{}'", c);
+                }
+                (Some(enc.label()), Some(val))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
         let is_focused = self.focus_handle.is_focused(window);
 
         let endian_controls = h_flex()
@@ -408,7 +427,10 @@ impl Render for DataInspector {
                     .child(self.render_section_header("TEXT", theme))
                     .child(self.render_row("ASCII", ascii_val, &view, window, theme))
                     .child(self.render_row("UTF-8", utf8_val, &view, window, theme))
-                    .child(self.render_row("UTF-16", utf16_val, &view, window, theme)),
+                    .child(self.render_row("UTF-16", utf16_val, &view, window, theme))
+                    .when_some(current_encoding.zip(current_enc_val), |parent, (enc_label, enc_val)| {
+                        parent.child(self.render_row(enc_label, enc_val, &view, window, theme))
+                    }),
             )
     }
 }

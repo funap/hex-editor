@@ -212,12 +212,19 @@ fn setup_menus(cx: &mut App) {
                 }),
                 gpui::MenuItem::submenu(gpui::Menu {
                     name: "Encoding".into(),
-                    items: vec![
-                        gpui::MenuItem::action("ASCII", crate::actions::SetEncodingAscii),
-                        gpui::MenuItem::action("UTF-8", crate::actions::SetEncodingUtf8),
-                        gpui::MenuItem::action("UTF-16 LE", crate::actions::SetEncodingUtf16Le),
-                        gpui::MenuItem::action("UTF-16 BE", crate::actions::SetEncodingUtf16Be),
-                    ],
+                    items: crate::core::encoding::Encoding::categories()
+                        .iter()
+                        .map(|(category, encodings)| {
+                            gpui::MenuItem::submenu(gpui::Menu {
+                                name: category.label().into(),
+                                items: encodings
+                                    .iter()
+                                    .copied()
+                                    .map(|encoding| gpui::MenuItem::action(encoding.label(), crate::actions::SetEncoding { encoding }))
+                                    .collect(),
+                            })
+                        })
+                        .collect(),
                 }),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::submenu(gpui::Menu {

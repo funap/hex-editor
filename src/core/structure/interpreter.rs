@@ -910,23 +910,13 @@ impl KaitaiInterpreter {
 
     fn decode_string(&self, buf: &[u8], attr: &KsyAttr) -> String {
         if let Some(encoding_str) = &attr.encoding {
-            let enc_name = encoding_str.to_lowercase();
-            match enc_name.as_str() {
-                "ascii" | "utf-8" | "utf8" => {
-                    if let Ok(s) = std::str::from_utf8(buf) {
-                        return s.to_string();
-                    }
-                }
-                _ => {}
-            }
+            let enc = crate::core::encoding::Encoding::from_name(encoding_str).unwrap_or(crate::core::encoding::Encoding::Utf8);
 
-            let enc = match enc_name.as_str() {
-                "ascii" => crate::core::encoding::Encoding::Ascii,
-                "utf-8" | "utf8" => crate::core::encoding::Encoding::Utf8,
-                "utf-16le" | "utf16le" | "utf_16le" | "ucs-2le" | "ucs2le" => crate::core::encoding::Encoding::Utf16Le,
-                "utf-16be" | "utf16be" | "utf_16be" | "ucs-2be" | "ucs2be" => crate::core::encoding::Encoding::Utf16Be,
-                _ => crate::core::encoding::Encoding::Utf8,
-            };
+            if (enc == crate::core::encoding::Encoding::Utf8 || enc == crate::core::encoding::Encoding::Ascii)
+                && let Ok(s) = std::str::from_utf8(buf)
+            {
+                return s.to_string();
+            }
 
             let mut result = String::with_capacity(buf.len());
             let mut offset = 0;

@@ -16,11 +16,42 @@ pub fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize
     let row_end = row_offset + row_len;
     let mut local_offset = 0;
 
+    if encoding.is_multibyte() && row_offset > 0 {
+        let max_back = 64.min(row_offset);
+        let window_start = row_offset - max_back;
+        let mut sync_start = window_start;
+
+        // Look for an unambiguous ASCII synchronization point (< 0x40) in the back window
+        for pos in (window_start..row_offset).rev() {
+            if buffer[pos] < 0x40 {
+                sync_start = pos;
+                break;
+            }
+        }
+
+        // Scan forward from sync_start to row_offset to find exact character boundaries
+        let mut scan_pos = sync_start;
+        while scan_pos < row_offset {
+            if let Some((_, len)) = encoding.decode_char_at(buffer, scan_pos) {
+                let next_pos = scan_pos + len.max(1);
+                if next_pos > row_offset {
+                    // This character crosses the row_offset boundary.
+                    let skip = next_pos - row_offset;
+                    local_offset = skip.min(row_len);
+                    break;
+                }
+                scan_pos = next_pos;
+            } else {
+                scan_pos += 1;
+            }
+        }
+    }
+
     while local_offset < row_len {
         let absolute_offset = row_offset + local_offset;
         if let Some((character, byte_len)) = encoding.decode_char_at(buffer, absolute_offset) {
             let byte_len = byte_len.max(1);
-            let display_offset = if encoding == Encoding::Utf8 && absolute_offset.saturating_add(byte_len) > row_end {
+            let display_offset = if encoding.is_multibyte() && absolute_offset.saturating_add(byte_len) > row_end {
                 row_len - 1
             } else {
                 local_offset

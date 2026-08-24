@@ -154,7 +154,6 @@ impl Render for SettingsPanel {
                     )
                     .child({
                         let default_encoding = *cx.global::<Encoding>();
-                        let encoding_options = [Encoding::Ascii, Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be];
 
                         div().flex().items_center().gap_4().child(div().w_32().child("Default Encoding")).child(
                             div().w_48().child(
@@ -163,18 +162,20 @@ impl Render for SettingsPanel {
                                     .outline()
                                     .dropdown_caret(true)
                                     .with_size(Size::Small)
-                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-                                        encoding_options.iter().copied().fold(menu, |menu, encoding| {
-                                            menu.item(
-                                                PopupMenuItem::new(encoding.label())
-                                                    .checked(encoding == default_encoding)
-                                                    .on_click(move |_, _, cx| {
-                                                        cx.update_global::<Encoding, _>(|current, _| {
-                                                            *current = encoding;
-                                                        });
-                                                        crate::settings::save_current(cx);
-                                                    }),
-                                            )
+                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, window, cx| {
+                                        Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
+                                            menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
+                                                encs.iter().copied().fold(menu, |menu, encoding| {
+                                                    menu.item(PopupMenuItem::new(encoding.label()).checked(encoding == default_encoding).on_click(
+                                                        move |_, _, cx| {
+                                                            cx.update_global::<Encoding, _>(|current, _| {
+                                                                *current = encoding;
+                                                            });
+                                                            crate::settings::save_current(cx);
+                                                        },
+                                                    ))
+                                                })
+                                            })
                                         })
                                     }),
                             ),

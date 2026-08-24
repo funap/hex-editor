@@ -756,24 +756,40 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         }
                     }
 
-                    // 2. Cursor Border Pass for ASCII Groups
-                    for group in hex_source.groups.iter() {
-                        let item_start_offset = offset + group.chunk_start;
-                        let item_end_offset = offset + group.chunk_end;
-                        let is_cursor = params.cursor_offset >= item_start_offset && params.cursor_offset < item_end_offset;
+                    // 2. Cursor Border Pass for ASCII Column / Groups
+                    if params.active_column == EditColumn::Ascii {
+                        let char_range = params.encoding.char_range_at(params.doc.buffer.data(), params.cursor_offset);
+                        if char_range.start < next_offset && char_range.end > offset && !params.insert_mode {
+                            let cell_start = char_range.start.saturating_sub(offset);
+                            let cell_end = (char_range.end.saturating_sub(offset)).min(chunk.len());
+                            if cell_end > cell_start {
+                                let cursor_border_color = if params.is_focused {
+                                    caret_color
+                                } else {
+                                    darken_cursor_color(muted_color).opacity(0.8)
+                                };
+                                let char_start_x = ascii_content_start_x + px(cell_start as f32 * ASCII_CELL_WIDTH);
+                                let char_width = px((cell_end - cell_start) as f32 * ASCII_CELL_WIDTH);
+                                let ascii_char_bounds = Bounds::new(point(char_start_x, params.bounds.top() + px(1.0)), size(char_width, px(ROW_HEIGHT - 2.0)));
+                                paint_cursor_border(window, ascii_char_bounds, cursor_border_color);
+                            }
+                        }
+                    } else {
+                        for group in hex_source.groups.iter() {
+                            let item_start_offset = offset + group.chunk_start;
+                            let item_end_offset = offset + group.chunk_end;
+                            let is_cursor = params.cursor_offset >= item_start_offset && params.cursor_offset < item_end_offset;
 
-                        if is_cursor && !params.insert_mode {
-                            let cursor_border_color = if params.is_focused {
-                                caret_color
-                            } else {
-                                darken_cursor_color(muted_color).opacity(0.8)
-                            };
-                            let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
-                            let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
-                            let ascii_group_bounds = Bounds::new(point(group_start_x, params.bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
-                            if params.active_column == EditColumn::Ascii {
-                                paint_cursor_border(window, ascii_group_bounds, cursor_border_color);
-                            } else {
+                            if is_cursor && !params.insert_mode {
+                                let cursor_border_color = if params.is_focused {
+                                    caret_color
+                                } else {
+                                    darken_cursor_color(muted_color).opacity(0.8)
+                                };
+                                let group_start_x = ascii_content_start_x + px(group.chunk_start as f32 * ASCII_CELL_WIDTH);
+                                let group_width = px((group.chunk_end - group.chunk_start) as f32 * ASCII_CELL_WIDTH);
+                                let ascii_group_bounds =
+                                    Bounds::new(point(group_start_x, params.bounds.top() + px(1.0)), size(group_width, px(ROW_HEIGHT - 2.0)));
                                 paint_underscore_cursor_at(window, ascii_group_bounds, group_start_x, group_width, cursor_border_color);
                             }
                         }

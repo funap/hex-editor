@@ -2,6 +2,7 @@ use crate::actions::*;
 use crate::app_state::InsertModeState;
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
+use crate::core::encoding::Encoding;
 use crate::ui::icon::IconName;
 use crate::ui::style::{decode_uint_value, format_binary_repr, format_size_friendly, format_text_repr};
 use gpui::prelude::*;
@@ -151,12 +152,7 @@ impl Render for StatusBar {
 
         let encoding_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            Some(match editor.encoding {
-                crate::core::encoding::Encoding::Ascii => "ASCII",
-                crate::core::encoding::Encoding::Utf8 => "UTF-8",
-                crate::core::encoding::Encoding::Utf16Le => "UTF-16 LE",
-                crate::core::encoding::Encoding::Utf16Be => "UTF-16 BE",
-            })
+            Some(editor.encoding.label())
         } else {
             None
         };
@@ -191,11 +187,14 @@ impl Render for StatusBar {
                         menu.menu("Little Endian", Box::new(SetByteOrderLittleEndian))
                             .menu("Big Endian", Box::new(SetByteOrderBigEndian))
                     })
-                    .submenu("Encoding", window, cx, move |menu, _window, _cx| {
-                        menu.menu("ASCII", Box::new(SetEncodingAscii))
-                            .menu("UTF-8", Box::new(SetEncodingUtf8))
-                            .menu("UTF-16 LE", Box::new(SetEncodingUtf16Le))
-                            .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
+                    .submenu("Encoding", window, cx, move |menu, window, cx| {
+                        Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
+                            menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
+                                encs.iter()
+                                    .copied()
+                                    .fold(menu, |menu, encoding| menu.menu(encoding.label(), Box::new(SetEncoding { encoding })))
+                            })
+                        })
                     })
                     .separator()
                     .menu_with_icon("Toggle Left Panel", IconName::PanelLeft, Box::new(ToggleLeftPanel))
@@ -361,11 +360,14 @@ impl Render for StatusBar {
                                 .ghost()
                                 .with_size(Size::XSmall)
                                 .tooltip("Click to change Text Encoding")
-                                .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, _window, _cx| {
-                                    menu.menu("ASCII", Box::new(SetEncodingAscii))
-                                        .menu("UTF-8", Box::new(SetEncodingUtf8))
-                                        .menu("UTF-16 LE", Box::new(SetEncodingUtf16Le))
-                                        .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
+                                .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
+                                    Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
+                                        menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
+                                            encs.iter()
+                                                .copied()
+                                                .fold(menu, |menu, encoding| menu.menu(encoding.label(), Box::new(SetEncoding { encoding })))
+                                        })
+                                    })
                                 }),
                         )
                     }),

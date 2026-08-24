@@ -7446,6 +7446,7 @@ dependencies = [
  "autocorrect",
  "bstr",
  "dirs 6.0.0",
+ "encoding_rs",
  "flate2",
  "gpui",
  "gpui-component",

@@ -19,9 +19,8 @@ use crate::actions::{
     ClearAllCustomBreaks, ClearBookmark, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump,
     CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportBookmarks, ImportBookmarks, JoinLine,
     LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll as AppSelectAll,
-    SetByteOrderBigEndian, SetByteOrderLittleEndian, SetEncodingAscii, SetEncodingUtf8, SetEncodingUtf16Be, SetEncodingUtf16Le, SetGroupSize1, SetGroupSize2,
-    SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec, SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder,
-    ToggleInlineStructureView, ToggleSearch, Undo,
+    SetByteOrderBigEndian, SetByteOrderLittleEndian, SetEncoding, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec,
+    SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView, ToggleSearch, Undo,
 };
 use crate::app_state::InsertModeState;
 use crate::core::clipboard::parse_paste_bytes;
@@ -579,7 +578,7 @@ impl HexView {
     }
 
     fn default_ascii_col_width(max_bytes_per_row: usize) -> f32 {
-        max_bytes_per_row.max(1) as f32 * ASCII_CELL_WIDTH
+        max_bytes_per_row.max(1) as f32 * ASCII_CELL_WIDTH + ASCII_EXTRA_WIDTH
     }
 
     fn effective_ascii_col_width(&self, max_bytes_per_row: usize) -> f32 {
@@ -1418,7 +1417,7 @@ impl HexView {
 
     fn vi_move_left(&mut self, _: &ViMoveLeft, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_handle_vi_action(cx) {
-            self.exec_move(window, cx, |editor| editor.move_left());
+            self.handle_move_left(window, cx);
         } else {
             cx.propagate();
         }
@@ -1426,14 +1425,7 @@ impl HexView {
 
     fn vi_move_right(&mut self, _: &ViMoveRight, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_handle_vi_action(cx) {
-            let insert_mode = InsertModeState::is_enabled(cx);
-            self.exec_move(window, cx, move |editor| {
-                if insert_mode {
-                    editor.move_right_for_insert();
-                } else {
-                    editor.move_right();
-                }
-            });
+            self.handle_move_right(window, cx);
         } else {
             cx.propagate();
         }
@@ -1464,14 +1456,7 @@ impl HexView {
 
     fn vi_select_left(&mut self, _: &ViSelectLeft, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_handle_vi_action(cx) {
-            let insert_mode = InsertModeState::is_enabled(cx);
-            self.exec_select(window, cx, move |editor| {
-                if insert_mode {
-                    editor.select_left_for_insert();
-                } else {
-                    editor.select_left();
-                }
-            });
+            self.handle_select_left(window, cx);
         } else {
             cx.propagate();
         }
@@ -1479,14 +1464,7 @@ impl HexView {
 
     fn vi_select_right(&mut self, _: &ViSelectRight, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_handle_vi_action(cx) {
-            let insert_mode = InsertModeState::is_enabled(cx);
-            self.exec_select(window, cx, move |editor| {
-                if insert_mode {
-                    editor.select_right_for_insert();
-                } else {
-                    editor.select_right();
-                }
-            });
+            self.handle_select_right(window, cx);
         } else {
             cx.propagate();
         }
@@ -1550,19 +1528,184 @@ impl HexView {
         cx.emit(HexViewEvent::SelectionChanged { start, end });
     }
 
+    fn handle_move_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_column == EditColumn::Ascii {
+            let encoding = self.encoding;
+            let insert_mode = InsertModeState::is_enabled(cx);
+            let action = {
+                let editor = self.editor.read(cx);
+                if let Ok(doc) = editor.document.read() {
+                    let buf = doc.buffer.data();
+                    let current = editor.cursor_offset;
+                    let target = encoding.prev_char_boundary(buf, current);
+                    let char_range = encoding.char_range_at(buf, target);
+                    Some((target, char_range))
+                } else {
+                    None
+                }
+            };
+            self.exec_move(window, cx, |editor| {
+                if let Some((target, char_range)) = action {
+                    if insert_mode {
+                        editor.set_cursor_offset_exact(target);
+                    } else if char_range.end > char_range.start {
+                        editor.set_selection_range(char_range);
+                    } else {
+                        editor.set_cursor_offset_exact(target);
+                    }
+                } else {
+                    editor.move_left();
+                }
+            });
+        } else {
+            self.exec_move(window, cx, |e| e.move_left());
+        }
+    }
+
+    fn handle_move_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_column == EditColumn::Ascii {
+            let encoding = self.encoding;
+            let insert_mode = InsertModeState::is_enabled(cx);
+            let action = {
+                let editor = self.editor.read(cx);
+                if let Ok(doc) = editor.document.read() {
+                    let buf = doc.buffer.data();
+                    let current = editor.cursor_offset;
+                    let target = encoding.next_char_boundary(buf, current);
+                    let char_range = encoding.char_range_at(buf, target);
+                    let buf_len = buf.len();
+                    Some((target, char_range, buf_len))
+                } else {
+                    None
+                }
+            };
+            self.exec_move(window, cx, |editor| {
+                if let Some((target, char_range, buf_len)) = action {
+                    if target < buf_len {
+                        if insert_mode {
+                            editor.set_cursor_offset_exact(target);
+                        } else if char_range.end > char_range.start {
+                            editor.set_selection_range(char_range);
+                        } else {
+                            editor.set_cursor_offset_exact(target);
+                        }
+                    } else if insert_mode {
+                        editor.set_cursor_offset_exact(buf_len);
+                    }
+                } else if insert_mode {
+                    editor.move_right_for_insert();
+                } else {
+                    editor.move_right();
+                }
+            });
+        } else {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_move(window, cx, move |editor| {
+                if insert_mode {
+                    editor.move_right_for_insert();
+                } else {
+                    editor.move_right();
+                }
+            });
+        }
+    }
+
+    fn handle_select_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_column == EditColumn::Ascii {
+            let encoding = self.encoding;
+            let insert_mode = InsertModeState::is_enabled(cx);
+            let drag_params = {
+                let editor = self.editor.read(cx);
+                if let Ok(doc) = editor.document.read() {
+                    let buf = doc.buffer.data();
+                    let anchor = if editor.has_selection() {
+                        editor.selection().anchor()
+                    } else {
+                        editor.cursor_offset
+                    };
+                    let active = if editor.has_selection() {
+                        editor.selection().active()
+                    } else {
+                        editor.cursor_offset
+                    };
+                    let target = encoding.prev_char_boundary(buf, active);
+                    Some((anchor, target))
+                } else {
+                    None
+                }
+            };
+            self.exec_select(window, cx, move |editor| {
+                if let Some((anchor, target)) = drag_params {
+                    editor.continue_drag(anchor, target);
+                } else if insert_mode {
+                    editor.select_left_for_insert();
+                } else {
+                    editor.select_left();
+                }
+            });
+        } else {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_left_for_insert();
+                } else {
+                    editor.select_left();
+                }
+            });
+        }
+    }
+
+    fn handle_select_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_column == EditColumn::Ascii {
+            let encoding = self.encoding;
+            let insert_mode = InsertModeState::is_enabled(cx);
+            let drag_params = {
+                let editor = self.editor.read(cx);
+                if let Ok(doc) = editor.document.read() {
+                    let buf = doc.buffer.data();
+                    let anchor = if editor.has_selection() {
+                        editor.selection().anchor()
+                    } else {
+                        editor.cursor_offset
+                    };
+                    let active = if editor.has_selection() {
+                        editor.selection().active()
+                    } else {
+                        editor.cursor_offset
+                    };
+                    let target = encoding.next_char_boundary(buf, active);
+                    Some((anchor, target))
+                } else {
+                    None
+                }
+            };
+            self.exec_select(window, cx, move |editor| {
+                if let Some((anchor, target)) = drag_params {
+                    editor.continue_drag(anchor, target);
+                } else if insert_mode {
+                    editor.select_right_for_insert();
+                } else {
+                    editor.select_right();
+                }
+            });
+        } else {
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_select(window, cx, move |editor| {
+                if insert_mode {
+                    editor.select_right_for_insert();
+                } else {
+                    editor.select_right();
+                }
+            });
+        }
+    }
+
     fn move_left(&mut self, _: &MoveLeft, window: &mut Window, cx: &mut Context<Self>) {
-        self.exec_move(window, cx, |e| e.move_left());
+        self.handle_move_left(window, cx);
     }
 
     fn move_right(&mut self, _: &MoveRight, window: &mut Window, cx: &mut Context<Self>) {
-        let insert_mode = InsertModeState::is_enabled(cx);
-        self.exec_move(window, cx, move |editor| {
-            if insert_mode {
-                editor.move_right_for_insert();
-            } else {
-                editor.move_right();
-            }
-        });
+        self.handle_move_right(window, cx);
     }
 
     fn move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -1581,25 +1724,11 @@ impl HexView {
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
-        let insert_mode = InsertModeState::is_enabled(cx);
-        self.exec_select(window, cx, move |editor| {
-            if insert_mode {
-                editor.select_left_for_insert();
-            } else {
-                editor.select_left();
-            }
-        });
+        self.handle_select_left(window, cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
-        let insert_mode = InsertModeState::is_enabled(cx);
-        self.exec_select(window, cx, move |editor| {
-            if insert_mode {
-                editor.select_right_for_insert();
-            } else {
-                editor.select_right();
-            }
-        });
+        self.handle_select_right(window, cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -2150,12 +2279,19 @@ impl HexView {
         {
             let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
             if raw_idx < chunk_len {
-                return Some(EditTarget::Ascii { offset: line_offset + raw_idx });
+                let abs_offset = line_offset + raw_idx;
+                let char_range = self.encoding.char_range_at(doc.buffer.data(), abs_offset);
+                return Some(EditTarget::Ascii { offset: char_range.start });
             }
             if insert_mode && raw_idx >= chunk_len {
                 return Some(EditTarget::Ascii {
                     offset: line_offset + chunk_len,
                 });
+            }
+            if !insert_mode && chunk_len > 0 && raw_idx >= chunk_len {
+                let abs_offset = line_offset + chunk_len - 1;
+                let char_range = self.encoding.char_range_at(doc.buffer.data(), abs_offset);
+                return Some(EditTarget::Ascii { offset: char_range.start });
             }
             return None;
         }
@@ -2287,10 +2423,10 @@ impl HexView {
             if insert_mode && row_idx + 1 == line_starts.len() && raw_idx >= chunk_len {
                 return Some(buffer_len);
             }
-            let group_bytes = self.group_size.byte_count();
+            let raw_idx = raw_idx.min(chunk_len.saturating_sub(1));
             let abs_offset = line_offset + raw_idx;
-            let group_start_abs = (abs_offset / group_bytes) * group_bytes;
-            group_start_abs.saturating_sub(line_offset)
+            let char_range = self.encoding.char_range_at(doc.buffer.data(), abs_offset);
+            char_range.start.saturating_sub(line_offset)
         } else {
             let source = build_hex_text_source(
                 doc.buffer.get_range(line_offset, chunk_len),
@@ -2821,12 +2957,7 @@ impl Render for HexView {
                                 ))
                                 .into_any_element()
                         } else if self.show_ascii {
-                            let label = match self.encoding {
-                                Encoding::Ascii => "ASCII",
-                                Encoding::Utf8 => "UTF-8",
-                                Encoding::Utf16Le => "UTF-16 LE",
-                                Encoding::Utf16Be => "UTF-16 BE",
-                            };
+                            let label = self.encoding.label();
                             h_flex()
                                 .child(
                                     h_flex()
@@ -3064,11 +3195,38 @@ impl Render for HexView {
                             let editor = this.editor.read(cx);
                             editor.selection().anchor()
                         };
-                        this.mouse_selection_anchor = if event.modifiers.shift { Some(selection_anchor) } else { Some(target_pos) };
+                        let is_ascii = matches!(edit_target, EditTarget::Ascii { .. });
+                        let (char_start, char_end) = if is_ascii {
+                            let editor = this.editor.read(cx);
+                            if let Ok(doc) = editor.document.read() {
+                                let range = this.encoding.char_range_at(doc.buffer.data(), target_pos);
+                                (range.start, range.end)
+                            } else {
+                                (target_pos, target_pos.saturating_add(1))
+                            }
+                        } else {
+                            (target_pos, target_pos.saturating_add(1))
+                        };
+
+                        this.mouse_selection_anchor = if event.modifiers.shift {
+                            Some(selection_anchor)
+                        } else if is_ascii {
+                            Some(char_start)
+                        } else {
+                            Some(target_pos)
+                        };
                         this.is_selecting = true;
+                        let insert_mode = InsertModeState::is_enabled(cx);
                         this.editor.update(cx, |editor, cx| {
                             if event.modifiers.shift {
-                                editor.continue_drag(selection_anchor, target_pos);
+                                let drag_target = if is_ascii {
+                                    if target_pos >= selection_anchor { char_end } else { char_start }
+                                } else {
+                                    target_pos
+                                };
+                                editor.continue_drag(selection_anchor, drag_target);
+                            } else if is_ascii && char_end > char_start && !insert_mode {
+                                editor.set_selection_range(char_start..char_end);
                             } else {
                                 editor.set_cursor_offset_exact(target_pos);
                             }
@@ -3109,12 +3267,29 @@ impl Render for HexView {
                         };
                         this.pending_hex_digit = None;
                         let target_pos = edit_target.offset();
+                        let is_ascii = matches!(edit_target, EditTarget::Ascii { .. });
+                        let (char_start, char_end) = if is_ascii {
+                            let editor = this.editor.read(cx);
+                            if let Ok(doc) = editor.document.read() {
+                                let range = this.encoding.char_range_at(doc.buffer.data(), target_pos);
+                                (range.start, range.end)
+                            } else {
+                                (target_pos, target_pos.saturating_add(1))
+                            }
+                        } else {
+                            (target_pos, target_pos.saturating_add(1))
+                        };
+                        let insert_mode = InsertModeState::is_enabled(cx);
                         this.editor.update(cx, |editor, cx| {
                             let in_selection = editor
                                 .selection_range()
                                 .is_some_and(|range| target_pos >= range.start && target_pos < range.end);
                             if !in_selection {
-                                editor.set_cursor_offset_exact(target_pos);
+                                if is_ascii && !insert_mode && char_end > char_start {
+                                    editor.set_selection_range(char_start..char_end);
+                                } else {
+                                    editor.set_cursor_offset_exact(target_pos);
+                                }
                                 cx.notify();
                             }
                         });
@@ -3190,11 +3365,25 @@ impl Render for HexView {
 
                     if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
                         let mouse_selection_anchor = this.mouse_selection_anchor;
+                        let is_ascii = this.active_column == EditColumn::Ascii;
+                        let insert_mode = InsertModeState::is_enabled(cx);
+                        let target_drag_pos = if is_ascii && !insert_mode {
+                            let editor = this.editor.read(cx);
+                            if let Ok(doc) = editor.document.read() {
+                                let char_range = this.encoding.char_range_at(doc.buffer.data(), target_pos);
+                                let anchor = mouse_selection_anchor.unwrap_or(editor.cursor_offset);
+                                if target_pos >= anchor { char_range.end } else { char_range.start }
+                            } else {
+                                target_pos
+                            }
+                        } else {
+                            target_pos
+                        };
                         this.editor.update(cx, |editor, cx| {
                             let anchor = mouse_selection_anchor.unwrap_or(editor.cursor_offset);
                             let prev_selection = editor.selection();
                             let prev_cursor = editor.cursor_offset;
-                            editor.continue_drag(anchor, target_pos);
+                            editor.continue_drag(anchor, target_drag_pos);
                             if editor.selection() != prev_selection || editor.cursor_offset != prev_cursor {
                                 cx.notify();
                             }
@@ -3407,11 +3596,14 @@ impl Render for HexView {
                             menu.menu("Little Endian", Box::new(SetByteOrderLittleEndian))
                                 .menu("Big Endian", Box::new(SetByteOrderBigEndian))
                         })
-                        .submenu("Text Encoding", window, cx, move |menu, _window, _cx| {
-                            menu.menu("ASCII", Box::new(SetEncodingAscii))
-                                .menu("UTF-8", Box::new(SetEncodingUtf8))
-                                .menu("UTF-16 LE", Box::new(SetEncodingUtf16Le))
-                                .menu("UTF-16 BE", Box::new(SetEncodingUtf16Be))
+                        .submenu("Text Encoding", window, cx, move |menu, window, cx| {
+                            Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
+                                menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
+                                    encs.iter()
+                                        .copied()
+                                        .fold(menu, |menu, encoding| menu.menu(encoding.label(), Box::new(SetEncoding { encoding })))
+                                })
+                            })
                         })
                         .separator()
                         .menu("Undo", Box::new(Undo))

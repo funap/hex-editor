@@ -923,10 +923,10 @@ impl Workspace {
         }
     }
 
-    fn on_action_set_encoding_ascii(&mut self, _: &SetEncodingAscii, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_set_encoding(&mut self, action: &SetEncoding, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
             editor.update(cx, |editor, cx| {
-                editor.set_encoding(crate::core::encoding::Encoding::Ascii);
+                editor.set_encoding(action.encoding);
                 cx.notify();
             });
         }
@@ -936,51 +936,22 @@ impl Workspace {
             });
         }
         cx.notify();
+    }
+
+    fn on_action_set_encoding_ascii(&mut self, _: &SetEncodingAscii, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_action_set_encoding(&SetEncoding { encoding: Encoding::Ascii }, window, cx);
     }
 
     fn on_action_set_encoding_utf8(&mut self, _: &SetEncodingUtf8, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, cx| {
-                editor.set_encoding(crate::core::encoding::Encoding::Utf8);
-                cx.notify();
-            });
-        }
-        if let Some(panel) = self.active_editor_panel(cx) {
-            panel.update(cx, |panel, cx| {
-                panel.focus_hex_view(&FocusHexView, window, cx);
-            });
-        }
-        cx.notify();
+        self.on_action_set_encoding(&SetEncoding { encoding: Encoding::Utf8 }, window, cx);
     }
 
     fn on_action_set_encoding_utf16le(&mut self, _: &SetEncodingUtf16Le, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, cx| {
-                editor.set_encoding(crate::core::encoding::Encoding::Utf16Le);
-                cx.notify();
-            });
-        }
-        if let Some(panel) = self.active_editor_panel(cx) {
-            panel.update(cx, |panel, cx| {
-                panel.focus_hex_view(&FocusHexView, window, cx);
-            });
-        }
-        cx.notify();
+        self.on_action_set_encoding(&SetEncoding { encoding: Encoding::Utf16Le }, window, cx);
     }
 
     fn on_action_set_encoding_utf16be(&mut self, _: &SetEncodingUtf16Be, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            editor.update(cx, |editor, cx| {
-                editor.set_encoding(crate::core::encoding::Encoding::Utf16Be);
-                cx.notify();
-            });
-        }
-        if let Some(panel) = self.active_editor_panel(cx) {
-            panel.update(cx, |panel, cx| {
-                panel.focus_hex_view(&FocusHexView, window, cx);
-            });
-        }
-        cx.notify();
+        self.on_action_set_encoding(&SetEncoding { encoding: Encoding::Utf16Be }, window, cx);
     }
 
     fn on_action_set_radix_hex(&mut self, _: &SetRadixHex, window: &mut Window, cx: &mut Context<Self>) {
@@ -2129,6 +2100,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_remove_custom_break_forward))
             .on_action(cx.listener(Self::on_action_join_line))
             .on_action(cx.listener(Self::on_action_clear_all_custom_breaks))
+            .on_action(cx.listener(Self::on_action_set_encoding))
             .on_action(cx.listener(Self::on_action_set_encoding_ascii))
             .on_action(cx.listener(Self::on_action_set_encoding_utf8))
             .on_action(cx.listener(Self::on_action_set_encoding_utf16le))

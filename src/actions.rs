@@ -120,6 +120,13 @@ pub struct GoToBeginning;
 #[derive(Clone, PartialEq, Action)]
 pub struct GoToEnd;
 
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = app)]
+#[serde(deny_unknown_fields)]
+pub struct SetEncoding {
+    pub encoding: crate::core::encoding::Encoding,
+}
+
 #[derive(Clone, PartialEq, Action)]
 pub struct SetEncodingAscii;
 

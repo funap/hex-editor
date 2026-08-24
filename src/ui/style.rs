@@ -243,6 +243,29 @@ pub fn format_text_repr(slice: &[u8], encoding: crate::core::encoding::Encoding)
                 }
             }
         }
+        _ => {
+            let mut s = String::new();
+            let mut offset = 0;
+            let mut valid = true;
+            while offset < slice.len() {
+                if let Some((c, len)) = encoding.decode_char_at(slice, offset) {
+                    s.push(c);
+                    offset += len;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid && !s.is_empty() {
+                if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
+                    if s.chars().count() == 1 { format!("'{}'", s) } else { format!("\"{}\"", s) }
+                } else {
+                    format!("non-printable {}", encoding.label())
+                }
+            } else {
+                format!("invalid {}", encoding.label())
+            }
+        }
     }
 }
 

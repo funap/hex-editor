@@ -22,6 +22,7 @@ memmap2 = "0.9.11"
 flate2 = "1.1.9"
 image = "0.25.10"
 sha2 = "0.11.0"
+encoding_rs = "0.8.35"
 
 [profile.test]
 # Keep test builds fast enough for IDE test-runner timeouts. The tests cover

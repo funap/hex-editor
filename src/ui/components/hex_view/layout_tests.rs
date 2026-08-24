@@ -139,6 +139,57 @@ fn check_character_mapping_and_auto_fit() {
     let map2 = build_ascii_char_map(Encoding::Utf8, buffer, 1, 2);
     assert_eq!(map2, vec![None, None]);
 
+    // Shift-JIS spanning row boundaries: "あい" is [0x82, 0xA0, 0x82, 0xA2]
+    let sjis_bytes = [0x82, 0xA0, 0x82, 0xA2];
+    let map_sjis_row1 = build_ascii_char_map(Encoding::ShiftJis, &sjis_bytes, 0, 1);
+    assert_eq!(map_sjis_row1, vec![Some(('あ', 2))]);
+
+    let map_sjis_row2 = build_ascii_char_map(Encoding::ShiftJis, &sjis_bytes, 1, 3);
+    assert_eq!(map_sjis_row2, vec![None, Some(('い', 2)), None]);
+
+    // Shift-JIS multi-byte character crossing 16-byte row boundary with following characters
+    let mut sjis_doc = vec![b'X'];
+    sjis_doc.extend_from_slice(&[0x82, 0xA0, 0x82, 0xA2, 0x82, 0xA4, 0x82, 0xA6, 0x82, 0xA8, 0x82, 0xAA, 0x82, 0xAC]);
+    sjis_doc.extend_from_slice(&[0x82, 0xAE]); // 'く' (offsets 15, 16)
+    sjis_doc.extend_from_slice(&[0x82, 0xB0]); // 'け' (offsets 17, 18)
+    sjis_doc.extend_from_slice(&[0x82, 0xB2]); // 'こ' (offsets 19, 20)
+
+    let row1 = build_ascii_char_map(Encoding::ShiftJis, &sjis_doc, 0, 16);
+    assert_eq!(row1[0], Some(('X', 1)));
+    assert_eq!(row1[1], Some(('あ', 2)));
+    assert_eq!(row1[15], Some(('ぐ', 2)));
+
+    let row2 = build_ascii_char_map(Encoding::ShiftJis, &sjis_doc, 16, 16);
+    assert_eq!(row2[0], None); // Continuation byte of 'ぐ' skipped without corruption
+    assert_eq!(row2[1], Some(('げ', 2))); // 'げ' decoded cleanly
+    assert_eq!(row2[3], Some(('ご', 2))); // 'ご' decoded cleanly
+
+    // User report regression test:
+    // 00000380: 81 41 93 c7 82 dd 8d 9e 82 de 83 41 83 76 83 8a (|、読み込むアプリ|)
+    // 00000390: 82 cc 95 b6 8e 9a 83 52 81 5b 83 68 82 aa 83 59 (|の文字コードがズ|)
+    let mut sample_bytes = vec![0u8; 0x380];
+    sample_bytes.extend_from_slice(&[0x81, 0x41, 0x93, 0xc7, 0x82, 0xdd, 0x8d, 0x9e, 0x82, 0xde, 0x83, 0x41, 0x83, 0x76, 0x83, 0x8a]);
+    sample_bytes.extend_from_slice(&[0x82, 0xcc, 0x95, 0xb6, 0x8e, 0x9a, 0x83, 0x52, 0x81, 0x5b, 0x83, 0x68, 0x82, 0xaa, 0x83, 0x59]);
+
+    let row_380 = build_ascii_char_map(Encoding::ShiftJis, &sample_bytes, 0x380, 16);
+    assert_eq!(row_380[0], Some(('、', 2)));
+    assert_eq!(row_380[14], Some(('リ', 2)));
+
+    let row_390 = build_ascii_char_map(Encoding::ShiftJis, &sample_bytes, 0x390, 16);
+    assert_eq!(row_390[0], Some(('の', 2))); // 82 CC correctly decoded as 'の', not blank + 'フ'
+    assert_eq!(row_390[2], Some(('文', 2)));
+    assert_eq!(row_390[4], Some(('字', 2)));
+    assert_eq!(row_390[6], Some(('コ', 2)));
+    assert_eq!(row_390[8], Some(('ー', 2)));
+    assert_eq!(row_390[10], Some(('ド', 2)));
+    assert_eq!(row_390[12], Some(('が', 2)));
+    assert_eq!(row_390[14], Some(('ズ', 2)));
+
+    // Character range selection check in multi-byte encodings
+    assert_eq!(Encoding::ShiftJis.char_range_at(&sample_bytes, 0x390), 0x390..0x392);
+    assert_eq!(Encoding::ShiftJis.char_range_at(&sample_bytes, 0x391), 0x390..0x392);
+    assert_eq!(Encoding::ShiftJis.char_range_at(&sample_bytes, 0x392), 0x392..0x394);
+
     let range = bounded_auto_fit_range(1024 * 1024, 500_000, 500_512);
     assert_eq!(range.len(), AUTO_FIT_SCAN_BYTES);
     assert!(range.start <= 500_000);

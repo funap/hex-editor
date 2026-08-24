@@ -46,10 +46,7 @@ fn find_strings_impl(data: &[u8], encoding: Encoding, min_chars: usize, max_resu
         return Vec::new();
     }
 
-    let alignment = match encoding {
-        Encoding::Utf16Le | Encoding::Utf16Be => 2,
-        Encoding::Ascii | Encoding::Utf8 => 1,
-    };
+    let alignment = encoding.alignment();
     let mut matches = Vec::new();
     let mut offset = 0;
 
@@ -119,6 +116,37 @@ mod tests {
                 offset: 1,
                 byte_len: "こんにちは".len(),
                 text: "こんにちは".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn finds_shift_jis_strings() {
+        // "こんにちは" in Shift-JIS: 0x82 0xB1, 0x82 0xF1, 0x82 0xC9, 0x82 0xBF, 0x82 0xCD
+        let mut data = vec![0x00];
+        data.extend([0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD]);
+        data.push(0x00);
+
+        assert_eq!(
+            find_strings(&data, Encoding::ShiftJis, 4),
+            vec![StringMatch {
+                offset: 1,
+                byte_len: 10,
+                text: "こんにちは".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn finds_iso8859_strings() {
+        // "café" in ISO-8859-1: b"caf\xE9"
+        let data = b"\0caf\xE9\0x";
+        assert_eq!(
+            find_strings(data, Encoding::Iso8859_1, 4),
+            vec![StringMatch {
+                offset: 1,
+                byte_len: 4,
+                text: "café".to_string(),
             }]
         );
     }

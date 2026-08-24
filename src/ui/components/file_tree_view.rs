@@ -40,6 +40,73 @@ pub enum FileTreeViewEvent {
     OpenFile(PathBuf),
 }
 
+/// Tracks recent paths for UI display, allowing re-sorting to be deferred
+/// when opening items from the recents list itself.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RecentDisplayHistory {
+    displayed_paths: Vec<PathBuf>,
+    latest_paths: Vec<PathBuf>,
+    defer_reorder: bool,
+}
+
+impl RecentDisplayHistory {
+    /// Creates an empty recent display history tracker.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the currently displayed paths in their display order.
+    pub fn displayed_paths(&self) -> &[PathBuf] {
+        &self.displayed_paths
+    }
+
+    /// Returns the latest paths in MRU order.
+    #[allow(dead_code)]
+    pub fn latest_paths(&self) -> &[PathBuf] {
+        &self.latest_paths
+    }
+
+    /// Returns true if re-sorting is currently deferred.
+    #[allow(dead_code)]
+    pub fn is_deferred(&self) -> bool {
+        self.defer_reorder
+    }
+
+    /// Sets whether re-ordering should be deferred upon updates.
+    pub fn set_deferred(&mut self, deferred: bool) {
+        self.defer_reorder = deferred;
+    }
+
+    /// Updates the history with new paths. Returns true if the displayed list changed.
+    pub fn update(&mut self, paths: &[PathBuf]) -> bool {
+        self.latest_paths = paths.to_vec();
+        if self.defer_reorder {
+            let previous_len = self.displayed_paths.len();
+            self.displayed_paths.retain(|p| paths.contains(p));
+            return self.displayed_paths.len() != previous_len;
+        }
+
+        if self.displayed_paths == paths {
+            return false;
+        }
+
+        self.displayed_paths = paths.to_vec();
+        true
+    }
+
+    /// Resets the deferred state and synchronizes displayed paths with latest paths.
+    /// Returns true if the displayed list changed.
+    pub fn sync(&mut self) -> bool {
+        self.defer_reorder = false;
+        if self.displayed_paths != self.latest_paths {
+            self.displayed_paths = self.latest_paths.clone();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     selected_item: Option<TreeItem>,
@@ -49,7 +116,7 @@ pub struct FileTreeView {
     root_path: Option<PathBuf>,
     loaded_paths: HashSet<String>,
     items: Vec<TreeItem>,
-    recent_file_paths: Vec<PathBuf>,
+    recent_history: RecentDisplayHistory,
     pub pending_compare_path: Option<String>,
 }
 
@@ -119,19 +186,23 @@ impl FileTreeView {
             root_path: None,
             loaded_paths: HashSet::new(),
             items: Vec::new(),
-            recent_file_paths: Vec::new(),
+            recent_history: RecentDisplayHistory::new(),
             pending_compare_path: None,
         }
     }
 
     /// Updates the recent binary file paths displayed in the empty state.
     pub fn set_recent_file_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        if self.recent_file_paths == paths {
-            return;
+        if self.recent_history.update(paths) {
+            cx.notify();
         }
+    }
 
-        self.recent_file_paths = paths.to_vec();
-        cx.notify();
+    /// Synchronizes the displayed recent file paths with the latest history.
+    pub fn sync_recent_file_history(&mut self, cx: &mut Context<Self>) {
+        if self.recent_history.sync() {
+            cx.notify();
+        }
     }
 
     fn load_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -240,6 +311,7 @@ impl FileTreeView {
     }
 
     pub fn close_folder(&mut self, cx: &mut gpui::Context<Self>) {
+        self.sync_recent_file_history(cx);
         self.root_path = None;
         self.loaded_paths.clear();
         self.items.clear();
@@ -407,9 +479,10 @@ impl Render for FileTreeView {
                     .into_any_element();
 
                 let mut empty_actions = v_flex().w_full().items_center().child(open_btn);
-                if !self.recent_file_paths.is_empty() {
+                if !self.recent_history.displayed_paths().is_empty() {
                     let recent_items = self
-                        .recent_file_paths
+                        .recent_history
+                        .displayed_paths()
                         .iter()
                         .enumerate()
                         .map(|(index, path)| {
@@ -434,6 +507,7 @@ impl Render for FileTreeView {
                                         .cursor_pointer()
                                         .hover(|style| style.bg(theme.muted.opacity(0.4)))
                                         .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.recent_history.set_deferred(true);
                                             this.focus_handle.focus(window);
                                             cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(open_path.clone())));
                                         }))
@@ -630,5 +704,98 @@ impl FileTreeViewState {
     #[allow(dead_code)]
     pub fn from_value(value: serde_json::Value) -> Option<Self> {
         serde_json::from_value(value).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recent_display_history_initial_state() {
+        let history = RecentDisplayHistory::new();
+        assert!(history.displayed_paths().is_empty());
+        assert!(history.latest_paths().is_empty());
+        assert!(!history.is_deferred());
+    }
+
+    #[test]
+    fn test_recent_display_history_immediate_update_when_not_deferred() {
+        let mut history = RecentDisplayHistory::new();
+        let paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
+
+        assert!(history.update(&paths));
+        assert_eq!(history.displayed_paths(), &paths);
+        assert_eq!(history.latest_paths(), &paths);
+
+        // Same paths should return false (no change)
+        assert!(!history.update(&paths));
+    }
+
+    #[test]
+    fn test_recent_display_history_deferred_reorder_preserves_display_order() {
+        let mut history = RecentDisplayHistory::new();
+        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
+        history.update(&initial_paths);
+
+        // Simulate user clicking "c.bin" from recents
+        history.set_deferred(true);
+        assert!(history.is_deferred());
+
+        // Background history moves "c.bin" to front
+        let updated_paths = vec![PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
+        assert!(!history.update(&updated_paths));
+
+        // latest_paths updated to new MRU order, but displayed_paths keeps original order
+        assert_eq!(history.latest_paths(), &updated_paths);
+        assert_eq!(history.displayed_paths(), &initial_paths);
+
+        // Simulate user clicking "b.bin" from recents
+        let updated_paths_2 = vec![PathBuf::from("b.bin"), PathBuf::from("c.bin"), PathBuf::from("a.bin")];
+        assert!(!history.update(&updated_paths_2));
+        assert_eq!(history.latest_paths(), &updated_paths_2);
+        assert_eq!(history.displayed_paths(), &initial_paths);
+    }
+
+    #[test]
+    fn test_recent_display_history_retains_on_removal_while_deferred() {
+        let mut history = RecentDisplayHistory::new();
+        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
+        history.update(&initial_paths);
+
+        history.set_deferred(true);
+
+        // Remove "b.bin" from history
+        let paths_after_remove = vec![PathBuf::from("a.bin"), PathBuf::from("c.bin")];
+        assert!(history.update(&paths_after_remove));
+
+        assert_eq!(history.latest_paths(), &paths_after_remove);
+        // "b.bin" removed, order of remaining items preserved
+        assert_eq!(history.displayed_paths(), &[PathBuf::from("a.bin"), PathBuf::from("c.bin")]);
+    }
+
+    #[test]
+    fn test_recent_display_history_sync_flushes_latest_order() {
+        let mut history = RecentDisplayHistory::new();
+        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
+        history.update(&initial_paths);
+
+        history.set_deferred(true);
+        let mru_paths = vec![PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
+        history.update(&mru_paths);
+        assert_eq!(history.displayed_paths(), &initial_paths);
+
+        // Sync when FILES panel is reopened
+        assert!(history.sync());
+        assert!(!history.is_deferred());
+        assert_eq!(history.displayed_paths(), &mru_paths);
+
+        // Second sync does nothing
+        assert!(!history.sync());
+
+        // Subsequent update when not deferred updates immediately
+        let new_paths = vec![PathBuf::from("d.bin"), PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
+        assert!(history.update(&new_paths));
+        assert_eq!(history.displayed_paths(), &new_paths);
     }
 }

@@ -506,6 +506,9 @@ impl Workspace {
         self.is_left_panel_visible = visible;
 
         if visible {
+            self.left_panel.update(cx, |panel, cx| {
+                panel.sync_file_history(cx);
+            });
             let focus_handle = self.left_panel.read(cx).focus_handle(cx);
             focus_handle.focus(window);
         } else {
@@ -637,6 +640,9 @@ impl Workspace {
                 window
                     .update(|window, cx| {
                         view.update(cx, |this, cx| {
+                            this.left_panel.update(cx, |panel, cx| {
+                                panel.sync_file_history(cx);
+                            });
                             let action = crate::actions::OpenFile {
                                 path: path.to_string_lossy().to_string(),
                             };
@@ -2176,6 +2182,9 @@ impl Render for Workspace {
             .on_drop(cx.listener(move |this, external_paths: &gpui::ExternalPaths, window, cx| {
                 for path in external_paths.paths() {
                     if path.is_file() {
+                        this.left_panel.update(cx, |panel, cx| {
+                            panel.sync_file_history(cx);
+                        });
                         let action = crate::actions::OpenFile {
                             path: path.to_string_lossy().to_string(),
                         };

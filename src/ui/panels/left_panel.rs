@@ -119,7 +119,19 @@ impl LeftPanel {
         });
     }
 
+    /// Synchronizes the recent file paths shown by the Files panel with latest history.
+    pub fn sync_file_history(&mut self, cx: &mut Context<Self>) {
+        self.file_tree.update(cx, |panel, cx| {
+            panel.sync_recent_file_history(cx);
+        });
+    }
+
     pub fn set_tab(&mut self, tab: LeftPanelTab, cx: &mut Context<Self>) {
+        if tab == LeftPanelTab::Files || self.active_tab == LeftPanelTab::Files {
+            self.file_tree.update(cx, |panel, cx| {
+                panel.sync_recent_file_history(cx);
+            });
+        }
         self.active_tab = tab;
         cx.notify();
     }

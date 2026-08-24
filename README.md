@@ -152,8 +152,8 @@ Copy selected bytes in one click into ready-to-use formats:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/xvw.git
-cd xvw
+git clone https://github.com/funap/hex-viewer.git
+cd hex-viewer
 
 # Run directly
 cargo run

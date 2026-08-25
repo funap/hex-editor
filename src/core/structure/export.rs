@@ -8,23 +8,13 @@ use super::types::{FieldValue, ParseResult, ParsedField};
 use serde::Serialize;
 use std::fmt::Write as _;
 
-/// Formats a structure-analysis snapshot as readable, indented text.
+/// Formats a structure-analysis snapshot as readable, Wireshark-like indented text.
 ///
 /// Traversal is iterative rather than recursive. A malformed or deliberately
 /// deep definition therefore cannot overflow the stack while being copied.
 pub fn format_parse_result_as_text(result: &ParseResult) -> String {
     let mut output = String::with_capacity(256);
-    let mut field_count = 0;
 
-    output.push_str("Structure Analysis\n");
-    output.push_str("==================\n");
-    let _ = writeln!(output, "Definition: {}", result.definition_id);
-    let _ = writeln!(output, "Status: {}", if result.is_live() { "in progress" } else { "complete" });
-    let _ = writeln!(output, "Parsed bytes: {}", result.total_parsed_bytes);
-    let _ = writeln!(output, "Root fields: {}", result.fields.len());
-    let _ = writeln!(output, "Errors: {}", result.errors.len());
-
-    output.push_str("\nFields\n------\n");
     let root_fields: Vec<_> = result.fields.iter().collect();
     let mut stack = Vec::with_capacity(root_fields.len());
     for field in root_fields.into_iter().rev() {
@@ -32,28 +22,22 @@ pub fn format_parse_result_as_text(result: &ParseResult) -> String {
     }
 
     while let Some((field, depth)) = stack.pop() {
-        field_count += 1;
-        let indent = "  ".repeat(depth);
-        let type_name = if field.field_type.is_empty() { "struct" } else { field.field_type.as_str() };
+        let indent = "    ".repeat(depth);
+        let is_container = field.is_struct() || !field.children.is_empty();
         let instance_marker = if field.is_instance { " [instance]" } else { "" };
-        let _ = write!(
-            output,
-            "{}- {} [{}] @ 0x{:X}..0x{:X} ({} B){}",
-            indent,
-            field.id,
-            type_name,
-            field.offset,
-            field.offset.saturating_add(field.size),
-            field.size,
-            instance_marker,
-        );
-        if !field.is_struct() {
-            let _ = write!(output, " = {}", format_field_value(field));
+
+        if is_container {
+            if !field.field_type.is_empty() && field.field_type != "struct" {
+                let _ = writeln!(output, "{}{}: {}{}", indent, field.id, field.field_type, instance_marker);
+            } else {
+                let _ = writeln!(output, "{}{}{}", indent, field.id, instance_marker);
+            }
+        } else {
+            let _ = writeln!(output, "{}{}: {}{}", indent, field.id, format_field_value(field), instance_marker);
         }
-        output.push('\n');
 
         if let Some(description) = non_empty(field.description.as_deref()) {
-            let _ = writeln!(output, "{}  Description: {}", indent, description);
+            let _ = writeln!(output, "{}    [{}]", indent, description);
         }
 
         for child in field.children.iter().rev() {
@@ -61,30 +45,28 @@ pub fn format_parse_result_as_text(result: &ParseResult) -> String {
         }
     }
 
-    if field_count == 0 {
-        output.push_str("(no fields received yet)\n");
-    }
-    let _ = writeln!(output, "\nTotal fields: {field_count}");
-
     if !result.errors.is_empty() {
-        output.push_str("\nParse errors\n------------\n");
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str("[Parse errors]\n");
         for error in &result.errors {
-            let _ = writeln!(output, "- @ 0x{:X}: {}", error.offset, error.message);
+            let _ = writeln!(output, "    [Offset 0x{:X}: {}]", error.offset, error.message);
         }
     }
 
     output
 }
 
-/// Formats a structure-analysis snapshot as a TOML document.
-///
-/// Fields are exported as a flat `[[fields]]` array. Each row carries its
-/// index path and depth, which preserves the complete hierarchy without
-/// forcing TOML serialization or deserialization to recurse through an
-/// arbitrarily deep tree.
-pub fn format_parse_result_as_toml(result: &ParseResult) -> Result<String, toml::ser::Error> {
-    let (fields, field_count) = collect_toml_fields(result);
-    let document = TomlStructureExport {
+/// Formats a structure-analysis snapshot as a YAML document.
+pub fn format_parse_result_as_yaml(result: &ParseResult) -> Result<String, serde_yaml::Error> {
+    let mut field_count = 0;
+    let mut fields = Vec::with_capacity(result.fields.len());
+    for field in result.fields.iter() {
+        fields.push(convert_field_to_yaml(field, &mut field_count));
+    }
+
+    let document = YamlStructureExport {
         format_version: 1,
         definition_id: result.definition_id.clone(),
         status: if result.is_live() { "in_progress" } else { "complete" }.to_string(),
@@ -96,49 +78,50 @@ pub fn format_parse_result_as_toml(result: &ParseResult) -> Result<String, toml:
         errors: result
             .errors
             .iter()
-            .map(|error| TomlParseError {
+            .map(|error| YamlParseError {
                 message: error.message.clone(),
                 offset: error.offset,
             })
             .collect(),
     };
 
-    toml::to_string_pretty(&document)
+    serde_yaml::to_string(&document)
 }
 
-fn collect_toml_fields(result: &ParseResult) -> (Vec<TomlField>, usize) {
-    let mut fields = Vec::with_capacity(result.fields.len().saturating_mul(2));
-    let root_fields: Vec<_> = result.fields.iter().collect();
-    let mut stack = Vec::with_capacity(root_fields.len());
-    for (index, field) in root_fields.into_iter().enumerate().rev() {
-        stack.push((field, vec![index], 0usize));
+fn convert_field_to_yaml(field: &ParsedField, field_count: &mut usize) -> YamlField {
+    *field_count += 1;
+    let mut children = Vec::with_capacity(field.children.len());
+    for child in &field.children {
+        children.push(convert_field_to_yaml(child, field_count));
     }
 
-    while let Some((field, path, depth)) = stack.pop() {
-        fields.push(TomlField {
-            path,
-            depth,
-            id: field.id.clone(),
-            field_type: field.field_type.clone(),
-            offset: field.offset,
-            size: field.size,
-            value: format_field_value(field),
-            is_struct: field.is_struct(),
-            has_children: !field.children.is_empty(),
-            is_instance: field.is_instance,
-            description: field.description.clone().filter(|value| !value.is_empty()),
-            enum_label: field.enum_label.clone(),
-        });
+    let value = if field.is_struct() && !field.children.is_empty() {
+        None
+    } else {
+        Some(format_field_value(field))
+    };
 
-        for (child_index, child) in field.children.iter().enumerate().rev() {
-            let mut child_path = fields.last().map(|exported| exported.path.clone()).unwrap_or_default();
-            child_path.push(child_index);
-            stack.push((child, child_path, depth + 1));
+    let field_type = if field.field_type.is_empty() {
+        if field.children.is_empty() {
+            "value".to_string()
+        } else {
+            "struct".to_string()
         }
-    }
+    } else {
+        field.field_type.clone()
+    };
 
-    let field_count = fields.len();
-    (fields, field_count)
+    YamlField {
+        id: field.id.clone(),
+        field_type,
+        offset: field.offset,
+        size: field.size,
+        value,
+        is_instance: field.is_instance,
+        description: field.description.clone().filter(|value| !value.is_empty()),
+        enum_label: field.enum_label.clone(),
+        children,
+    }
 }
 
 fn format_field_value(field: &ParsedField) -> String {
@@ -170,41 +153,42 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 #[derive(Debug, Serialize)]
-struct TomlStructureExport {
-    format_version: u8,
-    definition_id: String,
-    status: String,
-    parsed_bytes: usize,
-    root_field_count: usize,
-    field_count: usize,
-    error_count: usize,
-    fields: Vec<TomlField>,
-    errors: Vec<TomlParseError>,
+pub struct YamlStructureExport {
+    pub format_version: u8,
+    pub definition_id: String,
+    pub status: String,
+    pub parsed_bytes: usize,
+    pub root_field_count: usize,
+    pub field_count: usize,
+    pub error_count: usize,
+    pub fields: Vec<YamlField>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<YamlParseError>,
 }
 
 #[derive(Debug, Serialize)]
-struct TomlField {
-    path: Vec<usize>,
-    depth: usize,
-    id: String,
+pub struct YamlField {
+    pub id: String,
     #[serde(rename = "type")]
-    field_type: String,
-    offset: usize,
-    size: usize,
-    value: String,
-    is_struct: bool,
-    has_children: bool,
-    is_instance: bool,
+    pub field_type: String,
+    pub offset: usize,
+    pub size: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
+    pub value: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_instance: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    enum_label: Option<String>,
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_label: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<YamlField>,
 }
 
 #[derive(Debug, Serialize)]
-struct TomlParseError {
-    message: String,
-    offset: usize,
+pub struct YamlParseError {
+    pub message: String,
+    pub offset: usize,
 }
 
 #[cfg(test)]
@@ -234,28 +218,49 @@ mod tests {
         header.description = Some("Local header".to_string());
         header.children.push(field("magic", "u2", 0, FieldValue::U16(0x4B50)));
 
-        let result = ParseResult::new("local_file".to_string(), vec![header], 3, Vec::new());
+        let mut flags_field = field("flags", "u2", 2, FieldValue::U16(0x0002));
+        flags_field.enum_label = Some("Don't fragment".to_string());
+        header.children.push(flags_field);
+
+        let mut instance_field = field("calculated_crc", "u4", 0, FieldValue::U32(0x12345678));
+        instance_field.is_instance = true;
+        header.children.push(instance_field);
+
+        let result = ParseResult::new(
+            "local_file".to_string(),
+            vec![header],
+            3,
+            vec![crate::core::structure::types::ParseError {
+                offset: 10,
+                message: "unexpected EOF".to_string(),
+            }],
+        );
         let text = format_parse_result_as_text(&result);
 
-        assert!(text.contains("Definition: local_file"));
-        assert!(text.contains("- header [local_file_header]"));
-        assert!(text.contains("Description: Local header"));
-        assert!(text.contains("  - magic [u2]"));
-        assert!(text.contains("4B50h (19280)"));
+        assert_eq!(
+            text,
+            "header: local_file_header\n    [Local header]\n    magic: 4B50h (19280)\n    flags: 2h (2) (Don't fragment)\n    calculated_crc: 12345678h (305419896) [instance]\n\n[Parse errors]\n    [Offset 0xA: unexpected EOF]\n"
+        );
     }
 
     #[test]
-    fn toml_export_is_flat_but_keeps_index_paths() {
+    fn yaml_export_preserves_tree_structure() {
         let mut root = field("body", "local_file", 0, FieldValue::Struct);
-        root.children.push(field("size", "u4", 0, FieldValue::U32(8)));
+        let mut child = field("size", "u4", 0, FieldValue::U32(8));
+        child.enum_label = Some("Eight bytes".to_string());
+        root.children.push(child);
+
         let result = ParseResult::new("pk_section".to_string(), vec![root], 4, Vec::new());
 
-        let toml = format_parse_result_as_toml(&result).expect("structure TOML should serialize");
-        let value: toml::Value = toml::from_str(&toml).expect("structure TOML should parse");
+        let yaml = format_parse_result_as_yaml(&result).expect("structure YAML should serialize");
+        let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("structure YAML should parse");
         assert_eq!(value["definition_id"].as_str(), Some("pk_section"));
-        assert_eq!(value["field_count"].as_integer(), Some(2));
-        assert_eq!(value["fields"][0]["path"].as_array().map(Vec::len), Some(1));
-        assert_eq!(value["fields"][1]["path"].as_array().map(Vec::len), Some(2));
-        assert_eq!(value["fields"][1]["type"].as_str(), Some("u4"));
+        assert_eq!(value["field_count"].as_u64(), Some(2));
+        assert_eq!(value["fields"][0]["id"].as_str(), Some("body"));
+        assert_eq!(value["fields"][0]["type"].as_str(), Some("local_file"));
+        assert_eq!(value["fields"][0]["children"][0]["id"].as_str(), Some("size"));
+        assert_eq!(value["fields"][0]["children"][0]["type"].as_str(), Some("u4"));
+        assert_eq!(value["fields"][0]["children"][0]["value"].as_str(), Some("8h (8) (Eight bytes)"));
+        assert_eq!(value["fields"][0]["children"][0]["enum_label"].as_str(), Some("Eight bytes"));
     }
 }

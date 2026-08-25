@@ -1,6 +1,6 @@
 use crate::core::editor::Editor;
 use crate::core::radix::DisplayRadix;
-use crate::core::structure::{ParseResult, ParsedField, format_parse_result_as_text, format_parse_result_as_toml};
+use crate::core::structure::{ParseResult, ParsedField, format_parse_result_as_text, format_parse_result_as_yaml};
 use crate::ui::components::data_table::{TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use crate::ui::style::{format_size_friendly, format_with_commas};
@@ -8,10 +8,30 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
+
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = struct_tree)]
+pub struct CopyFieldValue {
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = struct_tree)]
+pub struct CopyFieldName {
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = struct_tree)]
+pub struct CopyFieldOffset {
+    pub offset: String,
+}
 
 const CONTEXT: &str = "StructTreeView";
 const TREE_INDICATOR_WIDTH: f32 = 12.0;
@@ -55,7 +75,7 @@ fn path_from_string_file_name(path: &str) -> String {
         .unwrap_or_else(|| "Untitled".to_string())
 }
 
-fn default_toml_file_name(definition_id: &str) -> String {
+fn default_yaml_file_name(definition_id: &str) -> String {
     let mut name: String = definition_id
         .chars()
         .map(|character| {
@@ -69,8 +89,8 @@ fn default_toml_file_name(definition_id: &str) -> String {
     if name.is_empty() || name == "." || name == ".." {
         name = "structure".to_string();
     }
-    if !name.ends_with(".toml") {
-        name.push_str(".toml");
+    if !name.ends_with(".yaml") && !name.ends_with(".yml") {
+        name.push_str(".yaml");
     }
     name
 }
@@ -424,7 +444,19 @@ impl StructTreeView {
         .detach();
     }
 
-    fn export_structure_toml(&mut self, _: &crate::actions::ExportStructureToml, window: &mut Window, cx: &mut Context<Self>) {
+    fn copy_field_value(&mut self, action: &CopyFieldValue, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.value.clone()));
+    }
+
+    fn copy_field_name(&mut self, action: &CopyFieldName, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.name.clone()));
+    }
+
+    fn copy_field_offset(&mut self, action: &CopyFieldOffset, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.offset.clone()));
+    }
+
+    fn export_structure_yaml(&mut self, _: &crate::actions::ExportStructureYaml, window: &mut Window, cx: &mut Context<Self>) {
         if self.export_is_busy() || !self.can_export_result() {
             return;
         }
@@ -432,13 +464,30 @@ impl StructTreeView {
         let Some(parse_result) = self.parse_result.clone() else {
             return;
         };
-        let default_file_name = default_toml_file_name(&parse_result.definition_id);
-        let prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select a destination TOML file or directory".into()),
-        });
+        let (parent_dir, target_file_name) = self
+            .editor
+            .as_ref()
+            .and_then(|ed| {
+                let doc = ed.read(cx).document.read().ok()?;
+                let path = doc.path();
+                let dir = path.parent().filter(|p| p.exists()).map(|p| p.to_path_buf());
+                let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                Some((dir, file_name))
+            })
+            .unwrap_or((None, None));
+
+        let parent_dir = parent_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+        let default_file_name = if let Some(name) = target_file_name
+            && !name.is_empty()
+            && name != "Untitled"
+            && name != "untitled"
+        {
+            format!("{name}.yaml")
+        } else {
+            default_yaml_file_name(&parse_result.definition_id)
+        };
+
+        let prompt = cx.prompt_for_new_path(&parent_dir, Some(&default_file_name));
 
         let request_id = self.export_request_id.wrapping_add(1);
         self.export_request_id = request_id;
@@ -448,8 +497,8 @@ impl StructTreeView {
         let executor = cx.background_executor().clone();
         let view = cx.entity().clone();
         cx.spawn_in(window, async move |_, window| {
-            let selected_path = prompt.await.ok().and_then(|result| result.ok()).flatten().and_then(|mut paths| paths.pop());
-            let Some(selected_path) = selected_path else {
+            let selected_path = prompt.await.ok().and_then(|result| result.ok()).flatten();
+            let Some(mut path) = selected_path else {
                 let _ = window.update(|_, cx| {
                     view.update(cx, |this, cx| {
                         if this.export_request_id == request_id {
@@ -462,15 +511,12 @@ impl StructTreeView {
             };
 
             let export_task = executor.spawn(async move {
-                let mut path = selected_path;
-                if path.is_dir() {
-                    path = path.join(default_file_name);
-                } else if path.extension().is_none() {
-                    path.set_extension("toml");
+                if path.extension().is_none() {
+                    path.set_extension("yaml");
                 }
 
-                let toml = format_parse_result_as_toml(&parse_result).map_err(|error| error.to_string())?;
-                std::fs::write(&path, toml).map_err(|error| format!("{}: {error}", path.display()))?;
+                let yaml = format_parse_result_as_yaml(&parse_result).map_err(|error| error.to_string())?;
+                std::fs::write(&path, yaml).map_err(|error| format!("{}: {error}", path.display()))?;
                 Ok::<PathBuf, String>(path)
             });
             let result = export_task.await;
@@ -482,10 +528,10 @@ impl StructTreeView {
                     }
                     match &result {
                         Ok(path) => {
-                            this.export_status = StructureExportStatus::Success(format!("Exported TOML to {}", path.display()));
+                            this.export_status = StructureExportStatus::Success(format!("Exported YAML to {}", path.display()));
                         }
                         Err(error) => {
-                            this.export_status = StructureExportStatus::Error(format!("TOML export failed: {error}"));
+                            this.export_status = StructureExportStatus::Error(format!("YAML export failed: {error}"));
                         }
                     }
                     cx.notify();
@@ -495,7 +541,7 @@ impl StructTreeView {
                 if applied {
                     match &result {
                         Ok(path) => window.push_notification(
-                            gpui_component::notification::Notification::success(format!("Structure TOML exported to {}", path.display())),
+                            gpui_component::notification::Notification::success(format!("Structure YAML exported to {}", path.display())),
                             cx,
                         ),
                         Err(error) => window.push_notification(gpui_component::notification::Notification::error(error.clone()), cx),
@@ -510,8 +556,8 @@ impl StructTreeView {
         self.copy_structure_result(action, window, cx);
     }
 
-    fn on_action_export_structure_toml(&mut self, action: &crate::actions::ExportStructureToml, window: &mut Window, cx: &mut Context<Self>) {
-        self.export_structure_toml(action, window, cx);
+    fn on_action_export_structure_yaml(&mut self, action: &crate::actions::ExportStructureYaml, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_structure_yaml(action, window, cx);
     }
 
     fn rebuild_flattened(&mut self) {
@@ -1168,7 +1214,7 @@ impl Render for StructTreeView {
         let export_feedback = match &self.export_status {
             StructureExportStatus::Idle => None,
             StructureExportStatus::Copying => Some((IconName::LoaderCircle, "Preparing structure text...".to_string(), theme.accent)),
-            StructureExportStatus::Exporting => Some((IconName::LoaderCircle, "Preparing TOML export...".to_string(), theme.accent)),
+            StructureExportStatus::Exporting => Some((IconName::LoaderCircle, "Preparing YAML export...".to_string(), theme.accent)),
             StructureExportStatus::Success(message) => Some((IconName::Check, message.clone(), theme.green)),
             StructureExportStatus::Error(message) => Some((IconName::TriangleAlert, message.clone(), theme.red)),
         };
@@ -1216,8 +1262,11 @@ impl Render for StructTreeView {
             .on_action(cx.listener(Self::on_action_set_value_radix_dec))
             .on_action(cx.listener(Self::on_action_set_value_radix_oct))
             .on_action(cx.listener(Self::on_action_set_value_radix_bin))
+            .on_action(cx.listener(Self::copy_field_value))
+            .on_action(cx.listener(Self::copy_field_name))
+            .on_action(cx.listener(Self::copy_field_offset))
             .on_action(cx.listener(Self::on_action_copy_structure_result))
-            .on_action(cx.listener(Self::on_action_export_structure_toml))
+            .on_action(cx.listener(Self::on_action_export_structure_yaml))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, _| {
@@ -1559,9 +1608,21 @@ impl Render for StructTreeView {
                                 Box::new(crate::actions::GoToBeginning),
                             )
                             .separator()
-                            .menu_with_icon(format!("Copy Value ({})", field_value), IconName::Copy, Box::new(crate::actions::Copy))
-                            .menu_with_icon(format!("Copy Field Name ({})", field_id), IconName::Copy, Box::new(crate::actions::Copy))
-                            .menu_with_icon(format!("Copy Offset ({})", offset_hex), IconName::Hash, Box::new(crate::actions::Copy))
+                            .menu_with_icon(
+                                format!("Copy Value ({})", field_value),
+                                IconName::Copy,
+                                Box::new(CopyFieldValue { value: field_value }),
+                            )
+                            .menu_with_icon(
+                                format!("Copy Field Name ({})", field_id),
+                                IconName::Copy,
+                                Box::new(CopyFieldName { name: field_id }),
+                            )
+                            .menu_with_icon(
+                                format!("Copy Offset ({})", offset_hex),
+                                IconName::Hash,
+                                Box::new(CopyFieldOffset { offset: offset_hex }),
+                            )
                             .separator()
                             .submenu("Value format", window, cx, move |menu, _window, _cx| {
                                 menu.menu_with_check(
@@ -1580,9 +1641,9 @@ impl Render for StructTreeView {
                             .separator()
                             .menu_with_icon("Copy Structure Analysis", IconName::Copy, Box::new(crate::actions::CopyStructureResult))
                             .menu_with_icon(
-                                "Export Structure as TOML",
+                                "Export Structure as YAML",
                                 IconName::HardDriveDownload,
-                                Box::new(crate::actions::ExportStructureToml),
+                                Box::new(crate::actions::ExportStructureYaml),
                             )
                             .separator()
                             .menu_with_icon("Expand All", IconName::ChevronDown, Box::new(crate::actions::ExpandAllStructure))

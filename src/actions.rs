@@ -305,9 +305,9 @@ pub struct ToggleStructureValueColumn;
 #[derive(Clone, PartialEq, Action)]
 pub struct CopyStructureResult;
 
-/// Exports the current structure analysis as a TOML document.
+/// Exports the current structure analysis as a YAML document.
 #[derive(Clone, PartialEq, Action)]
-pub struct ExportStructureToml;
+pub struct ExportStructureYaml;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct Copy;

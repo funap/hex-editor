@@ -482,7 +482,7 @@ impl StructTreeView {
             && name != "Untitled"
             && name != "untitled"
         {
-            format!("{name}.yaml")
+            format!("{name}.{}.yaml", parse_result.definition_id)
         } else {
             default_yaml_file_name(&parse_result.definition_id)
         };

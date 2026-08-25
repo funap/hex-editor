@@ -347,15 +347,14 @@ fn default_version() -> u32 {
 }
 
 impl BookmarkFile {
-    pub fn from_json(json: &str) -> anyhow::Result<Vec<BookmarkItem>> {
-        // First attempt: BookmarkFile wrapped format
-        let mut items = if let Ok(file) = serde_json::from_str::<BookmarkFile>(json) {
+    pub fn from_yaml(yaml: &str) -> anyhow::Result<Vec<BookmarkItem>> {
+        let mut items = if let Ok(file) = serde_yaml::from_str::<BookmarkFile>(yaml) {
             file.bookmarks
-        } else if let Ok(items) = serde_json::from_str::<Vec<BookmarkItem>>(json) {
+        } else if let Ok(items) = serde_yaml::from_str::<Vec<BookmarkItem>>(yaml) {
             items
         } else {
-            let err = serde_json::from_str::<BookmarkFile>(json).unwrap_err();
-            anyhow::bail!("Failed to parse bookmarks JSON: {}", err)
+            let err = serde_yaml::from_str::<BookmarkFile>(yaml).unwrap_err();
+            anyhow::bail!("Failed to parse bookmarks YAML: {}", err)
         };
 
         // Guarantee distinct, fresh unique runtime IDs for all loaded items
@@ -365,24 +364,24 @@ impl BookmarkFile {
         Ok(items)
     }
 
-    pub fn to_json(bookmarks: &[BookmarkItem], file_path: Option<&Path>) -> anyhow::Result<String> {
+    pub fn to_yaml(bookmarks: &[BookmarkItem], file_path: Option<&Path>) -> anyhow::Result<String> {
         let file = BookmarkFile {
             version: 1,
             file_path: file_path.map(|p| p.to_string_lossy().to_string()),
             bookmarks: bookmarks.to_vec(),
         };
-        Ok(serde_json::to_string_pretty(&file)?)
+        Ok(serde_yaml::to_string(&file)?)
     }
 
     pub fn save_to_path(path: &Path, bookmarks: &[BookmarkItem], file_path: Option<&Path>) -> anyhow::Result<()> {
-        let json = Self::to_json(bookmarks, file_path)?;
-        fs::write(path, json)?;
+        let yaml = Self::to_yaml(bookmarks, file_path)?;
+        fs::write(path, yaml)?;
         Ok(())
     }
 
     pub fn load_from_path(path: &Path) -> anyhow::Result<Vec<BookmarkItem>> {
         let content = fs::read_to_string(path)?;
-        Self::from_json(&content)
+        Self::from_yaml(&content)
     }
 }
 
@@ -403,12 +402,12 @@ mod tests {
 
     #[test]
     fn test_bookmark_color_serde() {
-        let json = serde_json::to_string(&BookmarkColor::Red).unwrap();
-        assert_eq!(json, "\"red\"");
-        let color: BookmarkColor = serde_json::from_str("\"blue\"").unwrap();
+        let yaml = serde_yaml::to_string(&BookmarkColor::Red).unwrap();
+        assert_eq!(yaml.trim(), "red");
+        let color: BookmarkColor = serde_yaml::from_str("blue").unwrap();
         assert_eq!(color, BookmarkColor::Blue);
 
-        let hex_color: BookmarkColor = serde_json::from_str("\"#112233\"").unwrap();
+        let hex_color: BookmarkColor = serde_yaml::from_str("\"#112233\"").unwrap();
         assert_eq!(
             hex_color,
             BookmarkColor::Custom {
@@ -419,28 +418,24 @@ mod tests {
             }
         );
 
-        let rgba_color: BookmarkColor = serde_json::from_str(r#"{"r": 10, "g": 20, "b": 30, "a": 128}"#).unwrap();
+        let rgba_color: BookmarkColor = serde_yaml::from_str("r: 10\ng: 20\nb: 30\na: 128\n").unwrap();
         assert_eq!(rgba_color, BookmarkColor::Custom { r: 10, g: 20, b: 30, a: 128 });
     }
 
     #[test]
     fn test_bookmark_item_serde_with_hex_offsets() {
-        let json = r#"[
-            {
-                "offset": "0x0010",
-                "size": "0x20",
-                "color": "green",
-                "comment": "Header section"
-            },
-            {
-                "offset": 100,
-                "size": 4,
-                "color": "pink",
-                "comment": "Magic number"
-            }
-        ]"#;
+        let yaml = r#"
+- offset: "0x0010"
+  size: "0x20"
+  color: green
+  comment: Header section
+- offset: 100
+  size: 4
+  color: pink
+  comment: Magic number
+"#;
 
-        let items = BookmarkFile::from_json(json).unwrap();
+        let items = BookmarkFile::from_yaml(yaml).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].offset, 16);
         assert_eq!(items[0].size, 32);
@@ -454,14 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bookmark_file_roundtrip() {
+    fn test_bookmark_yaml_roundtrip() {
         let items = vec![
             BookmarkItem::new(0, 16, BookmarkColor::Red, "File header"),
             BookmarkItem::new(64, 4, BookmarkColor::Cyan, "Checksum"),
         ];
 
-        let json = BookmarkFile::to_json(&items, Some(Path::new("test.bin"))).unwrap();
-        let loaded = BookmarkFile::from_json(&json).unwrap();
+        let yaml = BookmarkFile::to_yaml(&items, Some(Path::new("test.bin"))).unwrap();
+        let loaded = BookmarkFile::from_yaml(&yaml).unwrap();
 
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].offset, 0);
@@ -477,7 +472,7 @@ mod tests {
     #[test]
     fn test_bookmark_file_disk_io() {
         let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_xvw_bookmarks.json");
+        let temp_path = temp_dir.join("test_xvw_bookmarks.bookmark.yaml");
 
         let items = vec![
             BookmarkItem::new(1024, 256, BookmarkColor::Yellow, "Data block"),

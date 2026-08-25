@@ -1363,24 +1363,32 @@ impl Workspace {
 
     fn on_action_export_bookmarks(&mut self, _: &ExportBookmarks, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor(cx) else { return };
-        let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
-        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select destination JSON file or directory for bookmarks".into()),
-        });
+        let (parent_dir, target_file_name) = {
+            let doc_lock = editor.read(cx).document.read().ok();
+            let parent = doc_lock
+                .as_ref()
+                .and_then(|d| d.path().parent().filter(|p| p.exists()).map(|p| p.to_path_buf()));
+            let file_name = doc_lock.as_ref().and_then(|d| d.path().file_name().map(|n| n.to_string_lossy().into_owned()));
+            (parent, file_name)
+        };
+        let parent_dir = parent_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+        let default_name = if let Some(name) = target_file_name
+            && !name.is_empty()
+            && name != "Untitled"
+            && name != "untitled"
+        {
+            format!("{name}.bookmark.yaml")
+        } else {
+            "bookmarks.bookmark.yaml".to_string()
+        };
+
+        let prompt_path = cx.prompt_for_new_path(&parent_dir, Some(&default_name));
 
         let view = cx.entity().clone();
         cx.spawn_in(window, async move |_, window| {
-            if let Some(mut path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
-                if path.is_dir() {
-                    let default_name = doc_path
-                        .and_then(|p| p.file_name().map(|n| format!("{}.bookmarks.json", n.to_string_lossy())))
-                        .unwrap_or_else(|| "bookmarks.json".to_string());
-                    path = path.join(default_name);
-                } else if path.extension().is_none() {
-                    path.set_extension("json");
+            if let Some(mut path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten() {
+                if path.extension().is_none() {
+                    path.set_extension("yaml");
                 }
 
                 window
@@ -1404,7 +1412,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select bookmarks JSON file to import".into()),
+            prompt: Some("Select bookmarks YAML file to import".into()),
         });
 
         let view = cx.entity().clone();

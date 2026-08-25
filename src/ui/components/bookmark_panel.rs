@@ -422,7 +422,7 @@ impl Render for BookmarkPanel {
                     .ghost()
                     .icon(IconName::Import)
                     .with_size(Size::XSmall)
-                    .tooltip("Import bookmarks from JSON file")
+                    .tooltip("Import bookmarks from YAML file")
                     .disabled(!has_editor)
                     .on_click(cx.listener(|_, _, _window, cx| {
                         cx.emit(BookmarkPanelEvent::Import);
@@ -433,7 +433,7 @@ impl Render for BookmarkPanel {
                     .ghost()
                     .icon(IconName::HardDriveDownload)
                     .with_size(Size::XSmall)
-                    .tooltip("Export bookmarks to JSON file")
+                    .tooltip("Export bookmarks to YAML file")
                     .disabled(!has_editor || count == 0)
                     .on_click(cx.listener(|_, _, _window, cx| {
                         cx.emit(BookmarkPanelEvent::Export);

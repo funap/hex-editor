@@ -3195,7 +3195,7 @@ mod tests {
         assert_eq!(editor.bookmarks.read().unwrap()[1].size, 10);
 
         // Test export and import
-        let temp_file = std::env::temp_dir().join("editor_bookmarks_test.json");
+        let temp_file = std::env::temp_dir().join("editor_bookmarks_test.bookmark.yaml");
         editor.export_bookmarks_to_file(&temp_file).unwrap();
         assert!(temp_file.exists());
 
@@ -3228,7 +3228,7 @@ mod tests {
         let item1 = BookmarkItem::new(0, 4, BookmarkColor::Red, "Magic bytes");
         editor.add_bookmark(item1);
 
-        let temp_file = std::env::temp_dir().join("collision_test.json");
+        let temp_file = std::env::temp_dir().join("collision_test.bookmark.yaml");
         editor.export_bookmarks_to_file(&temp_file).unwrap();
 
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");

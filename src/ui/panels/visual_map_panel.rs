@@ -10,6 +10,12 @@ use std::cell::RefCell;
 use std::cmp;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
+
+const WIDTH_REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(350);
+const WIDTH_REPEAT_MIN_INTERVAL: Duration = Duration::from_millis(15);
+const WIDTH_REPEAT_MED_INTERVAL: Duration = Duration::from_millis(30);
+const WIDTH_REPEAT_BASE_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ColorMode {
@@ -76,6 +82,7 @@ pub struct VisualMapPanel {
     cached_image: RefCell<Option<CachedImage>>,
     is_dragging: bool,
     _editor_subscription: Option<Subscription>,
+    _width_repeat_task: Option<Task<()>>,
 }
 
 impl EventEmitter<PanelEvent> for VisualMapPanel {}
@@ -102,6 +109,7 @@ impl VisualMapPanel {
             cached_image: RefCell::new(None),
             is_dragging: false,
             _editor_subscription,
+            _width_repeat_task: None,
         }
     }
 
@@ -301,6 +309,69 @@ impl VisualMapPanel {
         }
     }
 
+    fn increment_width(&mut self, cx: &mut Context<Self>) {
+        if self.cols < 4096 {
+            self.cols = cmp::min(4096, self.cols.saturating_add(1));
+            self.update_scrollbar(cx);
+            self.cached_image.borrow_mut().take();
+            cx.notify();
+        }
+    }
+
+    fn decrement_width(&mut self, cx: &mut Context<Self>) {
+        if self.cols > 1 {
+            self.cols = cmp::max(1, self.cols.saturating_sub(1));
+            self.update_scrollbar(cx);
+            self.cached_image.borrow_mut().take();
+            cx.notify();
+        }
+    }
+
+    fn start_width_repeat(&mut self, is_increment: bool, cx: &mut Context<Self>) {
+        if is_increment {
+            self.increment_width(cx);
+        } else {
+            self.decrement_width(cx);
+        }
+
+        self._width_repeat_task = Some(cx.spawn(async move |this, cx| {
+            Timer::after(WIDTH_REPEAT_INITIAL_DELAY).await;
+            let mut count = 0;
+            loop {
+                let interval = if count < 10 {
+                    WIDTH_REPEAT_BASE_INTERVAL
+                } else if count < 30 {
+                    WIDTH_REPEAT_MED_INTERVAL
+                } else {
+                    WIDTH_REPEAT_MIN_INTERVAL
+                };
+
+                let should_continue = this
+                    .update(cx, |this, cx| {
+                        if is_increment {
+                            this.increment_width(cx);
+                            this.cols < 4096
+                        } else {
+                            this.decrement_width(cx);
+                            this.cols > 1
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if !should_continue {
+                    break;
+                }
+
+                count += 1;
+                Timer::after(interval).await;
+            }
+        }));
+    }
+
+    fn stop_width_repeat(&mut self) {
+        self._width_repeat_task = None;
+    }
+
     fn render_width_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
         h_flex()
@@ -323,13 +394,25 @@ impl VisualMapPanel {
                             .label("-")
                             .ghost()
                             .with_size(Size::XSmall)
-                            .tooltip("Decrease width by 16")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.cols = cmp::max(4, this.cols.saturating_sub(16));
-                                this.update_scrollbar(cx);
-                                this.cached_image.borrow_mut().take();
-                                cx.notify();
-                            })),
+                            .tooltip("Decrease width")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.start_width_repeat(false, cx);
+                                }),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| {
+                                    this.stop_width_repeat();
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| {
+                                    this.stop_width_repeat();
+                                }),
+                            ),
                     )
                     .child(
                         div()
@@ -348,13 +431,25 @@ impl VisualMapPanel {
                             .label("+")
                             .ghost()
                             .with_size(Size::XSmall)
-                            .tooltip("Increase width by 16")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.cols = cmp::min(4096, this.cols.saturating_add(16));
-                                this.update_scrollbar(cx);
-                                this.cached_image.borrow_mut().take();
-                                cx.notify();
-                            })),
+                            .tooltip("Increase width")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.start_width_repeat(true, cx);
+                                }),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| {
+                                    this.stop_width_repeat();
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| {
+                                    this.stop_width_repeat();
+                                }),
+                            ),
                     ),
             )
     }

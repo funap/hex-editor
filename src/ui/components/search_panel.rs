@@ -86,7 +86,7 @@ impl SearchPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let table_state = VirtualTableState::new(default_search_columns());
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search pattern in file..."));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(SearchMode::Hex.placeholder()));
 
         let input_sub = cx.subscribe_in(&input, window, |this, _, event: &input::InputEvent, _window, cx| {
             if let input::InputEvent::PressEnter { .. } = event {
@@ -131,6 +131,16 @@ impl SearchPanel {
             }));
         }
         cx.notify();
+    }
+
+    pub fn set_mode(&mut self, mode: SearchMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.input.update(cx, |input, cx| {
+                input.set_placeholder(mode.placeholder(), window, cx);
+            });
+            cx.notify();
+        }
     }
 
     pub fn trigger_search(&mut self, cx: &mut Context<Self>) {
@@ -428,9 +438,8 @@ impl Render for SearchPanel {
                         } else {
                             Button::new("mode_hex").label("Hex").ghost().with_size(Size::XSmall)
                         }
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.mode = SearchMode::Hex;
-                            cx.notify();
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_mode(SearchMode::Hex, window, cx);
                         })),
                     )
                     .child(
@@ -439,9 +448,8 @@ impl Render for SearchPanel {
                         } else {
                             Button::new("mode_text").label("Text").ghost().with_size(Size::XSmall)
                         }
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.mode = SearchMode::Text;
-                            cx.notify();
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_mode(SearchMode::Text, window, cx);
                         })),
                     ),
             )

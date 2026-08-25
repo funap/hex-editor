@@ -31,7 +31,7 @@ impl EventEmitter<SearchBarEvent> for SearchBar {}
 
 impl SearchBar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find..."));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(SearchMode::Hex.placeholder()));
 
         // Subscribe to input changes with debouncing
         cx.subscribe(&input, |this, input, event: &input::InputEvent, cx| {
@@ -90,8 +90,11 @@ impl SearchBar {
         self.mode
     }
 
-    fn on_mode_change(&mut self, mode: SearchMode, cx: &mut Context<Self>) {
+    fn on_mode_change(&mut self, mode: SearchMode, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = mode;
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(mode.placeholder(), window, cx);
+        });
         let query = self.input.read(cx).value().to_string();
         cx.emit(SearchBarEvent::IncrementalSearch(query, self.mode));
         cx.notify();
@@ -137,8 +140,8 @@ impl Render for SearchBar {
                         } else {
                             Button::new("hex_mode").label("Hex").ghost()
                         }
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.on_mode_change(SearchMode::Hex, cx);
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.on_mode_change(SearchMode::Hex, window, cx);
                         })),
                     )
                     .child(
@@ -147,8 +150,8 @@ impl Render for SearchBar {
                         } else {
                             Button::new("text_mode").label("Text").ghost()
                         }
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.on_mode_change(SearchMode::Text, cx);
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.on_mode_change(SearchMode::Text, window, cx);
                         })),
                     ),
             )

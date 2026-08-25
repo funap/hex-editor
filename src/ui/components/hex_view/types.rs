@@ -196,6 +196,42 @@ pub struct HexTextSource {
     pub groups: Vec<HexGroupInfo>,
 }
 
+/// A mapped character in the ASCII column of the hex view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AsciiChar {
+    /// A printable character decoded from the underlying encoding.
+    Printable(char, usize),
+    /// A non-printable byte or invalid character sequence, displayed as `.` placeholder.
+    NonPrintable,
+}
+
+impl AsciiChar {
+    /// Returns the character to display for this cell.
+    #[inline]
+    pub fn character(&self) -> char {
+        match self {
+            Self::Printable(c, _) => *c,
+            Self::NonPrintable => '.',
+        }
+    }
+
+    /// Returns the byte length consumed by this character.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn byte_len(&self) -> usize {
+        match self {
+            Self::Printable(_, len) => *len,
+            Self::NonPrintable => 1,
+        }
+    }
+
+    /// Returns `true` if this cell contains a decoded printable character.
+    #[inline]
+    pub fn is_printable(&self) -> bool {
+        matches!(self, Self::Printable(..))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AsciiCellEntry {
     pub cell_idx: usize,

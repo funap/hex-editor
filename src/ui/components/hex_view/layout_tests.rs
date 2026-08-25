@@ -1,6 +1,6 @@
 use super::layout::{build_ascii_char_map, centered_glyph_offset};
 use super::paint::highlight_color_for_range;
-use super::types::{AUTO_FIT_SCAN_BYTES, HexViewLayout, HexViewLayoutState, HorizontalScrollTarget, LayoutInput, ScrollColumn};
+use super::types::{AUTO_FIT_SCAN_BYTES, AsciiChar, HexViewLayout, HexViewLayoutState, HorizontalScrollTarget, LayoutInput, ScrollColumn};
 use super::{
     HexView, ascii_byte_index_from_world_x, bounded_auto_fit_range, build_hex_text_source, can_chain_to_outer, hex_grid_width, hex_grid_x,
     make_hex_view_layout, weighted_text_width,
@@ -134,7 +134,7 @@ fn check_layout_and_scrolling() {
 fn check_character_mapping_and_auto_fit() {
     let buffer = "€".as_bytes();
     let map = build_ascii_char_map(Encoding::Utf8, buffer, 0, 2);
-    assert_eq!(map, vec![None, Some(('€', 3))]);
+    assert_eq!(map, vec![None, Some(AsciiChar::Printable('€', 3))]);
 
     let map2 = build_ascii_char_map(Encoding::Utf8, buffer, 1, 2);
     assert_eq!(map2, vec![None, None]);
@@ -142,10 +142,10 @@ fn check_character_mapping_and_auto_fit() {
     // Shift-JIS spanning row boundaries: "あい" is [0x82, 0xA0, 0x82, 0xA2]
     let sjis_bytes = [0x82, 0xA0, 0x82, 0xA2];
     let map_sjis_row1 = build_ascii_char_map(Encoding::ShiftJis, &sjis_bytes, 0, 1);
-    assert_eq!(map_sjis_row1, vec![Some(('あ', 2))]);
+    assert_eq!(map_sjis_row1, vec![Some(AsciiChar::Printable('あ', 2))]);
 
     let map_sjis_row2 = build_ascii_char_map(Encoding::ShiftJis, &sjis_bytes, 1, 3);
-    assert_eq!(map_sjis_row2, vec![None, Some(('い', 2)), None]);
+    assert_eq!(map_sjis_row2, vec![None, Some(AsciiChar::Printable('い', 2)), None]);
 
     // Shift-JIS multi-byte character crossing 16-byte row boundary with following characters
     let mut sjis_doc = vec![b'X'];
@@ -155,14 +155,14 @@ fn check_character_mapping_and_auto_fit() {
     sjis_doc.extend_from_slice(&[0x82, 0xB2]); // 'こ' (offsets 19, 20)
 
     let row1 = build_ascii_char_map(Encoding::ShiftJis, &sjis_doc, 0, 16);
-    assert_eq!(row1[0], Some(('X', 1)));
-    assert_eq!(row1[1], Some(('あ', 2)));
-    assert_eq!(row1[15], Some(('ぐ', 2)));
+    assert_eq!(row1[0], Some(AsciiChar::Printable('X', 1)));
+    assert_eq!(row1[1], Some(AsciiChar::Printable('あ', 2)));
+    assert_eq!(row1[15], Some(AsciiChar::Printable('ぐ', 2)));
 
     let row2 = build_ascii_char_map(Encoding::ShiftJis, &sjis_doc, 16, 16);
     assert_eq!(row2[0], None); // Continuation byte of 'ぐ' skipped without corruption
-    assert_eq!(row2[1], Some(('げ', 2))); // 'げ' decoded cleanly
-    assert_eq!(row2[3], Some(('ご', 2))); // 'ご' decoded cleanly
+    assert_eq!(row2[1], Some(AsciiChar::Printable('げ', 2))); // 'げ' decoded cleanly
+    assert_eq!(row2[3], Some(AsciiChar::Printable('ご', 2))); // 'ご' decoded cleanly
 
     // User report regression test:
     // 00000380: 81 41 93 c7 82 dd 8d 9e 82 de 83 41 83 76 83 8a (|、読み込むアプリ|)
@@ -172,18 +172,18 @@ fn check_character_mapping_and_auto_fit() {
     sample_bytes.extend_from_slice(&[0x82, 0xcc, 0x95, 0xb6, 0x8e, 0x9a, 0x83, 0x52, 0x81, 0x5b, 0x83, 0x68, 0x82, 0xaa, 0x83, 0x59]);
 
     let row_380 = build_ascii_char_map(Encoding::ShiftJis, &sample_bytes, 0x380, 16);
-    assert_eq!(row_380[0], Some(('、', 2)));
-    assert_eq!(row_380[14], Some(('リ', 2)));
+    assert_eq!(row_380[0], Some(AsciiChar::Printable('、', 2)));
+    assert_eq!(row_380[14], Some(AsciiChar::Printable('リ', 2)));
 
     let row_390 = build_ascii_char_map(Encoding::ShiftJis, &sample_bytes, 0x390, 16);
-    assert_eq!(row_390[0], Some(('の', 2))); // 82 CC correctly decoded as 'の', not blank + 'フ'
-    assert_eq!(row_390[2], Some(('文', 2)));
-    assert_eq!(row_390[4], Some(('字', 2)));
-    assert_eq!(row_390[6], Some(('コ', 2)));
-    assert_eq!(row_390[8], Some(('ー', 2)));
-    assert_eq!(row_390[10], Some(('ド', 2)));
-    assert_eq!(row_390[12], Some(('が', 2)));
-    assert_eq!(row_390[14], Some(('ズ', 2)));
+    assert_eq!(row_390[0], Some(AsciiChar::Printable('の', 2))); // 82 CC correctly decoded as 'の', not blank + 'フ'
+    assert_eq!(row_390[2], Some(AsciiChar::Printable('文', 2)));
+    assert_eq!(row_390[4], Some(AsciiChar::Printable('字', 2)));
+    assert_eq!(row_390[6], Some(AsciiChar::Printable('コ', 2)));
+    assert_eq!(row_390[8], Some(AsciiChar::Printable('ー', 2)));
+    assert_eq!(row_390[10], Some(AsciiChar::Printable('ド', 2)));
+    assert_eq!(row_390[12], Some(AsciiChar::Printable('が', 2)));
+    assert_eq!(row_390[14], Some(AsciiChar::Printable('ズ', 2)));
 
     // Character range selection check in multi-byte encodings
     assert_eq!(Encoding::ShiftJis.char_range_at(&sample_bytes, 0x390), 0x390..0x392);
@@ -317,9 +317,42 @@ fn check_structure_and_highlights() {
     assert_eq!(highlight_color_for_range(20, 24, &highlights), None);
 }
 
+fn check_ascii_non_printable_mapping() {
+    let ascii_bytes = [b'H', b'e', 0x00, 0x1F, b'!', b'.', 0x7F, 0xFF];
+    let map = build_ascii_char_map(Encoding::Ascii, &ascii_bytes, 0, 8);
+    assert_eq!(
+        map,
+        vec![
+            Some(AsciiChar::Printable('H', 1)),
+            Some(AsciiChar::Printable('e', 1)),
+            Some(AsciiChar::NonPrintable),
+            Some(AsciiChar::NonPrintable),
+            Some(AsciiChar::Printable('!', 1)),
+            Some(AsciiChar::Printable('.', 1)),
+            Some(AsciiChar::NonPrintable),
+            Some(AsciiChar::NonPrintable),
+        ]
+    );
+
+    // Verify helper methods on AsciiChar
+    assert_eq!(AsciiChar::Printable('A', 1).character(), 'A');
+    assert_eq!(AsciiChar::Printable('A', 1).byte_len(), 1);
+    assert!(AsciiChar::Printable('A', 1).is_printable());
+
+    assert_eq!(AsciiChar::NonPrintable.character(), '.');
+    assert_eq!(AsciiChar::NonPrintable.byte_len(), 1);
+    assert!(!AsciiChar::NonPrintable.is_printable());
+
+    // Verify EOF boundary handling: past-EOF cells remain None
+    let short_buffer = [0x00, b'A'];
+    let map_short = build_ascii_char_map(Encoding::Ascii, &short_buffer, 0, 4);
+    assert_eq!(map_short, vec![Some(AsciiChar::NonPrintable), Some(AsciiChar::Printable('A', 1)), None, None,]);
+}
+
 #[test]
 fn test_hex_view_layout_suite() {
     check_layout_and_scrolling();
     check_character_mapping_and_auto_fit();
     check_structure_and_highlights();
+    check_ascii_non_printable_mapping();
 }

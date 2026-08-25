@@ -801,9 +801,9 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                     let mut ascii_entries: Vec<AsciiCellEntry> = Vec::with_capacity(chunk.len());
 
                     for (j, opt) in char_map.into_iter().enumerate() {
-                        let (c, _) = if let Some(pair) = opt { pair } else { continue };
-                        let is_control = (c as u32) < 0x20 || (c as u32) == 0x7f;
-                        let text_color = if is_control || c == '·' { muted_color.opacity(0.4) } else { fg_color };
+                        let item = if let Some(item) = opt { item } else { continue };
+                        let c = item.character();
+                        let text_color = if !item.is_printable() { muted_color.opacity(0.4) } else { fg_color };
 
                         let text_byte_start = ascii_text.len();
                         ascii_text.push(c);

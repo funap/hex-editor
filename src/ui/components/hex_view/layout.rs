@@ -11,7 +11,7 @@ pub fn ascii_byte_index_from_world_x(world_x: f32, column: ColumnLayout, scroll_
     (content_x / ASCII_CELL_WIDTH) as usize
 }
 
-pub fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize, row_len: usize) -> Vec<Option<(char, usize)>> {
+pub fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize, row_len: usize) -> Vec<Option<AsciiChar>> {
     let mut map = vec![None; row_len];
     let row_end = row_offset + row_len;
     let mut local_offset = 0;
@@ -49,6 +49,9 @@ pub fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize
 
     while local_offset < row_len {
         let absolute_offset = row_offset + local_offset;
+        if absolute_offset >= buffer.len() {
+            break;
+        }
         if let Some((character, byte_len)) = encoding.decode_char_at(buffer, absolute_offset) {
             let byte_len = byte_len.max(1);
             let display_offset = if encoding.is_multibyte() && absolute_offset.saturating_add(byte_len) > row_end {
@@ -56,9 +59,10 @@ pub fn build_ascii_char_map(encoding: Encoding, buffer: &[u8], row_offset: usize
             } else {
                 local_offset
             };
-            map[display_offset] = Some((character, byte_len));
+            map[display_offset] = Some(AsciiChar::Printable(character, byte_len));
             local_offset += byte_len;
         } else {
+            map[local_offset] = Some(AsciiChar::NonPrintable);
             local_offset += 1;
         }
     }

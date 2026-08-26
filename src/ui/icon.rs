@@ -28,6 +28,7 @@ pub enum IconName {
     SquareMousePointer,
     ScanEye,
     SearchCode,
+    SearchText,
     Eye,
     EyeOff,
 
@@ -112,6 +113,7 @@ impl IconNamed for IconName {
             Self::SquareMousePointer => "icons/square-mouse-pointer.svg",
             Self::ScanEye => "icons/scan-eye.svg",
             Self::SearchCode => "icons/search-code.svg",
+            Self::SearchText => "icons/search-text.svg",
             Self::Eye => "icons/eye.svg",
             Self::EyeOff => "icons/eye-off.svg",
             Self::Map => "icons/map.svg",

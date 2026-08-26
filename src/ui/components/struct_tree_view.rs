@@ -1430,7 +1430,7 @@ impl Render for StructTreeView {
                     }
 
                     crate::ui::style::panel_empty_state(
-                        IconName::ListTree,
+                        IconName::Braces,
                         "No Structure Loaded",
                         Some("Open a Kaitai Struct (.ksy) YAML file to inspect binary fields"),
                         Some(load_actions.into_any_element()),

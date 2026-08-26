@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+pub const DEFAULT_LIGHT_THEME: &str = "Ayu Light";
+pub const DEFAULT_DARK_THEME: &str = "Ayu Dark";
+
 const APPLICATION_CONFIG_DIRECTORY: &str = "xvw";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
@@ -22,6 +25,8 @@ static SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[serde(default)]
 pub struct Settings {
     pub appearance: Appearance,
+    pub light_theme: String,
+    pub dark_theme: String,
     pub theme_mode: ThemeMode,
     pub default_encoding: Encoding,
     pub recent_definition_paths: Vec<PathBuf>,
@@ -51,6 +56,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             appearance: Appearance::default(),
+            light_theme: DEFAULT_LIGHT_THEME.to_string(),
+            dark_theme: DEFAULT_DARK_THEME.to_string(),
             theme_mode: ThemeMode::Light,
             default_encoding: Encoding::default(),
             recent_definition_paths: Vec::new(),
@@ -89,9 +96,12 @@ impl Settings {
     /// Creates a settings snapshot from the application's current globals.
     pub fn from_app(cx: &App) -> Self {
         let recent_history = cx.global::<RecentHistoryState>();
+        let theme = Theme::global(cx);
         Self {
             appearance: cx.global::<Appearance>().clone(),
-            theme_mode: Theme::global(cx).mode,
+            light_theme: theme.light_theme.name.to_string(),
+            dark_theme: theme.dark_theme.name.to_string(),
+            theme_mode: theme.mode,
             default_encoding: *cx.global::<Encoding>(),
             recent_definition_paths: recent_history.definitions.paths().to_vec(),
             recent_file_paths: recent_history.files.paths().to_vec(),
@@ -143,6 +153,12 @@ impl Settings {
         }
         if !self.appearance.font_size.is_finite() || self.appearance.font_size <= 0.0 {
             self.appearance.font_size = defaults.font_size;
+        }
+        if self.light_theme.trim().is_empty() {
+            self.light_theme = DEFAULT_LIGHT_THEME.to_string();
+        }
+        if self.dark_theme.trim().is_empty() {
+            self.dark_theme = DEFAULT_DARK_THEME.to_string();
         }
 
         self.recent_definition_paths = DefinitionHistory::from_paths(self.recent_definition_paths).paths().to_vec();
@@ -253,6 +269,8 @@ mod tests {
                 font_family: "Fira Code".into(),
                 font_size: 18.0,
             },
+            light_theme: "Solarized Light".into(),
+            dark_theme: "Tokyo Night".into(),
             theme_mode: ThemeMode::Dark,
             default_encoding: Encoding::Utf16Le,
             recent_definition_paths: vec![PathBuf::from("definition.ksy")],
@@ -273,6 +291,8 @@ mod tests {
 
         assert_eq!(settings.appearance.font_family, "Fira Code");
         assert_eq!(settings.appearance.font_size, Appearance::default().font_size);
+        assert_eq!(settings.light_theme, DEFAULT_LIGHT_THEME);
+        assert_eq!(settings.dark_theme, DEFAULT_DARK_THEME);
         assert_eq!(settings.theme_mode, ThemeMode::Light);
         assert_eq!(settings.default_encoding, Encoding::default());
     }
@@ -285,5 +305,7 @@ mod tests {
         let settings = Settings::load_from(&file.path).expect("load settings");
 
         assert_eq!(settings.appearance, Appearance::default());
+        assert_eq!(settings.light_theme, DEFAULT_LIGHT_THEME);
+        assert_eq!(settings.dark_theme, DEFAULT_DARK_THEME);
     }
 }

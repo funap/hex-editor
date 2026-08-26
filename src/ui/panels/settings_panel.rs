@@ -10,8 +10,7 @@ use gpui_component::{
     dock::{Panel, PanelEvent},
     input::{self, Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    switch::Switch,
-    theme::{Theme, ThemeMode},
+    theme::Theme,
 };
 
 #[derive(Clone, PartialEq, Action)]
@@ -111,7 +110,6 @@ impl SettingsPanel {
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let container = div().p_4().flex().flex_col().gap_6();
-        let is_dark_mode = cx.theme().is_dark();
 
         container
             .track_focus(&self.focus_handle)
@@ -122,13 +120,30 @@ impl Render for SettingsPanel {
                     .flex_col()
                     .gap_2()
                     .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child("Appearance"))
-                    .child(div().flex().items_center().gap_4().child(div().w_24().child("Dark Mode")).child(
-                        Switch::new("dark-mode").checked(is_dark_mode).on_click(|checked, window, cx| {
-                            let mode = if *checked { ThemeMode::Dark } else { ThemeMode::Light };
-                            crate::theme::set_mode(mode, Some(window), cx);
-                            crate::settings::save_current(cx);
-                        }),
-                    )),
+                    .child({
+                        let active_theme_name = cx.theme().theme_name().clone();
+                        let all_themes = crate::theme::all_theme_names(cx);
+
+                        div().flex().items_center().gap_4().child(div().w_24().child("Theme")).child(
+                            div().w_48().child(
+                                Button::new("theme-selection")
+                                    .label(active_theme_name.clone())
+                                    .outline()
+                                    .dropdown_caret(true)
+                                    .with_size(Size::Small)
+                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _window, _cx| {
+                                        all_themes.iter().fold(menu, |menu, theme_name| {
+                                            let is_active = theme_name == &active_theme_name;
+                                            let name = theme_name.clone();
+                                            menu.item(PopupMenuItem::new(name.clone()).checked(is_active).on_click(move |_, window, cx| {
+                                                crate::theme::apply_theme_by_name(&name, Some(window), cx);
+                                                crate::settings::save_current(cx);
+                                            }))
+                                        })
+                                    }),
+                            ),
+                        )
+                    }),
             )
             .child(
                 div()

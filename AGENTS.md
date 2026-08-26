@@ -25,7 +25,7 @@ precedence over it.
 - `src/ui/`: GPUI components, panels, panes, and workspace.
 - `src/actions.rs`: action definitions; bindings may be registered by `main`,
   the workspace, or the owning component.
-- `themes/`: theme data; `assets/`: embedded application assets.
+- `assets/`: embedded application assets (icons and themes).
 - `testdata/`: repository-owned test fixtures.
 
 Kaitai structure definitions use `.ksy` YAML. Runtime loading is exposed by

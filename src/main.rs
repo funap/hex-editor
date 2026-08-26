@@ -67,7 +67,7 @@ fn init_app_state(cx: &mut App) {
 
     gpui_component::init(cx);
     theme::init(cx);
-    theme::set_mode(settings.theme_mode, None, cx);
+    theme::apply_settings(&settings, None, cx);
     settings::register_quit_handler(cx);
     ui::workspace::init(cx);
     ui::components::new_file_modal::init(cx);

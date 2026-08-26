@@ -3,10 +3,11 @@ use gpui::{AssetSource, Result, SharedString};
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 
-/// Embed application assets containing Lucide SVG icons.
+/// Embed application assets containing Lucide SVG icons and theme definitions.
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
+#[include = "themes/**/*.json"]
 pub struct Assets;
 
 impl AssetSource for Assets {

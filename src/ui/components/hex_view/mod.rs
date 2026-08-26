@@ -8,8 +8,8 @@ mod layout_tests;
 
 pub use actions::*;
 pub use layout::{
-    ascii_byte_index_from_world_x, bounded_auto_fit_range, build_hex_text_source, can_chain_to_outer, hex_grid_width, hex_grid_x, hex_group_x,
-    make_hex_view_layout, measure_hex_cell_width, weighted_text_width,
+    ascii_byte_index_from_world_x, bounded_auto_fit_range, build_hex_text_source, calculate_scroll_top_for_range, can_chain_to_outer, hex_grid_width,
+    hex_grid_x, hex_group_x, make_hex_view_layout, measure_hex_cell_width, weighted_text_width,
 };
 pub use paint::{RowPaintParams, paint_hex_row, paint_scrollbar};
 pub use types::*;
@@ -1022,6 +1022,30 @@ impl HexView {
         self.scroll_to_row(row, cx);
     }
 
+    pub fn scroll_to_range_if_needed(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let line_starts = self.editor.read(cx).line_starts();
+        if line_starts.is_empty() {
+            return;
+        }
+        let start = range.start.min(range.end);
+        let end = range.start.max(range.end);
+        let start_row = Editor::find_line_index(start, &line_starts);
+        let end_byte_last = if end > start { end.saturating_sub(1) } else { start };
+        let end_row = Editor::find_line_index(end_byte_last, &line_starts);
+
+        let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
+        let total_rows = line_starts.len().max(1);
+
+        if let Some(target_top) = calculate_scroll_top_for_range(self.scroll_offset, visible_rows, total_rows, start_row, end_row) {
+            self.scroll_to_row(target_top, cx);
+        }
+    }
+
+    pub fn scroll_to_byte_if_needed(&mut self, byte_offset: usize, cx: &mut Context<Self>) {
+        self.scroll_to_range_if_needed(byte_offset..byte_offset, cx);
+    }
+
     pub fn current_scroll_top_row(&self) -> usize {
         self.scroll_offset
     }
@@ -1075,11 +1099,8 @@ impl HexView {
         let line_starts = editor.line_starts();
         let cursor_row = Editor::find_line_index(cursor_offset, &line_starts);
 
-        let visible_rows = if let Some(bounds) = self.list_bounds.get() {
-            (f32::from(bounds.size.height) / ROW_HEIGHT).floor() as usize
-        } else {
-            30
-        };
+        let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
         let top_row = self.scroll_offset;
         let bottom_row = top_row + visible_rows.saturating_sub(1);
 

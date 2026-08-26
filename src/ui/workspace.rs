@@ -353,10 +353,11 @@ impl Workspace {
                 crate::ui::components::bookmark_panel::BookmarkPanelEvent::Import => {
                     this.on_action_import_bookmarks(&crate::actions::ImportBookmarks, _window, cx);
                 }
-                crate::ui::components::bookmark_panel::BookmarkPanelEvent::NavigateTo { offset, .. } => {
+                crate::ui::components::bookmark_panel::BookmarkPanelEvent::NavigateTo { offset, size } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.scroll_to_byte(*offset, cx);
+                            let len = (*size).max(1);
+                            panel.scroll_to_range_if_needed(*offset..offset.saturating_add(len), cx);
                         });
                     }
                 }
@@ -368,10 +369,11 @@ impl Workspace {
             &struct_tree,
             window,
             |this, _, event: &crate::ui::components::struct_tree_view::StructTreeViewEvent, _window, cx| match event {
-                crate::ui::components::struct_tree_view::StructTreeViewEvent::NavigateTo { offset, .. } => {
+                crate::ui::components::struct_tree_view::StructTreeViewEvent::NavigateTo { offset, size } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.scroll_to_byte(*offset, cx);
+                            let len = (*size).max(1);
+                            panel.scroll_to_range_if_needed(*offset..offset.saturating_add(len), cx);
                         });
                     }
                 }
@@ -382,10 +384,11 @@ impl Workspace {
         cx.subscribe(
             &left_panel,
             |this, _, event: &crate::ui::components::search_panel::SearchPanelEvent, cx| match event {
-                crate::ui::components::search_panel::SearchPanelEvent::NavigateTo { offset, .. } => {
+                crate::ui::components::search_panel::SearchPanelEvent::NavigateTo { offset, len } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.scroll_to_byte(*offset, cx);
+                            let match_len = (*len).max(1);
+                            panel.scroll_to_range_if_needed(*offset..offset.saturating_add(match_len), cx);
                         });
                     }
                 }
@@ -396,10 +399,11 @@ impl Workspace {
         cx.subscribe(
             &left_panel,
             |this, _, event: &crate::ui::components::strings_panel::StringsPanelEvent, cx| match event {
-                crate::ui::components::strings_panel::StringsPanelEvent::NavigateTo { offset, .. } => {
+                crate::ui::components::strings_panel::StringsPanelEvent::NavigateTo { offset, len } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.scroll_to_byte(*offset, cx);
+                            let match_len = (*len).max(1);
+                            panel.scroll_to_range_if_needed(*offset..offset.saturating_add(match_len), cx);
                         });
                     }
                 }

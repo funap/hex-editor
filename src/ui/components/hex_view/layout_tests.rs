@@ -1,4 +1,4 @@
-use super::layout::{build_ascii_char_map, centered_glyph_offset};
+use super::layout::{build_ascii_char_map, calculate_scroll_top_for_range, centered_glyph_offset};
 use super::paint::highlight_color_for_range;
 use super::types::{AUTO_FIT_SCAN_BYTES, AsciiChar, HexViewLayout, HexViewLayoutState, HorizontalScrollTarget, LayoutInput, ScrollColumn};
 use super::{
@@ -349,10 +349,47 @@ fn check_ascii_non_printable_mapping() {
     assert_eq!(map_short, vec![Some(AsciiChar::NonPrintable), Some(AsciiChar::Printable('A', 1)), None, None,]);
 }
 
+fn check_calculate_scroll_top_for_range() {
+    // 1. Target is already inside visible rows (10..=19 for top=10, visible=10, total=100)
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 10, 10), None);
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 15, 15), None);
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 19, 19), None);
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 12, 17), None);
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 10, 19), None);
+
+    // 2. Target is above visible rows (4-row top margin above start_row)
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 5, 5), Some(1));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 0, 0), Some(0));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 4, 8), Some(0));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 8, 15), Some(4));
+
+    // 3. Target is below visible rows (4-row top margin above start_row)
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 20, 20), Some(16));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 25, 25), Some(21));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 20, 24), Some(16));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 15, 22), Some(11));
+
+    // 4. Target range larger than viewport (span >= visible_rows)
+    // Aligns 4-row margin above start_row
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 30, 50), Some(26));
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 10, 30), Some(6));
+
+    // 5. Total rows / document boundary clamping
+    assert_eq!(calculate_scroll_top_for_range(0, 10, 50, 48, 48), Some(40));
+    assert_eq!(calculate_scroll_top_for_range(0, 10, 50, 49, 49), Some(40));
+    assert_eq!(calculate_scroll_top_for_range(0, 10, 50, 60, 60), Some(40));
+
+    // 6. Degenerate and edge cases
+    assert_eq!(calculate_scroll_top_for_range(0, 0, 50, 5, 5), Some(1)); // visible_rows = 0 treated as 1
+    assert_eq!(calculate_scroll_top_for_range(10, 10, 100, 8, 4), Some(0)); // inverted range normalized
+    assert_eq!(calculate_scroll_top_for_range(0, 10, 1, 0, 0), None); // single-row document
+}
+
 #[test]
 fn test_hex_view_layout_suite() {
     check_layout_and_scrolling();
     check_character_mapping_and_auto_fit();
     check_structure_and_highlights();
     check_ascii_non_printable_mapping();
+    check_calculate_scroll_top_for_range();
 }

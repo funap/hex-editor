@@ -252,13 +252,14 @@ impl DiffPanel {
         if let Some(diff_result) = &self.diff_result {
             let modified_chunks: Vec<_> = diff_result.chunks.iter().filter(|c| matches!(c, DiffChunk::Modified { .. })).collect();
 
-            if let Some(DiffChunk::Modified { offset, .. }) = modified_chunks.get(self.current_diff_index) {
+            if let Some(DiffChunk::Modified { offset, length }) = modified_chunks.get(self.current_diff_index) {
                 let offset = *offset;
+                let length = *length;
                 self.left_view.update(cx, |view, cx| {
-                    view.scroll_to_byte(offset, cx);
+                    view.scroll_to_range_if_needed(offset..offset.saturating_add(length.max(1)), cx);
                 });
                 self.right_view.update(cx, |view, cx| {
-                    view.scroll_to_byte(offset, cx);
+                    view.scroll_to_range_if_needed(offset..offset.saturating_add(length.max(1)), cx);
                 });
             }
         }

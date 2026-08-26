@@ -22,6 +22,7 @@ use crate::ui::components::goto_offset_bar::{GotoBarEvent, GotoOffsetBar};
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
 use crate::ui::icon::IconName;
+use std::ops::Range;
 use std::path::PathBuf;
 
 const CONTEXT: &str = "EditorPanel";
@@ -119,7 +120,7 @@ impl EditorPanel {
                 });
                 let cursor_offset = this.editor.read(cx).cursor_offset;
                 this.hex_view.update(cx, |view, cx| {
-                    view.scroll_to_byte(cursor_offset, cx);
+                    view.scroll_to_byte_if_needed(cursor_offset, cx);
                 });
                 this.is_goto_visible = false;
                 cx.dispatch_action(&FocusHexView);
@@ -250,9 +251,23 @@ impl EditorPanel {
         self.structure_reparse_task = Some(task);
     }
 
+    #[allow(dead_code)]
     pub fn scroll_to_byte(&mut self, byte_offset: usize, cx: &mut Context<Self>) {
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(byte_offset, cx);
+        });
+    }
+
+    pub fn scroll_to_range_if_needed(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |view, cx| {
+            view.scroll_to_range_if_needed(range, cx);
+        });
+    }
+
+    #[allow(dead_code)]
+    pub fn scroll_to_byte_if_needed(&mut self, byte_offset: usize, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |view, cx| {
+            view.scroll_to_byte_if_needed(byte_offset, cx);
         });
     }
 
@@ -420,14 +435,15 @@ impl EditorPanel {
     }
 
     fn perform_search_next(&mut self, cx: &mut Context<Self>) {
-        let next_offset = self.editor.update(cx, |editor: &mut Editor, cx| {
+        let (next_offset, pattern_len) = self.editor.update(cx, |editor: &mut Editor, cx| {
+            let pattern_len = editor.search_pattern().map(|p| p.len()).unwrap_or(1);
             let offset = editor.find_and_navigate_next();
             cx.notify();
-            offset
+            (offset, pattern_len)
         });
         if let Some(offset) = next_offset {
             self.hex_view.update(cx, |view, cx| {
-                view.scroll_to_byte(offset, cx);
+                view.scroll_to_range_if_needed(offset..offset.saturating_add(pattern_len), cx);
             });
         }
         self.update_highlights(cx);
@@ -440,14 +456,15 @@ impl EditorPanel {
     }
 
     fn perform_search_prev(&mut self, cx: &mut Context<Self>) {
-        let prev_offset = self.editor.update(cx, |editor: &mut Editor, cx| {
+        let (prev_offset, pattern_len) = self.editor.update(cx, |editor: &mut Editor, cx| {
+            let pattern_len = editor.search_pattern().map(|p| p.len()).unwrap_or(1);
             let offset = editor.find_and_navigate_prev();
             cx.notify();
-            offset
+            (offset, pattern_len)
         });
         if let Some(offset) = prev_offset {
             self.hex_view.update(cx, |view, cx| {
-                view.scroll_to_byte(offset, cx);
+                view.scroll_to_range_if_needed(offset..offset.saturating_add(pattern_len), cx);
             });
         }
         self.update_highlights(cx);

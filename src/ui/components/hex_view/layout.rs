@@ -243,3 +243,27 @@ pub fn hex_group_x(group: HexGroupInfo, origin_x: Pixels, cell_width: Pixels) ->
         origin_x + hex_grid_x(group.text_end, cell_width),
     )
 }
+
+/// Number of margin rows to display above the target when scrolling into view.
+/// This places the target at the 5th line from the top of the viewport.
+pub const SCROLL_REVEAL_TOP_MARGIN: usize = 4;
+
+/// Computes the new top scroll row to reveal target range (rows `start_row..=end_row`) in the viewport.
+/// If the target is already fully visible within the current viewport, returns `None`.
+/// If the target is outside the current viewport, returns `Some(new_scroll_top)` placing `start_row`
+/// with a 4-row top margin (`SCROLL_REVEAL_TOP_MARGIN`).
+pub fn calculate_scroll_top_for_range(current_scroll_top: usize, visible_rows: usize, total_rows: usize, start_row: usize, end_row: usize) -> Option<usize> {
+    let (start_row, end_row) = (start_row.min(end_row), start_row.max(end_row));
+    let visible_rows = visible_rows.max(1);
+    let top_row = current_scroll_top;
+    let bottom_row = top_row + visible_rows.saturating_sub(1);
+    let max_offset = total_rows.saturating_sub(visible_rows);
+
+    if start_row >= top_row && end_row <= bottom_row {
+        return None;
+    }
+
+    let target_top = start_row.saturating_sub(SCROLL_REVEAL_TOP_MARGIN).min(max_offset);
+
+    if target_top != current_scroll_top { Some(target_top) } else { None }
+}

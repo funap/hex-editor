@@ -458,14 +458,6 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         let item_slice = &chunk[group.chunk_start..group.chunk_end];
         let is_cursor = params.cursor_offset >= item_start_offset && params.cursor_offset < item_end_offset;
         let is_zero = is_group_zero(item_slice);
-        let text_color = if is_cursor && params.is_focused {
-            fg_color
-        } else if is_zero {
-            muted_color.opacity(0.5)
-        } else {
-            fg_color
-        };
-
         let is_selected = if params.min_sel <= params.max_sel {
             item_start_offset <= params.max_sel && item_end_offset > params.min_sel
         } else {
@@ -473,6 +465,15 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         };
 
         let current_hl_color = highlight_color_for_range(item_start_offset, item_end_offset, active_row_highlights);
+        let has_hl = current_hl_color.is_some();
+        let text_color = if (is_cursor && params.is_focused) || is_selected || has_hl {
+            fg_color
+        } else if is_zero {
+            muted_color.opacity(0.5)
+        } else {
+            fg_color
+        };
+
         group_visuals.push((current_hl_color, is_selected, is_cursor));
         group_text_colors.push(text_color);
 
@@ -803,7 +804,25 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                     for (j, opt) in char_map.into_iter().enumerate() {
                         let item = if let Some(item) = opt { item } else { continue };
                         let c = item.character();
-                        let text_color = if !item.is_printable() { muted_color.opacity(0.4) } else { fg_color };
+                        let byte_pos = offset + j;
+                        let current_hl_color = highlight_color_for_range(byte_pos, byte_pos.saturating_add(1), active_row_highlights);
+                        let has_hl = current_hl_color.is_some();
+                        let in_selected_group = if params.min_sel <= params.max_sel {
+                            let group_start = (byte_pos / group_bytes) * group_bytes;
+                            let group_end = group_start + group_bytes;
+                            group_start <= params.max_sel && group_end > params.min_sel
+                        } else {
+                            false
+                        };
+                        let text_color = if !item.is_printable() {
+                            if has_hl || in_selected_group {
+                                fg_color.opacity(0.65)
+                            } else {
+                                muted_color.opacity(0.4)
+                            }
+                        } else {
+                            fg_color
+                        };
 
                         let text_byte_start = ascii_text.len();
                         ascii_text.push(c);

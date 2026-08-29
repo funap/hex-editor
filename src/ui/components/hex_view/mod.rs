@@ -1011,7 +1011,12 @@ impl HexView {
     }
 
     pub fn set_highlight_ranges(&mut self, ranges: Vec<Range<usize>>, cx: &mut Context<Self>) {
-        let highlight_color = cx.theme().accent;
+        let is_dark = cx.theme().mode.is_dark();
+        let highlight_color = if is_dark {
+            gpui::hsla(0.0, 0.75, 0.55, 0.35)
+        } else {
+            gpui::hsla(0.0, 0.75, 0.50, 0.35)
+        };
         let highlights: Vec<_> = ranges.into_iter().map(|range| (range, highlight_color)).collect();
         self.set_highlights(highlights, cx);
     }

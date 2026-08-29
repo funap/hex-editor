@@ -170,7 +170,6 @@ impl EditorPanel {
         });
 
         let _editor_subscription = cx.observe(&editor, |this, editor, cx| {
-            this.update_search_bar_results(cx);
             this.update_highlights(cx);
 
             if let Some((_, generation)) = editor.read(cx).pending_structure_reparse() {
@@ -368,15 +367,6 @@ impl EditorPanel {
         self.update_highlights(cx);
     }
 
-    fn update_search_bar_results(&mut self, cx: &mut Context<Self>) {
-        let editor = self.editor.read(cx);
-        let count = editor.search_state.results.len();
-        let current = editor.search_state.current_result_index;
-        self.search_bar.update(cx, |bar, cx| {
-            bar.set_results(count, current, cx);
-        });
-    }
-
     fn update_highlights(&mut self, cx: &mut Context<Self>) {
         let mut highlights = Vec::new();
 
@@ -410,13 +400,26 @@ impl EditorPanel {
                 if let Ok(doc) = editor.document.read() {
                     let data = doc.buffer.data();
                     let matches = crate::core::search::find_occurrences_in_range(data, &pattern, scan_start..scan_end);
-                    let theme = cx.theme();
-                    let search_color = theme.accent;
-                    let current_result_color = theme.success;
+                    let is_dark = cx.theme().mode.is_dark();
+                    let (search_color, current_result_color) = if is_dark {
+                        (
+                            // Translucent amber/gold for matches in dark mode
+                            gpui::hsla(48.0 / 360.0, 0.85, 0.45, 0.35),
+                            // Richer warm amber/orange for the current match at cursor
+                            gpui::hsla(36.0 / 360.0, 0.95, 0.50, 0.55),
+                        )
+                    } else {
+                        (
+                            // Translucent yellow for matches in light mode
+                            gpui::hsla(48.0 / 360.0, 0.90, 0.55, 0.35),
+                            // Warm amber for the current match at cursor in light mode
+                            gpui::hsla(36.0 / 360.0, 0.95, 0.50, 0.50),
+                        )
+                    };
                     let cursor_offset = editor.cursor_offset;
 
                     for result_offset in matches {
-                        let is_current = result_offset == cursor_offset;
+                        let is_current = result_offset == cursor_offset || (cursor_offset >= result_offset && cursor_offset < result_offset + pattern_len);
                         let color = if is_current { current_result_color } else { search_color };
                         highlights.push((result_offset..result_offset + pattern_len, color));
                     }
@@ -437,7 +440,7 @@ impl EditorPanel {
     fn perform_search_next(&mut self, cx: &mut Context<Self>) {
         let (next_offset, pattern_len) = self.editor.update(cx, |editor: &mut Editor, cx| {
             let pattern_len = editor.search_pattern().map(|p| p.len()).unwrap_or(1);
-            let offset = editor.find_and_navigate_next();
+            let offset = editor.next_search_result();
             cx.notify();
             (offset, pattern_len)
         });
@@ -458,7 +461,7 @@ impl EditorPanel {
     fn perform_search_prev(&mut self, cx: &mut Context<Self>) {
         let (prev_offset, pattern_len) = self.editor.update(cx, |editor: &mut Editor, cx| {
             let pattern_len = editor.search_pattern().map(|p| p.len()).unwrap_or(1);
-            let offset = editor.find_and_navigate_prev();
+            let offset = editor.prev_search_result();
             cx.notify();
             (offset, pattern_len)
         });

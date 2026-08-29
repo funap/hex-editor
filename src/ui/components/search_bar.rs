@@ -21,10 +21,7 @@ pub enum SearchBarEvent {
 pub struct SearchBar {
     input: Entity<InputState>,
     mode: SearchMode,
-    result_count: usize,
-    current_index: Option<usize>,
     debounce_task: Option<Task<()>>,
-    is_searching: bool,
 }
 
 impl EventEmitter<SearchBarEvent> for SearchBar {}
@@ -46,8 +43,7 @@ impl SearchBar {
                 let task = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
                     if let Some(this) = this.upgrade() {
-                        this.update(cx, |this, cx| {
-                            this.is_searching = true;
+                        this.update(cx, |_this, cx| {
                             cx.emit(SearchBarEvent::IncrementalSearch(query, mode));
                             cx.notify();
                         })
@@ -62,18 +58,8 @@ impl SearchBar {
         Self {
             input,
             mode: SearchMode::Hex,
-            result_count: 0,
-            current_index: None,
             debounce_task: None,
-            is_searching: false,
         }
-    }
-
-    pub fn set_results(&mut self, count: usize, current: Option<usize>, cx: &mut Context<Self>) {
-        self.result_count = count;
-        self.current_index = current;
-        self.is_searching = false;
-        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -103,16 +89,6 @@ impl SearchBar {
 
 impl Render for SearchBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let result_info = if self.result_count > 0 {
-            if let Some(index) = self.current_index {
-                format!("{}/{}", index + 1, self.result_count)
-            } else {
-                format!("{} results", self.result_count)
-            }
-        } else {
-            String::new()
-        };
-
         div()
             .flex()
             .items_center()
@@ -160,9 +136,6 @@ impl Render for SearchBar {
                     .flex_1()
                     .child(Input::new(&self.input).prefix(Icon::new(IconName::Search).size_3p5()).cleanable(true)),
             )
-            .when(!result_info.is_empty(), |this| {
-                this.child(div().text_sm().text_color(cx.theme().muted_foreground).child(result_info.clone()))
-            })
             .child(Button::new("prev").ghost().icon(IconName::ChevronUp).on_click(cx.listener(|_, _, _, cx| {
                 cx.emit(SearchBarEvent::Prev);
             })))

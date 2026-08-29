@@ -127,7 +127,8 @@ impl SearchPanel {
         self.search_task = None;
 
         if let Some(ed) = &editor {
-            self._editor_subscription = Some(cx.observe(ed, |_this, _, cx| {
+            self._editor_subscription = Some(cx.observe(ed, |this, ed, cx| {
+                this.sync_selected_index_from_editor(&ed, cx);
                 cx.notify();
             }));
         }
@@ -281,9 +282,7 @@ impl SearchPanel {
                     } else {
                         editor.set_cursor_offset(offset);
                     }
-                    if let Some(cur_idx) = editor.search_state.current_result_index.as_mut() {
-                        *cur_idx = index;
-                    }
+                    editor.search_state.current_result_index = Some(index);
                     cx.notify();
                 });
             }
@@ -379,6 +378,48 @@ impl SearchPanel {
         self.table_state.auto_fit_column_with_texts(col_ix, texts);
         cx.notify();
     }
+
+    fn sync_selected_index_from_editor(&mut self, editor: &Entity<Editor>, cx: &App) {
+        if self.results.is_empty() {
+            return;
+        }
+        let editor_ref = editor.read(cx);
+        let match_len = self.match_len.max(1);
+
+        let target_offsets = if let Some(range) = editor_ref.selection_range() {
+            vec![range.start, editor_ref.cursor_offset]
+        } else {
+            vec![editor_ref.cursor_offset]
+        };
+
+        let mut found_index = None;
+        for offset in target_offsets {
+            let res = match self.results.binary_search_by_key(&offset, |item| item.offset) {
+                Ok(exact) => Some(exact),
+                Err(insert_idx) => {
+                    if insert_idx > 0 {
+                        let prev_idx = insert_idx - 1;
+                        let item_offset = self.results[prev_idx].offset;
+                        if offset < item_offset.saturating_add(match_len) {
+                            Some(prev_idx)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+            if res.is_some() {
+                found_index = res;
+                break;
+            }
+        }
+
+        if self.selected_index != found_index {
+            self.selected_index = found_index;
+        }
+    }
 }
 
 fn format_row_previews(buffer_data: Option<&[u8]>, offset: usize, match_len: usize, encoding: Encoding) -> (String, String) {
@@ -413,9 +454,19 @@ impl Render for SearchPanel {
         let badge = if self.is_searching {
             Some(crate::ui::style::panel_badge("Scanning...", theme).into_any_element())
         } else if self.is_truncated {
-            Some(crate::ui::style::panel_badge(format!("{}+ matches", MAX_SEARCH_RESULTS), theme).into_any_element())
+            if let Some(idx) = self.selected_index {
+                Some(crate::ui::style::panel_badge(format!("{}/{}+ matches", idx + 1, MAX_SEARCH_RESULTS), theme).into_any_element())
+            } else {
+                Some(crate::ui::style::panel_badge(format!("{}+ matches", MAX_SEARCH_RESULTS), theme).into_any_element())
+            }
+        } else if count > 0 {
+            if let Some(idx) = self.selected_index {
+                Some(crate::ui::style::panel_badge(format!("{}/{} matches", idx + 1, count), theme).into_any_element())
+            } else {
+                Some(crate::ui::style::panel_badge(format!("{} matches", count), theme).into_any_element())
+            }
         } else if !self.last_query.is_empty() {
-            Some(crate::ui::style::panel_badge(format!("{} matches", count), theme).into_any_element())
+            Some(crate::ui::style::panel_badge("0 matches", theme).into_any_element())
         } else {
             None
         };

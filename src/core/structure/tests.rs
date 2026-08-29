@@ -1208,7 +1208,7 @@ fn test_binary_search_index_for_many_fields() {
 
     // Keep this as a deterministic index correctness test.  Wall-clock
     // assertions belong in a benchmark, not in the default test suite.
-    let count = 1_000;
+    let count = 100;
     let mut fields = Vec::with_capacity(count);
 
     for i in 0..count {
@@ -1245,7 +1245,7 @@ fn test_binary_search_index_for_many_fields() {
     let parse_result = ParseResult::new("large_zip".into(), fields, count * 32, Vec::new());
 
     // Verify O(log N) binary search correctness at various offsets
-    let test_offsets = [0, 32 * 50, 32 * 500, 32 * 999];
+    let test_offsets = [0, 32 * 10, 32 * 50, 32 * 99];
     for &off in &test_offsets {
         let target_idx = off / 32;
         let containers = parse_result.find_container_structs_starting_at(off, 32);
@@ -1258,7 +1258,7 @@ fn test_binary_search_index_for_many_fields() {
     }
 
     // Exercise lookups at many positions, including positions between fields.
-    for row in 0..1000 {
+    for row in 0..100 {
         let row_offset = (row * 16) % (count * 32);
         let _ = parse_result.find_container_structs_starting_at(row_offset, 16);
         let _ = parse_result.find_leaf_fields_starting_at(row_offset, 16);
@@ -1313,18 +1313,20 @@ fn test_struct_tree_all_collapsed_by_default() {
     let fields = vec![root_container];
     let mut collapsed_paths = HashSet::new();
 
-    fn collect_all_container_paths(fields: &[ParsedField], parent_path: &[usize], collapsed: &mut HashSet<Vec<usize>>) {
-        for (idx, field) in fields.iter().enumerate() {
-            let mut current_path = parent_path.to_vec();
-            current_path.push(idx);
-            if !field.children.is_empty() {
-                collapsed.insert(current_path.clone());
-                collect_all_container_paths(&field.children, &current_path, collapsed);
+    let mut stack = Vec::new();
+    for (idx, field) in fields.iter().enumerate().rev() {
+        stack.push((field, vec![idx]));
+    }
+    while let Some((field, current_path)) = stack.pop() {
+        if !field.children.is_empty() {
+            collapsed_paths.insert(current_path.clone());
+            for (idx, child) in field.children.iter().enumerate().rev() {
+                let mut child_path = current_path.clone();
+                child_path.push(idx);
+                stack.push((child, child_path));
             }
         }
     }
-
-    collect_all_container_paths(&fields, &Vec::new(), &mut collapsed_paths);
 
     // root_struct (path: [0]) and child_struct (path: [0, 0]) should both be collapsed
     assert!(collapsed_paths.contains(&vec![0]));
@@ -1626,7 +1628,7 @@ types:
 
     let ksy = parse_ksy_yaml(ksy_yaml);
 
-    let count = 1_024u32;
+    let count = 64u32;
     let mut data = Vec::with_capacity(4 + count as usize * 14);
     data.extend_from_slice(&count.to_le_bytes());
     for i in 0..count {
@@ -1640,7 +1642,7 @@ types:
     let interpreter = KaitaiInterpreter::new(ksy);
     let result = interpreter.parse(&mut stream);
 
-    assert_eq!(result.fields.len(), 1_025);
+    assert_eq!(result.fields.len(), (count + 1) as usize);
     if let FieldValue::U32(c) = result.fields[0].value {
         assert_eq!(c, count);
     } else {

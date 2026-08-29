@@ -1,7 +1,5 @@
 use gpui::prelude::*;
-use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, SharedString, Subscription, Task, WeakEntity, Window, div, px,
-};
+use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, SharedString, Subscription, Task, WeakEntity, Window, div, px};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{Panel, PanelEvent, TabPanel};
 use gpui_component::menu::PopupMenu;
@@ -42,23 +40,6 @@ impl Drop for EditorDocumentLease {
 pub fn init(cx: &mut App) {
     // Initialize HexView actions and keybindings
     hex_view::init(cx);
-    cx.bind_keys([
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-f", ToggleSearch, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-f", ToggleSearch, Some(CONTEXT)),
-        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
-        KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
-        KeyBinding::new("ctrl-g", ToggleGoToAddress, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-l", ToggleGoToAddress, Some(CONTEXT)),
-    ]);
 }
 
 pub struct EditorPanel {

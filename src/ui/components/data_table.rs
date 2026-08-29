@@ -1,13 +1,41 @@
 use gpui::{
-    AnyElement, Context, Div, ElementId, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Styled, UniformListScrollHandle, canvas, div, point, px, size,
+    AnyElement, App, Context, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Styled, UniformListScrollHandle, actions,
+    canvas, div, point, px, size,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarAxis};
 use gpui_component::{StyledExt, h_flex};
 
+pub const CONTEXT: &str = "VirtualTable";
 pub const TABLE_SCROLLBAR_WIDTH: Pixels = px(10.0);
 pub const DEFAULT_AUTOFIT_CHAR_WIDTH: f32 = 7.2;
 pub const DEFAULT_AUTOFIT_PADDING: f32 = 16.0;
+
+actions!(table, [MoveUp, MoveDown, MoveTop, MoveBottom, PageUp, PageDown, SelectCurrent, Dismiss]);
+
+/// Registers default keybindings for table navigation.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", MoveUp, Some("VirtualTable")),
+        KeyBinding::new("down", MoveDown, Some("VirtualTable")),
+        KeyBinding::new("k", MoveUp, Some("VirtualTable")),
+        KeyBinding::new("j", MoveDown, Some("VirtualTable")),
+        KeyBinding::new("home", MoveTop, Some("VirtualTable")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-home", MoveTop, Some("VirtualTable")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-home", MoveTop, Some("VirtualTable")),
+        KeyBinding::new("end", MoveBottom, Some("VirtualTable")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-end", MoveBottom, Some("VirtualTable")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-end", MoveBottom, Some("VirtualTable")),
+        KeyBinding::new("pageup", PageUp, Some("VirtualTable")),
+        KeyBinding::new("pagedown", PageDown, Some("VirtualTable")),
+        KeyBinding::new("enter", SelectCurrent, Some("VirtualTable")),
+        KeyBinding::new("escape", Dismiss, Some("VirtualTable")),
+    ]);
+}
 
 /// Represents sort direction for a table column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,8 +140,10 @@ pub struct ColumnResizeState {
     pub initial_width: Pixels,
 }
 
-/// Holds layout and scroll state for a `VirtualTable`.
+/// Holds layout, focus, and scroll state for a `VirtualTable`.
 pub struct VirtualTableState {
+    pub id: ElementId,
+    pub focus_handle: Option<FocusHandle>,
     pub columns: Vec<TableColumn>,
     pub vertical_scroll_handle: UniformListScrollHandle,
     pub horizontal_scroll_handle: ScrollHandle,
@@ -123,9 +153,26 @@ pub struct VirtualTableState {
 }
 
 impl VirtualTableState {
-    /// Creates a new `VirtualTableState` with the provided columns.
-    pub fn new(columns: Vec<TableColumn>) -> Self {
+    /// Creates a new `VirtualTableState` with the provided id, columns, and focus handle.
+    pub fn new(id: impl Into<ElementId>, columns: Vec<TableColumn>, focus_handle: FocusHandle) -> Self {
         Self {
+            id: id.into(),
+            focus_handle: Some(focus_handle),
+            columns,
+            vertical_scroll_handle: UniformListScrollHandle::new(),
+            horizontal_scroll_handle: ScrollHandle::new(),
+            resizing_column: None,
+            scroll_offset_x: px(0.0),
+            last_container_width: px(0.0),
+        }
+    }
+
+    /// Creates a test `VirtualTableState` with placeholder id and without focus handle.
+    #[cfg(test)]
+    pub fn for_test(columns: Vec<TableColumn>) -> Self {
+        Self {
+            id: "test-table".into(),
+            focus_handle: None,
             columns,
             vertical_scroll_handle: UniformListScrollHandle::new(),
             horizontal_scroll_handle: ScrollHandle::new(),
@@ -669,7 +716,7 @@ mod tests {
             TableColumn::new("col3", "Col 3", px(80.0)),
         ];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
         assert_eq!(state.visible_columns_count(), 2);
         assert_eq!(state.total_visible_width(), px(180.0));
 
@@ -686,7 +733,7 @@ mod tests {
     fn test_column_width_clamping() {
         let columns = vec![TableColumn::new("col", "Col", px(100.0)).min_width(px(50.0)).max_width(px(200.0))];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
 
         // Below minimum
         state.set_column_width(0, px(20.0));
@@ -708,7 +755,7 @@ mod tests {
             TableColumn::new("col2", "Col 2", px(100.0)).sortable(true),
         ];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
 
         let sort1 = state.toggle_column_sort(0);
         assert_eq!(sort1, Some(TableSortDirection::Ascending));
@@ -733,7 +780,7 @@ mod tests {
     fn test_column_resize_drag_lifecycle() {
         let columns = vec![TableColumn::new("col1", "Col 1", px(100.0)).min_width(px(40.0)).max_width(px(300.0))];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
 
         state.start_resize(0, px(150.0));
         assert_eq!(
@@ -763,7 +810,7 @@ mod tests {
     fn test_auto_fit_column_with_texts() {
         let columns = vec![TableColumn::new("id", "Field Name", px(80.0)).min_width(px(40.0)).max_width(px(300.0))];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
         let sample_texts = vec!["short", "a much longer field value that expands column", "med"];
         state.auto_fit_column_with_texts(0, sample_texts);
 
@@ -780,7 +827,7 @@ mod tests {
     fn test_horizontal_scrolling() {
         let columns = vec![TableColumn::new("col1", "Col 1", px(150.0)), TableColumn::new("col2", "Col 2", px(150.0))];
 
-        let mut state = VirtualTableState::new(columns);
+        let mut state = VirtualTableState::for_test(columns);
         assert_eq!(state.total_visible_width(), px(300.0));
 
         let container_width = px(200.0);

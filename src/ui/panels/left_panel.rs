@@ -54,17 +54,13 @@ impl LeftPanel {
         })
         .detach();
 
-        cx.subscribe(&search_panel, |_, _, event: &SearchPanelEvent, cx| match event {
-            SearchPanelEvent::NavigateTo { offset, len } => {
-                cx.emit(SearchPanelEvent::NavigateTo { offset: *offset, len: *len });
-            }
+        cx.subscribe(&search_panel, |_, _, event: &SearchPanelEvent, cx| {
+            cx.emit(event.clone());
         })
         .detach();
 
-        cx.subscribe(&strings_panel, |_, _, event: &StringsPanelEvent, cx| match event {
-            StringsPanelEvent::NavigateTo { offset, len } => {
-                cx.emit(StringsPanelEvent::NavigateTo { offset: *offset, len: *len });
-            }
+        cx.subscribe(&strings_panel, |_, _, event: &StringsPanelEvent, cx| {
+            cx.emit(event.clone());
         })
         .detach();
 

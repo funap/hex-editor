@@ -1,7 +1,7 @@
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern, parse_text_pattern};
-use crate::ui::components::data_table::{TableColumn, VirtualTable, VirtualTableState};
+use crate::ui::components::data_table::{self as table, TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
@@ -10,7 +10,7 @@ use gpui_component::input::{self, Input, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, WindowExt as _, h_flex, v_flex};
 
-actions!(search_panel, [MoveUp, MoveDown, SelectCurrent, ClearResults]);
+actions!(search_panel, [FocusTable, ClearResults]);
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = search_panel, no_json)]
@@ -36,21 +36,17 @@ pub const MAX_SEARCH_RESULTS: usize = 10_000;
 const SEARCH_ROW_HEIGHT: f32 = 24.0;
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some("SearchPanel && !InputFocus")),
-        KeyBinding::new("down", MoveDown, Some("SearchPanel && !InputFocus")),
-        KeyBinding::new("k", MoveUp, Some("SearchPanel && !InputFocus")),
-        KeyBinding::new("j", MoveDown, Some("SearchPanel && !InputFocus")),
-        KeyBinding::new("enter", SelectCurrent, Some("SearchPanel && !InputFocus")),
-        KeyBinding::new("escape", ClearResults, Some("SearchPanel")),
-    ]);
+    cx.bind_keys([KeyBinding::new("escape", FocusTable, Some("SearchPanel"))]);
 }
 
 fn default_search_columns() -> Vec<TableColumn> {
     vec![
-        TableColumn::new("address", "Address", px(90.0)).min_width(px(60.0)).resizable(true),
-        TableColumn::new("value", "Value", px(140.0)).min_width(px(60.0)).resizable(true),
-        TableColumn::new("text", "Text", px(120.0)).min_width(px(60.0)).resizable(true),
+        TableColumn::new("address", "Address", px(88.0))
+            .min_width(px(50.0))
+            .sortable(true)
+            .resizable(true),
+        TableColumn::new("hex", "Hex", px(180.0)).min_width(px(80.0)).resizable(true),
+        TableColumn::new("text", "Text", px(140.0)).min_width(px(60.0)).resizable(true),
     ]
 }
 
@@ -59,8 +55,10 @@ pub struct SearchResultItem {
     pub offset: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SearchPanelEvent {
     NavigateTo { offset: usize, len: usize },
+    FocusEditor,
 }
 
 pub struct SearchPanel {
@@ -86,7 +84,8 @@ impl EventEmitter<SearchPanelEvent> for SearchPanel {}
 impl SearchPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let table_state = VirtualTableState::new(default_search_columns());
+        let table_focus_handle = cx.focus_handle();
+        let table_state = VirtualTableState::new("search-table", default_search_columns(), table_focus_handle);
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(SearchMode::Hex.placeholder()));
 
         let input_sub = cx.subscribe_in(&input, window, |this, _, event: &input::InputEvent, _window, cx| match event {
@@ -296,7 +295,7 @@ impl SearchPanel {
         }
     }
 
-    fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_up(&mut self, _: &table::MoveUp, _: &mut Window, cx: &mut Context<Self>) {
         if self.results.is_empty() {
             return;
         }
@@ -308,7 +307,7 @@ impl SearchPanel {
         self.select_item(new_idx, cx);
     }
 
-    fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_down(&mut self, _: &table::MoveDown, _: &mut Window, cx: &mut Context<Self>) {
         if self.results.is_empty() {
             return;
         }
@@ -320,10 +319,61 @@ impl SearchPanel {
         self.select_item(new_idx, cx);
     }
 
-    fn select_current(&mut self, _: &SelectCurrent, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_top(&mut self, _: &table::MoveTop, _: &mut Window, cx: &mut Context<Self>) {
+        if self.results.is_empty() {
+            return;
+        }
+        self.table_state.scroll_to_row(0, ScrollStrategy::Top);
+        self.select_item(0, cx);
+    }
+
+    fn table_move_bottom(&mut self, _: &table::MoveBottom, _: &mut Window, cx: &mut Context<Self>) {
+        if self.results.is_empty() {
+            return;
+        }
+        let last_idx = self.results.len().saturating_sub(1);
+        self.table_state.scroll_to_row(last_idx, ScrollStrategy::Top);
+        self.select_item(last_idx, cx);
+    }
+
+    fn table_page_up(&mut self, _: &table::PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.results.is_empty() {
+            return;
+        }
+        let current = self.selected_index.unwrap_or(0);
+        let page_size = 10;
+        let new_idx = current.saturating_sub(page_size);
+        self.table_state.scroll_to_row(new_idx, ScrollStrategy::Top);
+        self.select_item(new_idx, cx);
+    }
+
+    fn table_page_down(&mut self, _: &table::PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.results.is_empty() {
+            return;
+        }
+        let current = self.selected_index.unwrap_or(0);
+        let page_size = 10;
+        let last_idx = self.results.len().saturating_sub(1);
+        let new_idx = (current + page_size).min(last_idx);
+        self.table_state.scroll_to_row(new_idx, ScrollStrategy::Top);
+        self.select_item(new_idx, cx);
+    }
+
+    fn table_select_current(&mut self, _: &table::SelectCurrent, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(idx) = self.selected_index {
             self.select_item(idx, cx);
         }
+    }
+
+    fn table_dismiss(&mut self, _: &table::Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(SearchPanelEvent::FocusEditor);
+    }
+
+    fn focus_table(&mut self, _: &FocusTable, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = &self.table_state.focus_handle {
+            handle.focus(window);
+        }
+        cx.notify();
     }
 
     fn clear_results_action(&mut self, _: &ClearResults, _: &mut Window, cx: &mut Context<Self>) {
@@ -451,7 +501,8 @@ impl Render for SearchPanel {
         let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
 
         let theme = cx.theme();
-        let is_focused = self.focus_handle.is_focused(window);
+        let is_table_focused = self.table_state.focus_handle.as_ref().is_some_and(|h| h.is_focused(window));
+        let is_focused = self.focus_handle.is_focused(window) || is_table_focused;
         let has_editor = self.editor.is_some();
         let is_query_empty = self.input.read(cx).value().trim().is_empty();
         let count = self.results.len();
@@ -549,12 +600,30 @@ impl Render for SearchPanel {
                     ),
             );
 
-        // Body content
+        let truncation_notice = if self.is_truncated {
+            Some(
+                div()
+                    .px_2()
+                    .py_1()
+                    .bg(theme.accent.opacity(0.1))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!(
+                        "{}+ occurrences found (showing first {} entries)",
+                        MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS
+                    )),
+            )
+        } else {
+            None
+        };
+
         let body = if !has_editor {
             crate::ui::style::panel_empty_state(
                 IconName::Search,
                 "No Active File",
-                Some("Open a binary file to search across the entire buffer"),
+                Some("Open a binary file to search its contents"),
                 None,
                 theme,
             )
@@ -562,53 +631,20 @@ impl Render for SearchPanel {
         } else if self.is_searching {
             crate::ui::style::panel_empty_state(
                 IconName::Loader,
-                "Scanning File...",
-                Some("Searching entire file buffer in background"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else if self.results.is_empty() && !self.last_query.is_empty() {
-            crate::ui::style::panel_empty_state(
-                IconName::Search,
-                "No Matches Found",
-                Some(format!("No occurrences found for '{}'", self.last_query)),
+                "Searching File...",
+                Some("Finding matching occurrences in the background"),
                 None,
                 theme,
             )
             .into_any_element()
         } else if self.results.is_empty() {
-            crate::ui::style::panel_empty_state(
-                IconName::Search,
-                "Search in File",
-                Some("Enter hex pattern or text to scan the entire file"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else {
-            let view = cx.entity().clone();
-            let is_truncated = self.is_truncated;
-            let context_focus_handle = self.focus_handle.clone();
-            let total_visible_width = self.table_state.total_visible_width();
-            let scroll_offset_x = self.table_state.scroll_offset_x;
-
-            let truncation_notice = if is_truncated {
-                Some(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .bg(theme.accent.opacity(0.1))
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("Showing first {} matches (capped for performance)", MAX_SEARCH_RESULTS)),
-                )
+            let message = if self.last_query.is_empty() {
+                "Enter a pattern and click Search"
             } else {
-                None
+                "No occurrences found for query"
             };
-
+            crate::ui::style::panel_empty_state(IconName::Search, "No Results", Some(message), None, theme).into_any_element()
+        } else {
             let header_row = VirtualTable::render_header_row(
                 &self.table_state,
                 "search-column-header",
@@ -621,11 +657,17 @@ impl Render for SearchPanel {
             );
 
             let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+            let total_visible_width = self.table_state.total_visible_width();
+            let scroll_offset_x = self.table_state.scroll_offset_x;
+            let row_count = self.results.len();
+            let view = cx.entity().clone();
             let list_view = view.clone();
+            let context_focus_handle = self.focus_handle.clone();
 
-            let list = uniform_list("search-panel-results-list", self.results.len(), move |range, window, cx| {
+            let list = uniform_list("search-virtual-table", row_count, move |visible_range, window, cx| {
                 let this = list_view.read(cx);
                 let theme = cx.theme();
+
                 let (encoding, buffer) = if let Some(ed) = &this.editor {
                     let ed_ref = ed.read(cx);
                     let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
@@ -635,12 +677,12 @@ impl Render for SearchPanel {
                 };
                 let buffer_data = buffer.as_ref().map(|b| b.data());
 
-                range
+                visible_range
                     .map(|idx| {
                         if let Some(item) = this.results.get(idx) {
                             let is_selected = this.selected_index == Some(idx);
                             let (bg_color, border_color) = if is_selected {
-                                if is_focused {
+                                if is_table_focused {
                                     (theme.selection, theme.accent)
                                 } else {
                                     (theme.muted, theme.muted_foreground.opacity(0.4))
@@ -648,9 +690,12 @@ impl Render for SearchPanel {
                             } else {
                                 (theme.sidebar, theme.border.opacity(0.5))
                             };
-
                             let hover_bg = if is_selected {
-                                if is_focused { theme.selection.opacity(0.7) } else { theme.muted.opacity(0.8) }
+                                if is_table_focused {
+                                    theme.selection.opacity(0.7)
+                                } else {
+                                    theme.muted.opacity(0.8)
+                                }
                             } else {
                                 theme.selection.opacity(0.3)
                             };
@@ -669,12 +714,18 @@ impl Render for SearchPanel {
                                 .bg(bg_color)
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(hover_bg))
-                                .on_click(window.listener_for(&list_view, move |this, _, _, cx| {
+                                .on_click(window.listener_for(&list_view, move |this, _, window, cx| {
+                                    if let Some(handle) = &this.table_state.focus_handle {
+                                        handle.focus(window);
+                                    }
                                     this.select_item(idx, cx);
                                 }))
                                 .on_mouse_down(
                                     MouseButton::Right,
-                                    window.listener_for(&list_view, move |this, _, _, cx| {
+                                    window.listener_for(&list_view, move |this, _, window, cx| {
+                                        if let Some(handle) = &this.table_state.focus_handle {
+                                            handle.focus(window);
+                                        }
                                         this.select_item(idx, cx);
                                     }),
                                 )
@@ -724,11 +775,36 @@ impl Render for SearchPanel {
             let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
             let context_view = view.clone();
 
-            v_flex()
-                .id("search-table-container")
+            let table_focus_handle = self.table_state.focus_handle.clone();
+            let mut table_container = v_flex()
+                .id(self.table_state.id.clone())
+                .key_context(table::CONTEXT)
                 .flex_1()
                 .overflow_hidden()
-                .relative()
+                .relative();
+
+            if let Some(focus_handle) = &table_focus_handle {
+                table_container = table_container.track_focus(focus_handle).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, _| {
+                        if let Some(handle) = &this.table_state.focus_handle {
+                            handle.focus(window);
+                        }
+                    }),
+                );
+            }
+
+            table_container = table_container
+                .on_action(cx.listener(Self::table_move_up))
+                .on_action(cx.listener(Self::table_move_down))
+                .on_action(cx.listener(Self::table_move_top))
+                .on_action(cx.listener(Self::table_move_bottom))
+                .on_action(cx.listener(Self::table_page_up))
+                .on_action(cx.listener(Self::table_page_down))
+                .on_action(cx.listener(Self::table_select_current))
+                .on_action(cx.listener(Self::table_dismiss));
+
+            table_container
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                     if this.table_state.resizing_column.is_some() {
                         if event.pressed_button != Some(MouseButton::Left) {
@@ -758,6 +834,10 @@ impl Render for SearchPanel {
                         }
                     }),
                 )
+                .on_action(cx.listener(Self::clear_results_action))
+                .on_action(cx.listener(Self::copy_address))
+                .on_action(cx.listener(Self::copy_value))
+                .on_action(cx.listener(Self::copy_text))
                 .child(table_overlay)
                 .children(truncation_notice)
                 .child(header_row)
@@ -833,9 +913,7 @@ impl Render for SearchPanel {
                     }
                 }),
             )
-            .on_action(cx.listener(Self::move_up))
-            .on_action(cx.listener(Self::move_down))
-            .on_action(cx.listener(Self::select_current))
+            .on_action(cx.listener(Self::focus_table))
             .on_action(cx.listener(Self::clear_results_action))
             .on_action(cx.listener(Self::copy_address))
             .on_action(cx.listener(Self::copy_value))
@@ -847,13 +925,51 @@ impl Render for SearchPanel {
 }
 
 impl Focusable for SearchPanel {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::core::encoding::Encoding;
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_row_previews() {
+        let data = b"Hello, World!\x00\x01\x02\x03";
+        let (hex, text) = format_row_previews(Some(data), 0, 5, Encoding::Ascii);
+        assert_eq!(hex, "48 65 6C 6C 6F");
+        assert_eq!(text, "Hello");
+    }
+
+    #[test]
+    fn test_navigation_index_calculations() {
+        let results_len = 25;
+        // move_up
+        let prev_idx = |current: Option<usize>| match current {
+            Some(0) | None => results_len - 1,
+            Some(idx) => idx - 1,
+        };
+        assert_eq!(prev_idx(Some(5)), 4);
+        assert_eq!(prev_idx(Some(0)), 24);
+        assert_eq!(prev_idx(None), 24);
+
+        // move_down
+        let next_idx = |current: Option<usize>| match current {
+            Some(idx) if idx + 1 < results_len => idx + 1,
+            _ => 0,
+        };
+        assert_eq!(next_idx(Some(5)), 6);
+        assert_eq!(next_idx(Some(24)), 0);
+        assert_eq!(next_idx(None), 0);
+
+        // page_up & page_down
+        let page_size = 10;
+        let page_up_idx = |current: usize| current.saturating_sub(page_size);
+        let page_down_idx = |current: usize| (current + page_size).min(results_len - 1);
+        assert_eq!(page_up_idx(15), 5);
+        assert_eq!(page_up_idx(4), 0);
+        assert_eq!(page_down_idx(5), 15);
+        assert_eq!(page_down_idx(20), 24);
+    }
+}

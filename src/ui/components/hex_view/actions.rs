@@ -1,5 +1,8 @@
 use super::types::CONTEXT;
-use crate::actions::{AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, JoinLine, Paste, Redo, SearchNext, SearchPrev, ToggleSearch, Undo};
+use crate::actions::{
+    AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, GoToBeginning, GoToEnd, JoinLine, Paste, Redo, SearchNext, SearchPrev, ToggleGoToAddress,
+    ToggleSearch, Undo,
+};
 use gpui::*;
 
 actions!(
@@ -51,6 +54,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("pagedown", PageDown, Some(CONTEXT)),
         KeyBinding::new("home", Home, Some(CONTEXT)),
         KeyBinding::new("end", End, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-home", GoToBeginning, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-home", GoToBeginning, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-end", GoToEnd, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-end", GoToEnd, Some(CONTEXT)),
         KeyBinding::new("shift-pageup", SelectPageUp, Some(CONTEXT)),
         KeyBinding::new("shift-pagedown", SelectPageDown, Some(CONTEXT)),
         KeyBinding::new("shift-home", SelectHome, Some(CONTEXT)),
@@ -115,6 +126,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-g", SearchPrev, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-l", ToggleGoToAddress, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-g", ToggleGoToAddress, Some(CONTEXT)),
         // Custom line breaks & joins
         KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
         #[cfg(target_os = "macos")]

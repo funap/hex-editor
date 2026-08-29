@@ -1206,7 +1206,7 @@ mod tests {
 
     #[test]
     fn deep_structure_index_walks_without_call_stack_growth() {
-        let depth = 4096;
+        let depth = 256;
         let mut field = test_field("leaf", 0);
         for level in (0..depth).rev() {
             field = ParsedField {

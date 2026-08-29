@@ -186,14 +186,28 @@ impl ParseUpdateMailbox {
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, None),
+        KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, Some("Workspace")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-w", crate::actions::CloseActivePanel, None),
+        KeyBinding::new("cmd-s", crate::actions::Save, Some("Workspace")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-w", crate::actions::CloseActivePanel, None),
+        KeyBinding::new("ctrl-s", crate::actions::Save, Some("Workspace")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-s", crate::actions::LoadStructureDefinition, Some("Workspace")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-f4", crate::actions::CloseActivePanel, None),
-        KeyBinding::new("insert", crate::actions::ToggleInsertMode, None),
+        KeyBinding::new("ctrl-shift-s", crate::actions::LoadStructureDefinition, Some("Workspace")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-v", crate::actions::ToggleInlineStructureView, Some("Workspace")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-v", crate::actions::ToggleInlineStructureView, Some("Workspace")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-\\", crate::actions::SplitRight, Some("Workspace")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-\\", crate::actions::SplitRight, Some("Workspace")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-d", crate::actions::SplitDown, Some("Workspace")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-d", crate::actions::SplitDown, Some("Workspace")),
+        KeyBinding::new("insert", crate::actions::ToggleInsertMode, Some("Workspace")),
     ]);
 
     cx.on_action::<NewFile>(|_, cx| {
@@ -381,9 +395,10 @@ impl Workspace {
         )
         .detach();
 
-        cx.subscribe(
+        cx.subscribe_in(
             &left_panel,
-            |this, _, event: &crate::ui::components::search_panel::SearchPanelEvent, cx| match event {
+            window,
+            |this, _, event: &crate::ui::components::search_panel::SearchPanelEvent, window, cx| match event {
                 crate::ui::components::search_panel::SearchPanelEvent::NavigateTo { offset, len } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
@@ -392,18 +407,33 @@ impl Workspace {
                         });
                     }
                 }
+                crate::ui::components::search_panel::SearchPanelEvent::FocusEditor => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.hex_view().read(cx).focus_handle(cx).focus(window);
+                        });
+                    }
+                }
             },
         )
         .detach();
 
-        cx.subscribe(
+        cx.subscribe_in(
             &left_panel,
-            |this, _, event: &crate::ui::components::strings_panel::StringsPanelEvent, cx| match event {
+            window,
+            |this, _, event: &crate::ui::components::strings_panel::StringsPanelEvent, window, cx| match event {
                 crate::ui::components::strings_panel::StringsPanelEvent::NavigateTo { offset, len } => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
                             let match_len = (*len).max(1);
                             panel.scroll_to_range_if_needed(*offset..offset.saturating_add(match_len), cx);
+                        });
+                    }
+                }
+                crate::ui::components::strings_panel::StringsPanelEvent::FocusEditor => {
+                    if let Some(editor_panel) = this.active_editor_panel(cx) {
+                        editor_panel.update(cx, |panel, cx| {
+                            panel.hex_view().read(cx).focus_handle(cx).focus(window);
                         });
                     }
                 }
@@ -1371,7 +1401,14 @@ impl Workspace {
     }
 
     fn on_action_toggle_search_panel(&mut self, _: &crate::actions::ToggleSearchPanel, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_activity(Activity::Search, window, cx);
+        if !self.is_left_panel_visible || self.left_panel.read(cx).active_tab != LeftPanelTab::Search {
+            self.left_panel.update(cx, |p, cx| {
+                p.set_tab(LeftPanelTab::Search, cx);
+            });
+            self.set_left_panel_visible(true, window, cx);
+        }
+        let focus_handle = self.left_panel.read(cx).search_panel.read(cx).focus_handle(cx);
+        focus_handle.focus(window);
     }
 
     fn on_action_show_files_tab(&mut self, _: &ShowFilesTab, window: &mut Window, cx: &mut Context<Self>) {

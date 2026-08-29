@@ -88,39 +88,82 @@ pub fn format_parse_result_as_yaml(result: &ParseResult) -> Result<String, serde
     serde_yaml::to_string(&document)
 }
 
-fn convert_field_to_yaml(field: &ParsedField, field_count: &mut usize) -> YamlField {
-    *field_count += 1;
-    let mut children = Vec::with_capacity(field.children.len());
-    for child in &field.children {
-        children.push(convert_field_to_yaml(child, field_count));
+fn convert_field_to_yaml(root: &ParsedField, field_count: &mut usize) -> YamlField {
+    struct Frame<'a> {
+        field: &'a ParsedField,
+        next_child: usize,
+        converted: YamlField,
     }
 
-    let value = if field.is_struct() && !field.children.is_empty() {
-        None
-    } else {
-        Some(format_field_value(field))
-    };
-
-    let field_type = if field.field_type.is_empty() {
-        if field.children.is_empty() {
-            "value".to_string()
+    let create_yaml_field = |field: &ParsedField| -> YamlField {
+        let value = if field.is_struct() && !field.children.is_empty() {
+            None
         } else {
-            "struct".to_string()
+            Some(format_field_value(field))
+        };
+
+        let field_type = if field.field_type.is_empty() {
+            if field.children.is_empty() {
+                "value".to_string()
+            } else {
+                "struct".to_string()
+            }
+        } else {
+            field.field_type.clone()
+        };
+
+        YamlField {
+            id: field.id.clone(),
+            field_type,
+            offset: field.offset,
+            size: field.size,
+            value,
+            is_instance: field.is_instance,
+            description: field.description.clone().filter(|value| !value.is_empty()),
+            enum_label: field.enum_label.clone(),
+            children: Vec::with_capacity(field.children.len()),
         }
-    } else {
-        field.field_type.clone()
     };
 
-    YamlField {
-        id: field.id.clone(),
-        field_type,
-        offset: field.offset,
-        size: field.size,
-        value,
-        is_instance: field.is_instance,
-        description: field.description.clone().filter(|value| !value.is_empty()),
-        enum_label: field.enum_label.clone(),
-        children,
+    *field_count += 1;
+    let mut frames = vec![Frame {
+        field: root,
+        next_child: 0,
+        converted: create_yaml_field(root),
+    }];
+
+    loop {
+        let next_child = {
+            let frame = frames.last_mut().expect("yaml frame stack must not be empty");
+            if frame.next_child < frame.field.children.len() {
+                let idx = frame.next_child;
+                frame.next_child += 1;
+                Some(idx)
+            } else {
+                None
+            }
+        };
+
+        if let Some(idx) = next_child {
+            let child = {
+                let frame = frames.last().expect("parent frame must exist");
+                &frame.field.children[idx]
+            };
+            *field_count += 1;
+            frames.push(Frame {
+                field: child,
+                next_child: 0,
+                converted: create_yaml_field(child),
+            });
+            continue;
+        }
+
+        let completed = frames.pop().expect("frame must exist").converted;
+        if let Some(parent) = frames.last_mut() {
+            parent.converted.children.push(completed);
+        } else {
+            return completed;
+        }
     }
 }
 

@@ -18,9 +18,9 @@ use gpui_component::{
     v_flex,
 };
 
-actions!(file_tree, [MoveUp, MoveDown]);
+actions!(file_tree, [MoveUp, MoveDown, MoveTop, MoveBottom, PageUp, PageDown]);
 
-const CONTEXT: &str = "TreeStory";
+const CONTEXT: &str = "FileTreeView";
 
 fn path_file_name(path: &Path) -> String {
     path.file_name()
@@ -30,9 +30,23 @@ fn path_file_name(path: &Path) -> String {
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        gpui::KeyBinding::new("up", MoveUp, Some(CONTEXT)),
-        gpui::KeyBinding::new("down", MoveDown, Some(CONTEXT)),
-        gpui::KeyBinding::new("enter", SelectItem, Some(CONTEXT)),
+        gpui::KeyBinding::new("up", MoveUp, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("down", MoveDown, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("k", MoveUp, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("j", MoveDown, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("home", MoveTop, Some("FileTreeView && !Input")),
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-home", MoveTop, Some("FileTreeView && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-home", MoveTop, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("end", MoveBottom, Some("FileTreeView && !Input")),
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-end", MoveBottom, Some("FileTreeView && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-end", MoveBottom, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("pageup", PageUp, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("pagedown", PageDown, Some("FileTreeView && !Input")),
+        gpui::KeyBinding::new("enter", SelectItem, Some("FileTreeView && !Input")),
     ]);
 }
 
@@ -352,6 +366,80 @@ impl FileTreeView {
         self.move_cursor(1, cx);
     }
 
+    fn move_top(&mut self, _: &MoveTop, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_items = self.visible_items();
+        if visible_items.is_empty() {
+            return;
+        }
+        let item = visible_items[0].clone();
+        self.selected_item = Some(item.clone());
+        self.selected_items = vec![item];
+        self.tree_state.update(cx, |state, _| {
+            state.scroll_to_item(0, ScrollStrategy::Top);
+        });
+        self.clear_tree_selection(cx);
+        cx.notify();
+    }
+
+    fn move_bottom(&mut self, _: &MoveBottom, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_items = self.visible_items();
+        if visible_items.is_empty() {
+            return;
+        }
+        let last_index = visible_items.len() - 1;
+        let item = visible_items[last_index].clone();
+        self.selected_item = Some(item.clone());
+        self.selected_items = vec![item];
+        self.tree_state.update(cx, |state, _| {
+            state.scroll_to_item(last_index, ScrollStrategy::Bottom);
+        });
+        self.clear_tree_selection(cx);
+        cx.notify();
+    }
+
+    fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_items = self.visible_items();
+        if visible_items.is_empty() {
+            return;
+        }
+        let current_index = self
+            .selected_item
+            .as_ref()
+            .and_then(|selected| visible_items.iter().position(|item| item.id == selected.id))
+            .unwrap_or(0);
+        let next_index = current_index.saturating_sub(10);
+        let item = visible_items[next_index].clone();
+        self.selected_item = Some(item.clone());
+        self.selected_items = vec![item];
+        self.tree_state.update(cx, |state, _| {
+            state.scroll_to_item(next_index, ScrollStrategy::Top);
+        });
+        self.clear_tree_selection(cx);
+        cx.notify();
+    }
+
+    fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_items = self.visible_items();
+        if visible_items.is_empty() {
+            return;
+        }
+        let current_index = self
+            .selected_item
+            .as_ref()
+            .and_then(|selected| visible_items.iter().position(|item| item.id == selected.id))
+            .unwrap_or(0);
+        let last_index = visible_items.len() - 1;
+        let next_index = (current_index + 10).min(last_index);
+        let item = visible_items[next_index].clone();
+        self.selected_item = Some(item.clone());
+        self.selected_items = vec![item];
+        self.tree_state.update(cx, |state, _| {
+            state.scroll_to_item(next_index, ScrollStrategy::Bottom);
+        });
+        self.clear_tree_selection(cx);
+        cx.notify();
+    }
+
     fn move_cursor(&mut self, direction: i8, cx: &mut Context<Self>) {
         let visible_items = self.visible_items();
         if visible_items.is_empty() {
@@ -463,6 +551,10 @@ impl Render for FileTreeView {
             )
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::move_top))
+            .on_action(cx.listener(Self::move_bottom))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::on_action_rename))
             .on_action(cx.listener(Self::on_action_select_item))
             .on_action(cx.listener(Self::on_action_set_file_tree_folder))
@@ -797,5 +889,27 @@ mod tests {
         let new_paths = vec![PathBuf::from("d.bin"), PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
         assert!(history.update(&new_paths));
         assert_eq!(history.displayed_paths(), &new_paths);
+    }
+
+    #[test]
+    fn test_file_tree_navigation_indices() {
+        let count = 15;
+        let move_cursor = |curr: Option<usize>, dir: i8| match (curr, dir) {
+            (Some(index), -1) => index.saturating_sub(1),
+            (Some(index), 1) => (index + 1).min(count - 1),
+            (Some(index), _) => index,
+            (None, _) => 0,
+        };
+        assert_eq!(move_cursor(Some(5), -1), 4);
+        assert_eq!(move_cursor(Some(0), -1), 0);
+        assert_eq!(move_cursor(Some(5), 1), 6);
+        assert_eq!(move_cursor(Some(14), 1), 14);
+
+        let page_up = |curr: usize| curr.saturating_sub(10);
+        let page_down = |curr: usize| (curr + 10).min(count - 1);
+        assert_eq!(page_up(12), 2);
+        assert_eq!(page_up(4), 0);
+        assert_eq!(page_down(2), 12);
+        assert_eq!(page_down(10), 14);
     }
 }

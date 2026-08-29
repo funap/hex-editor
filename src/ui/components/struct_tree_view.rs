@@ -13,7 +13,10 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-actions!(struct_tree, [MoveUp, MoveDown, ToggleExpand, Expand, Collapse]);
+actions!(
+    struct_tree,
+    [MoveUp, MoveDown, MoveTop, MoveBottom, PageUp, PageDown, ToggleExpand, Expand, Collapse]
+);
 
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, gpui::Action)]
 #[action(namespace = struct_tree)]
@@ -59,12 +62,12 @@ fn default_structure_columns() -> Vec<TableColumn> {
         TableColumn::new("type", "Type", px(TYPE_COLUMN_WIDTH))
             .min_width(px(50.0))
             .resizable(true)
-            .visible(false),
+            .visible(true),
         TableColumn::new("size", "Size", px(SIZE_COLUMN_WIDTH))
             .min_width(px(40.0))
             .resizable(true)
-            .visible(false),
-        TableColumn::new("value", "Value", px(180.0)).min_width(px(60.0)).resizable(true).visible(true),
+            .visible(true),
+        TableColumn::new("value", "Value", px(180.0)).min_width(px(60.0)).resizable(true),
     ]
 }
 
@@ -97,16 +100,28 @@ fn default_yaml_file_name(definition_id: &str) -> String {
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("down", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("k", MoveUp, Some(CONTEXT)),
-        KeyBinding::new("j", MoveDown, Some(CONTEXT)),
-        KeyBinding::new("space", ToggleExpand, Some(CONTEXT)),
-        KeyBinding::new("enter", ToggleExpand, Some(CONTEXT)),
-        KeyBinding::new("right", Expand, Some(CONTEXT)),
-        KeyBinding::new("left", Collapse, Some(CONTEXT)),
-        KeyBinding::new("l", Expand, Some(CONTEXT)),
-        KeyBinding::new("h", Collapse, Some(CONTEXT)),
+        KeyBinding::new("up", MoveUp, Some("StructTreeView && !Input")),
+        KeyBinding::new("down", MoveDown, Some("StructTreeView && !Input")),
+        KeyBinding::new("k", MoveUp, Some("StructTreeView && !Input")),
+        KeyBinding::new("j", MoveDown, Some("StructTreeView && !Input")),
+        KeyBinding::new("home", MoveTop, Some("StructTreeView && !Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-home", MoveTop, Some("StructTreeView && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-home", MoveTop, Some("StructTreeView && !Input")),
+        KeyBinding::new("end", MoveBottom, Some("StructTreeView && !Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-end", MoveBottom, Some("StructTreeView && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-end", MoveBottom, Some("StructTreeView && !Input")),
+        KeyBinding::new("pageup", PageUp, Some("StructTreeView && !Input")),
+        KeyBinding::new("pagedown", PageDown, Some("StructTreeView && !Input")),
+        KeyBinding::new("space", ToggleExpand, Some("StructTreeView && !Input")),
+        KeyBinding::new("enter", ToggleExpand, Some("StructTreeView && !Input")),
+        KeyBinding::new("right", Expand, Some("StructTreeView && !Input")),
+        KeyBinding::new("left", Collapse, Some("StructTreeView && !Input")),
+        KeyBinding::new("l", Expand, Some("StructTreeView && !Input")),
+        KeyBinding::new("h", Collapse, Some("StructTreeView && !Input")),
     ]);
 }
 
@@ -167,7 +182,8 @@ impl StructTreeView {
         if let Some(ref res) = parse_result {
             Self::flatten_fields(res.fields.iter(), 0, &[], &expanded_paths, &mut flattened, 0);
         }
-        let table_state = VirtualTableState::new(default_structure_columns());
+        let table_focus_handle = cx.focus_handle();
+        let table_state = VirtualTableState::new("struct-tree-table", default_structure_columns(), table_focus_handle);
         let focus_handle = cx.focus_handle();
 
         let mut this = Self {
@@ -768,6 +784,40 @@ impl StructTreeView {
         self.select_item(next_idx, cx);
     }
 
+    fn move_top(&mut self, _: &MoveTop, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+        self.select_item(0, cx);
+    }
+
+    fn move_bottom(&mut self, _: &MoveBottom, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+        let last_idx = self.flattened_fields.len().saturating_sub(1);
+        self.select_item(last_idx, cx);
+    }
+
+    fn page_up(&mut self, _: &PageUp, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+        let current = self.selected_index.unwrap_or(0);
+        let next_idx = current.saturating_sub(10);
+        self.select_item(next_idx, cx);
+    }
+
+    fn page_down(&mut self, _: &PageDown, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.flattened_fields.is_empty() {
+            return;
+        }
+        let current = self.selected_index.unwrap_or(0);
+        let last_idx = self.flattened_fields.len().saturating_sub(1);
+        let next_idx = (current + 10).min(last_idx);
+        self.select_item(next_idx, cx);
+    }
+
     fn toggle_expand(&mut self, _: &ToggleExpand, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(idx) = self.selected_index {
             self.toggle_collapse_at(idx, cx);
@@ -1249,6 +1299,10 @@ impl Render for StructTreeView {
             )
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::move_top))
+            .on_action(cx.listener(Self::move_bottom))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::toggle_expand))
             .on_action(cx.listener(Self::expand))
             .on_action(cx.listener(Self::collapse))

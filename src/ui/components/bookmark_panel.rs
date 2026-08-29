@@ -9,21 +9,45 @@ use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_
 
 actions!(
     bookmark_panel,
-    [MoveUp, MoveDown, SelectCurrent, EditComment, CancelEdit, SaveEdit, DeleteSelected]
+    [
+        MoveUp,
+        MoveDown,
+        MoveTop,
+        MoveBottom,
+        PageUp,
+        PageDown,
+        SelectCurrent,
+        EditComment,
+        CancelEdit,
+        SaveEdit,
+        DeleteSelected
+    ]
 );
 
 const CONTEXT: &str = "BookmarkPanel";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("down", MoveDown, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("k", MoveUp, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("j", MoveDown, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("f2", EditComment, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("enter", SelectCurrent, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("backspace", DeleteSelected, Some("BookmarkPanel && !CommentEdit")),
-        KeyBinding::new("delete", DeleteSelected, Some("BookmarkPanel && !CommentEdit")),
+        KeyBinding::new("up", MoveUp, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("down", MoveDown, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("k", MoveUp, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("j", MoveDown, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("home", MoveTop, Some("BookmarkPanel && !CommentEdit && !Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-home", MoveTop, Some("BookmarkPanel && !CommentEdit && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-home", MoveTop, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("end", MoveBottom, Some("BookmarkPanel && !CommentEdit && !Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-end", MoveBottom, Some("BookmarkPanel && !CommentEdit && !Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-end", MoveBottom, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("pageup", PageUp, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("pagedown", PageDown, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("f2", EditComment, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("enter", SelectCurrent, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("backspace", DeleteSelected, Some("BookmarkPanel && !CommentEdit && !Input")),
+        KeyBinding::new("delete", DeleteSelected, Some("BookmarkPanel && !CommentEdit && !Input")),
         KeyBinding::new("escape", CancelEdit, Some("CommentEdit")),
         KeyBinding::new("enter", SaveEdit, Some("CommentEdit")),
     ]);
@@ -347,6 +371,76 @@ impl BookmarkPanel {
         self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
     }
 
+    fn move_top(&mut self, _: &MoveTop, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
+            return;
+        }
+
+        let target_item = &bookmarks[0];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
+    }
+
+    fn move_bottom(&mut self, _: &MoveBottom, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
+            return;
+        }
+
+        let last_idx = bookmarks.len() - 1;
+        let target_item = &bookmarks[last_idx];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
+    }
+
+    fn page_up(&mut self, _: &PageUp, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
+            return;
+        }
+
+        let curr_idx = self.selected_id.as_ref().and_then(|id| bookmarks.iter().position(|h| &h.id == id)).unwrap_or(0);
+        let next_idx = curr_idx.saturating_sub(10);
+        let target_item = &bookmarks[next_idx];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
+    }
+
+    fn page_down(&mut self, _: &PageDown, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_id.is_some() {
+            return;
+        }
+        let Some(ed) = &self.editor else { return };
+        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        if bookmarks.is_empty() {
+            return;
+        }
+
+        let max_idx = bookmarks.len() - 1;
+        let curr_idx = self.selected_id.as_ref().and_then(|id| bookmarks.iter().position(|h| &h.id == id)).unwrap_or(0);
+        let next_idx = (curr_idx + 10).min(max_idx);
+        let target_item = &bookmarks[next_idx];
+        self.selected_id = Some(target_item.id.clone());
+        self.color_picker_id = None;
+        self.navigate_to_bookmark(target_item.offset, target_item.size, cx);
+    }
+
     fn select_current(&mut self, _: &SelectCurrent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.editing_id.is_some() {
             return;
@@ -493,6 +587,10 @@ impl Render for BookmarkPanel {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::move_top))
+            .on_action(cx.listener(Self::move_bottom))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::select_current))
             .on_action(cx.listener(Self::edit_comment))
             .on_action(cx.listener(Self::delete_selected))
@@ -732,5 +830,35 @@ impl BookmarkPanel {
         }
 
         row_container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bookmark_navigation_indices() {
+        let count = 15;
+        let move_up = |curr: Option<usize>| match curr {
+            Some(idx) => idx.saturating_sub(1),
+            None => 0,
+        };
+        assert_eq!(move_up(Some(5)), 4);
+        assert_eq!(move_up(Some(0)), 0);
+
+        let move_down = |curr: Option<usize>| match curr {
+            Some(idx) => (idx + 1).min(count - 1),
+            None => 0,
+        };
+        assert_eq!(move_down(Some(5)), 6);
+        assert_eq!(move_down(Some(14)), 14);
+
+        let page_up = |curr: usize| curr.saturating_sub(10);
+        let page_down = |curr: usize| (curr + 10).min(count - 1);
+        assert_eq!(page_up(12), 2);
+        assert_eq!(page_up(4), 0);
+        assert_eq!(page_down(2), 12);
+        assert_eq!(page_down(10), 14);
     }
 }

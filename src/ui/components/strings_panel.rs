@@ -1,7 +1,7 @@
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::strings::{DEFAULT_MIN_STRING_LENGTH, StringMatch, find_strings_limited};
-use crate::ui::components::data_table::{TableColumn, TableSortDirection, VirtualTable, VirtualTableState};
+use crate::ui::components::data_table::{self as table, TableColumn, TableSortDirection, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
@@ -11,7 +11,7 @@ use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, h_flex, v_flex};
 use std::collections::HashMap;
 
-actions!(strings_panel, [MoveUp, MoveDown, SelectCurrent, ClearResults]);
+actions!(strings_panel, [FocusTable, ClearResults]);
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = strings_panel, no_json)]
@@ -31,14 +31,7 @@ pub const MAX_STRING_RESULTS: usize = 10_000;
 const STRINGS_ROW_HEIGHT: f32 = 24.0;
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("up", MoveUp, Some("StringsPanel && !InputFocus")),
-        KeyBinding::new("down", MoveDown, Some("StringsPanel && !InputFocus")),
-        KeyBinding::new("k", MoveUp, Some("StringsPanel && !InputFocus")),
-        KeyBinding::new("j", MoveDown, Some("StringsPanel && !InputFocus")),
-        KeyBinding::new("enter", SelectCurrent, Some("StringsPanel && !InputFocus")),
-        KeyBinding::new("escape", ClearResults, Some("StringsPanel")),
-    ]);
+    cx.bind_keys([KeyBinding::new("escape", FocusTable, Some("StringsPanel"))]);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +50,10 @@ struct CachedStringsState {
     scan_min_length: Option<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StringsPanelEvent {
     NavigateTo { offset: usize, len: usize },
+    FocusEditor,
 }
 
 pub struct StringsPanel {
@@ -99,7 +94,8 @@ fn default_strings_columns() -> Vec<TableColumn> {
 impl StringsPanel {
     pub fn new(editor: Option<Entity<Editor>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let table_state = VirtualTableState::new(default_strings_columns());
+        let table_focus_handle = cx.focus_handle();
+        let table_state = VirtualTableState::new("strings-table", default_strings_columns(), table_focus_handle);
         let min_length_input = cx.new(|cx| InputState::new(window, cx));
         min_length_input.update(cx, |input, cx| {
             input.set_value(DEFAULT_MIN_STRING_LENGTH.to_string(), window, cx);
@@ -434,7 +430,7 @@ impl StringsPanel {
         cx.notify();
     }
 
-    fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_up(&mut self, _: &table::MoveUp, _: &mut Window, cx: &mut Context<Self>) {
         let visible_indices = self.sorted_indices(cx);
         if visible_indices.is_empty() {
             return;
@@ -452,7 +448,7 @@ impl StringsPanel {
         }
     }
 
-    fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_down(&mut self, _: &table::MoveDown, _: &mut Window, cx: &mut Context<Self>) {
         let visible_indices = self.sorted_indices(cx);
         if visible_indices.is_empty() {
             return;
@@ -470,7 +466,65 @@ impl StringsPanel {
         }
     }
 
-    fn select_current(&mut self, _: &SelectCurrent, _: &mut Window, cx: &mut Context<Self>) {
+    fn table_move_top(&mut self, _: &table::MoveTop, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_indices = self.sorted_indices(cx);
+        if visible_indices.is_empty() {
+            return;
+        }
+        self.table_state.scroll_to_row(0, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.first() {
+            self.select_item(index, cx);
+        }
+    }
+
+    fn table_move_bottom(&mut self, _: &table::MoveBottom, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_indices = self.sorted_indices(cx);
+        if visible_indices.is_empty() {
+            return;
+        }
+        let last_pos = visible_indices.len().saturating_sub(1);
+        self.table_state.scroll_to_row(last_pos, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.get(last_pos) {
+            self.select_item(index, cx);
+        }
+    }
+
+    fn table_page_up(&mut self, _: &table::PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_indices = self.sorted_indices(cx);
+        if visible_indices.is_empty() {
+            return;
+        }
+        let current_position = self
+            .selected_index
+            .and_then(|index| visible_indices.iter().position(|&visible_index| visible_index == index))
+            .unwrap_or(0);
+        let page_size = 10;
+        let new_position = current_position.saturating_sub(page_size);
+        self.table_state.scroll_to_row(new_position, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.get(new_position) {
+            self.select_item(index, cx);
+        }
+    }
+
+    fn table_page_down(&mut self, _: &table::PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        let visible_indices = self.sorted_indices(cx);
+        if visible_indices.is_empty() {
+            return;
+        }
+        let current_position = self
+            .selected_index
+            .and_then(|index| visible_indices.iter().position(|&visible_index| visible_index == index))
+            .unwrap_or(0);
+        let page_size = 10;
+        let last_pos = visible_indices.len().saturating_sub(1);
+        let new_position = (current_position + page_size).min(last_pos);
+        self.table_state.scroll_to_row(new_position, ScrollStrategy::Top);
+        if let Some(&index) = visible_indices.get(new_position) {
+            self.select_item(index, cx);
+        }
+    }
+
+    fn table_select_current(&mut self, _: &table::SelectCurrent, _: &mut Window, cx: &mut Context<Self>) {
         let visible_indices = self.sorted_indices(cx);
         if let Some(index) = self.selected_index.filter(|index| visible_indices.contains(index)) {
             self.select_item(index, cx);
@@ -479,12 +533,23 @@ impl StringsPanel {
         }
     }
 
+    fn table_dismiss(&mut self, _: &table::Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(StringsPanelEvent::FocusEditor);
+    }
+
     fn copy_address(&mut self, action: &CopyAddress, _: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
     }
 
     fn copy_value(&mut self, action: &CopyValue, _: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
+    }
+
+    fn focus_table(&mut self, _: &FocusTable, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = &self.table_state.focus_handle {
+            handle.focus(window);
+        }
+        cx.notify();
     }
 
     fn clear_results(&mut self, _: &ClearResults, _: &mut Window, cx: &mut Context<Self>) {
@@ -498,7 +563,8 @@ impl Render for StringsPanel {
         let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
 
         let theme = cx.theme();
-        let is_focused = self.focus_handle.is_focused(window);
+        let is_table_focused = self.table_state.focus_handle.as_ref().is_some_and(|h| h.is_focused(window));
+        let is_focused = self.focus_handle.is_focused(window) || is_table_focused;
         let has_editor = self.editor.is_some();
         let minimum_length_is_valid = self.minimum_length(cx).is_some();
         let visible_indices = self.sorted_indices(cx);
@@ -575,67 +641,54 @@ impl Render for StringsPanel {
             .items_center()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().flex_1().child(Input::new(&self.filter_input).prefix(IconName::Search).cleanable(true)));
+            .child(div().flex_1().child(Input::new(&self.filter_input)))
+            .child(
+                Button::new("clear-strings-filter")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .with_size(Size::XSmall)
+                    .tooltip("Clear filter")
+                    .disabled(self.filter_query(cx).is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.filter_input.update(cx, |input, cx| {
+                            input.set_value(String::new(), window, cx);
+                        });
+                        this.sync_selection_to_filter(cx);
+                        cx.notify();
+                    })),
+            );
 
-        let body = if !has_editor {
-            crate::ui::style::panel_empty_state(
-                IconName::ScanEye,
-                "No Active File",
-                Some("Open a binary file to find printable strings"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else if !minimum_length_is_valid {
-            crate::ui::style::panel_empty_state(
-                IconName::TriangleAlert,
-                "Invalid Minimum Length",
-                Some("Enter a positive number of characters"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else if self.is_scanning {
-            crate::ui::style::panel_empty_state(
-                IconName::Loader,
-                "Scanning File...",
-                Some("Finding printable strings in the background"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else if !self.has_scanned {
-            crate::ui::style::panel_empty_state(
-                IconName::ScanEye,
-                "Find Printable Strings",
-                Some("Scan the file using the current encoding"),
-                None,
-                theme,
-            )
-            .into_any_element()
+        let body = if self.is_scanning {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("Scanning...")
+                .into_any_element()
         } else if self.results.is_empty() {
-            crate::ui::style::panel_empty_state(
-                IconName::Search,
-                "No Strings Found",
-                Some("No printable strings matched the minimum length"),
-                None,
-                theme,
-            )
-            .into_any_element()
-        } else if visible_indices.is_empty() {
-            crate::ui::style::panel_empty_state(
-                IconName::Search,
-                "No Matching Strings",
-                Some("No string values match the current filter"),
-                None,
-                theme,
-            )
-            .into_any_element()
+            let message = if self.has_scanned {
+                "No strings found"
+            } else if has_editor {
+                "Click Scan to find strings"
+            } else {
+                "Open a file to scan strings"
+            };
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(message)
+                .into_any_element()
         } else {
-            let view = cx.entity().clone();
-            let context_focus_handle = self.focus_handle.clone();
             let total_visible_width = self.table_state.total_visible_width();
             let scroll_offset_x = self.table_state.scroll_offset_x;
+            let visible_cols = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect::<Vec<_>>();
 
             let header_row = VirtualTable::render_header_row(
                 &self.table_state,
@@ -648,22 +701,23 @@ impl Render for StringsPanel {
                 |this| &mut this.table_state,
             );
 
-            let visible_cols: Vec<(usize, Pixels)> = self.table_state.visible_columns().map(|(ix, col)| (ix, col.width)).collect();
+            let row_count = visible_indices.len();
+            let view = cx.entity().clone();
             let list_view = view.clone();
+            let context_focus_handle = self.focus_handle.clone();
 
-            let list = uniform_list("strings-panel-results-list", visible_indices.len(), move |range, window, cx| {
+            let list = uniform_list("strings-virtual-table", row_count, move |visible_range, window, cx| {
                 let this = list_view.read(cx);
                 let theme = cx.theme();
-
-                range
-                    .map(|visible_index| {
-                        let Some(&index) = visible_indices.get(visible_index) else {
-                            return div().into_any_element();
-                        };
-                        if let Some(item) = this.results.get(index) {
+                visible_range
+                    .map(|row_ix| {
+                        if let Some(&index) = visible_indices.get(row_ix)
+                            && let Some(item) = this.results.get(index)
+                        {
                             let is_selected = this.selected_index == Some(index);
-                            let (bg_color, border_color, offset_color) = if is_selected {
-                                if is_focused {
+                            let offset_color = if is_selected { theme.foreground } else { theme.accent };
+                            let (bg_color, border_color, _text_color) = if is_selected {
+                                if is_table_focused {
                                     (theme.selection, theme.accent, theme.accent_foreground)
                                 } else {
                                     (theme.muted, theme.muted_foreground.opacity(0.4), theme.muted_foreground)
@@ -672,7 +726,11 @@ impl Render for StringsPanel {
                                 (theme.sidebar, theme.border.opacity(0.5), theme.muted_foreground)
                             };
                             let hover_bg = if is_selected {
-                                if is_focused { theme.selection.opacity(0.7) } else { theme.muted.opacity(0.8) }
+                                if is_table_focused {
+                                    theme.selection.opacity(0.7)
+                                } else {
+                                    theme.muted.opacity(0.8)
+                                }
                             } else {
                                 theme.selection.opacity(0.3)
                             };
@@ -693,12 +751,18 @@ impl Render for StringsPanel {
                                 .bg(bg_color)
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(hover_bg))
-                                .on_click(window.listener_for(&list_view, move |this, _, _, cx| {
+                                .on_click(window.listener_for(&list_view, move |this, _, window, cx| {
+                                    if let Some(handle) = &this.table_state.focus_handle {
+                                        handle.focus(window);
+                                    }
                                     this.select_item(index, cx);
                                 }))
                                 .on_mouse_down(
                                     MouseButton::Right,
-                                    window.listener_for(&list_view, move |this, _, _, cx| {
+                                    window.listener_for(&list_view, move |this, _, window, cx| {
+                                        if let Some(handle) = &this.table_state.focus_handle {
+                                            handle.focus(window);
+                                        }
                                         this.select_item(index, cx);
                                     }),
                                 )
@@ -747,11 +811,36 @@ impl Render for StringsPanel {
             let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
             let context_view = view.clone();
 
-            v_flex()
-                .id("strings-table-container")
+            let table_focus_handle = self.table_state.focus_handle.clone();
+            let mut table_container = v_flex()
+                .id(self.table_state.id.clone())
+                .key_context(table::CONTEXT)
                 .flex_1()
                 .overflow_hidden()
-                .relative()
+                .relative();
+
+            if let Some(focus_handle) = &table_focus_handle {
+                table_container = table_container.track_focus(focus_handle).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, _| {
+                        if let Some(handle) = &this.table_state.focus_handle {
+                            handle.focus(window);
+                        }
+                    }),
+                );
+            }
+
+            table_container = table_container
+                .on_action(cx.listener(Self::table_move_up))
+                .on_action(cx.listener(Self::table_move_down))
+                .on_action(cx.listener(Self::table_move_top))
+                .on_action(cx.listener(Self::table_move_bottom))
+                .on_action(cx.listener(Self::table_page_up))
+                .on_action(cx.listener(Self::table_page_down))
+                .on_action(cx.listener(Self::table_select_current))
+                .on_action(cx.listener(Self::table_dismiss));
+
+            table_container
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                     if this.table_state.resizing_column.is_some() {
                         if event.pressed_button != Some(MouseButton::Left) {
@@ -816,38 +905,7 @@ impl Render for StringsPanel {
         crate::ui::style::panel_container(is_focused, theme)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if this.table_state.resizing_column.is_some() {
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        this.table_state.end_resize();
-                        cx.notify();
-                    } else {
-                        this.table_state.update_resize(event.position.x);
-                        cx.notify();
-                    }
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    if this.table_state.resizing_column.is_some() {
-                        this.table_state.end_resize();
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    if this.table_state.resizing_column.is_some() {
-                        this.table_state.end_resize();
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_action(cx.listener(Self::move_up))
-            .on_action(cx.listener(Self::move_down))
-            .on_action(cx.listener(Self::select_current))
+            .on_action(cx.listener(Self::focus_table))
             .on_action(cx.listener(Self::copy_address))
             .on_action(cx.listener(Self::copy_value))
             .on_action(cx.listener(Self::clear_results))
@@ -869,5 +927,50 @@ fn preview_text(text: &str) -> String {
 impl Focusable for StringsPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preview_text() {
+        let short = "Hello World";
+        assert_eq!(preview_text(short), "Hello World");
+
+        let long = "a".repeat(300);
+        let preview = preview_text(&long);
+        assert_eq!(preview.chars().count(), 257); // 256 + '…'
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn test_navigation_positions() {
+        let len = 20;
+        // move_up
+        let prev_pos = |curr: Option<usize>| match curr {
+            Some(0) | None => len - 1,
+            Some(p) => p - 1,
+        };
+        assert_eq!(prev_pos(Some(5)), 4);
+        assert_eq!(prev_pos(Some(0)), 19);
+
+        // move_down
+        let next_pos = |curr: Option<usize>| match curr {
+            Some(p) if p + 1 < len => p + 1,
+            _ => 0,
+        };
+        assert_eq!(next_pos(Some(5)), 6);
+        assert_eq!(next_pos(Some(19)), 0);
+
+        // page_up & page_down
+        let page_size = 10;
+        let page_up = |curr: usize| curr.saturating_sub(page_size);
+        let page_down = |curr: usize| (curr + page_size).min(len - 1);
+        assert_eq!(page_up(15), 5);
+        assert_eq!(page_up(4), 0);
+        assert_eq!(page_down(5), 15);
+        assert_eq!(page_down(15), 19);
     }
 }

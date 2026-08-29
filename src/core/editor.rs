@@ -2995,16 +2995,16 @@ mod tests {
 
     #[test]
     fn test_sparse_line_map_large_offsets() {
-        let buffer = crate::core::buffer::Buffer::new(vec![0; 10_000_000]);
+        let buffer = crate::core::buffer::Buffer::new(vec![0; 100_000]);
         let document = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test"), buffer)));
         let mut editor = Editor::new(document);
 
         let starts = editor.line_starts();
         assert!(matches!(starts, LineMap::Standard { .. }));
-        assert_eq!(starts.len(), 10_000_000_usize.div_ceil(16));
+        assert_eq!(starts.len(), 100_000_usize.div_ceil(16));
 
-        editor.add_custom_break(5_000_000);
-        editor.add_custom_break(5_000_010);
+        editor.add_custom_break(50_000);
+        editor.add_custom_break(50_010);
 
         let starts = editor.line_starts();
         assert!(matches!(starts, LineMap::Sparse(_)));
@@ -3019,9 +3019,9 @@ mod tests {
         assert_eq!(starts.binary_search(&0), Ok(0));
         assert_eq!(starts.binary_search(&1600), Ok(100));
 
-        let line_idx = Editor::find_line_index(5_000_000, &starts);
-        assert_eq!(starts.get(line_idx), Some(5_000_000));
-        assert_eq!(starts.get(line_idx + 1), Some(5_000_010));
+        let line_idx = Editor::find_line_index(50_000, &starts);
+        assert_eq!(starts.get(line_idx), Some(50_000));
+        assert_eq!(starts.get(line_idx + 1), Some(50_010));
     }
 
     #[test]

@@ -1181,6 +1181,9 @@ impl Workspace {
                     }
                     Err(e) => {
                         eprintln!("Failed to open file: {:?}", e);
+                        let _ = window.update(|window, cx| {
+                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open file: {e}")), cx);
+                        });
                     }
                 }
             }
@@ -1199,41 +1202,55 @@ impl Workspace {
                 let left_result = app.editor_service.open_file(std::path::PathBuf::from(left_path)).await;
                 let right_result = app.editor_service.open_file(std::path::PathBuf::from(right_path)).await;
 
-                if let (Ok(left_document), Ok(right_document)) = (left_result, right_result) {
-                    let left_recent_path = left_document.read().ok().map(|document| document.path().to_path_buf());
-                    let right_recent_path = right_document.read().ok().map(|document| document.path().to_path_buf());
-                    let _ = workspace.update_in(window, |workspace_view, window, cx| {
-                        if let Some(path) = left_recent_path {
-                            workspace_view.record_recent_file(path, cx);
-                        }
-                        if let Some(path) = right_recent_path {
-                            workspace_view.record_recent_file(path, cx);
-                        }
+                match (left_result, right_result) {
+                    (Ok(left_document), Ok(right_document)) => {
+                        let left_recent_path = left_document.read().ok().map(|document| document.path().to_path_buf());
+                        let right_recent_path = right_document.read().ok().map(|document| document.path().to_path_buf());
+                        let _ = workspace.update_in(window, |workspace_view, window, cx| {
+                            if let Some(path) = left_recent_path {
+                                workspace_view.record_recent_file(path, cx);
+                            }
+                            if let Some(path) = right_recent_path {
+                                workspace_view.record_recent_file(path, cx);
+                            }
 
-                        let app = AppState::global(cx).clone();
-                        let diff_result_task = app.editor_service.compute_diff(left_document.clone(), right_document.clone(), cx);
+                            let app = AppState::global(cx).clone();
+                            let diff_result_task = app.editor_service.compute_diff(left_document.clone(), right_document.clone(), cx);
 
-                        cx.spawn_in(window, async move |workspace, window| {
-                            let diff_result = diff_result_task.await;
+                            cx.spawn_in(window, async move |workspace, window| {
+                                let diff_result = diff_result_task.await;
 
-                            let _ = workspace.update_in(window, |workspace_view, window, cx| {
-                                use crate::ui::panels::diff_panel::DiffPanel;
-                                let diff_view = cx.new(|cx| {
-                                    let mut view = DiffPanel::new(left_document.clone(), right_document.clone(), window, cx);
-                                    view.set_diff_result(diff_result.clone(), cx);
-                                    view
+                                let _ = workspace.update_in(window, |workspace_view, window, cx| {
+                                    use crate::ui::panels::diff_panel::DiffPanel;
+                                    let diff_view = cx.new(|cx| {
+                                        let mut view = DiffPanel::new(left_document.clone(), right_document.clone(), window, cx);
+                                        view.set_diff_result(diff_result.clone(), cx);
+                                        view
+                                    });
+
+                                    let content = TabContent::Diff(diff_view);
+                                    workspace_view.pane_tree.update(cx, |tree, cx| {
+                                        tree.open_tab(content, window, cx);
+                                    });
+                                    workspace_view.sync_active_editor(window, cx);
+                                    cx.notify();
                                 });
-
-                                let content = TabContent::Diff(diff_view);
-                                workspace_view.pane_tree.update(cx, |tree, cx| {
-                                    tree.open_tab(content, window, cx);
-                                });
-                                workspace_view.sync_active_editor(window, cx);
-                                cx.notify();
-                            });
-                        })
-                        .detach();
-                    });
+                            })
+                            .detach();
+                        });
+                    }
+                    (Err(e), _) => {
+                        eprintln!("Failed to open left diff file: {:?}", e);
+                        let _ = window.update(|window, cx| {
+                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open diff file: {e}")), cx);
+                        });
+                    }
+                    (_, Err(e)) => {
+                        eprintln!("Failed to open right diff file: {:?}", e);
+                        let _ = window.update(|window, cx| {
+                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open diff file: {e}")), cx);
+                        });
+                    }
                 }
             }
         })
@@ -2064,13 +2081,24 @@ impl Workspace {
                             if let Some(editor_service) = editor_service_opt {
                                 for file_path in files {
                                     let recent_path = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
-                                    if let Ok(document) = editor_service.open_file(file_path).await {
-                                        let _ = window.update(|window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.record_recent_file(recent_path.clone(), cx);
-                                                this.open_editor_panel(document, window, cx);
+                                    match editor_service.open_file(file_path.clone()).await {
+                                        Ok(document) => {
+                                            let _ = window.update(|window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.record_recent_file(recent_path.clone(), cx);
+                                                    this.open_editor_panel(document, window, cx);
+                                                });
                                             });
-                                        });
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to open file {:?}: {:?}", file_path, e);
+                                            let _ = window.update(|window, cx| {
+                                                window.push_notification(
+                                                    gpui_component::notification::Notification::error(format!("Failed to open file: {e}")),
+                                                    cx,
+                                                );
+                                            });
+                                        }
                                     }
                                 }
 

@@ -1310,7 +1310,7 @@ fn test_struct_tree_all_collapsed_by_default() {
         is_instance: false,
     };
 
-    let fields = vec![root_container];
+    let fields = [root_container];
     let mut collapsed_paths = HashSet::new();
 
     let mut stack = Vec::new();

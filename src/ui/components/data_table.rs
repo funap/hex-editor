@@ -687,7 +687,8 @@ impl VirtualTable {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ColumnResizeState, TableColumn, TableSortDirection, VirtualTableState};
+    use gpui::px;
 
     #[test]
     fn test_table_column_builder() {

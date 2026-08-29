@@ -835,8 +835,6 @@ impl BookmarkPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_bookmark_navigation_indices() {
         let count = 15;

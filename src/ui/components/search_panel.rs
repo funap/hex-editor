@@ -932,7 +932,8 @@ impl Focusable for SearchPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::format_row_previews;
+    use crate::core::encoding::Encoding;
 
     #[test]
     fn test_format_row_previews() {

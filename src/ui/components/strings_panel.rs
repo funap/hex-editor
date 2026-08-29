@@ -932,7 +932,7 @@ impl Focusable for StringsPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::preview_text;
 
     #[test]
     fn test_preview_text() {

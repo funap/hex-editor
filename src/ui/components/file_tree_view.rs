@@ -801,7 +801,8 @@ impl FileTreeViewState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::RecentDisplayHistory;
+    use std::path::PathBuf;
 
     #[test]
     fn test_recent_display_history_initial_state() {

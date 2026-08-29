@@ -173,3 +173,8 @@ Decode and search binary data with built-in support for 40+ text encodings:
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+
+- Themes from [gpui-component](https://github.com/longbridge/gpui-component).
+- Icons from [Lucide](https://lucide.dev).
+
+

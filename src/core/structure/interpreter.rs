@@ -525,7 +525,7 @@ impl KaitaiInterpreter {
                     crate::core::structure::expression::ExprValue::Str(s) => FieldValue::String(s),
                     crate::core::structure::expression::ExprValue::Bool(b) => FieldValue::Bool(b),
                 };
-                let color = palette::get_color(self.color_index);
+                let color = palette::color(self.color_index);
                 self.color_index += 1;
                 self.field_count += 1;
                 let field = ParsedField {
@@ -833,7 +833,7 @@ impl KaitaiInterpreter {
         // Enum label
         let enum_label = self.resolve_enum_label(attr, &value, scope);
 
-        let color = palette::get_color(self.color_index);
+        let color = palette::color(self.color_index);
         self.color_index += 1;
         self.field_count += 1;
 

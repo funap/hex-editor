@@ -605,20 +605,28 @@ impl<'a> Parser<'a> {
                     Token::Star => val = ExprValue::Int(val.to_i64() * right.to_i64()),
                     Token::Slash => {
                         let r = right.to_i64();
-                        if r == 0 {
-                            self.record_error("Division by zero in integer expression".to_string());
-                            val = ExprValue::Int(0);
+                        if let Some(res) = val.to_i64().checked_div(r) {
+                            val = ExprValue::Int(res);
                         } else {
-                            val = ExprValue::Int(val.to_i64() / r);
+                            self.record_error(if r == 0 {
+                                "Division by zero in integer expression".to_string()
+                            } else {
+                                "Integer division overflow in expression".to_string()
+                            });
+                            val = ExprValue::Int(0);
                         }
                     }
                     Token::Percent => {
                         let r = right.to_i64();
-                        if r == 0 {
-                            self.record_error("Modulo by zero in expression".to_string());
-                            val = ExprValue::Int(0);
+                        if let Some(res) = val.to_i64().checked_rem(r) {
+                            val = ExprValue::Int(res);
                         } else {
-                            val = ExprValue::Int(val.to_i64() % r);
+                            self.record_error(if r == 0 {
+                                "Modulo by zero in expression".to_string()
+                            } else {
+                                "Integer modulo overflow in expression".to_string()
+                            });
+                            val = ExprValue::Int(0);
                         }
                     }
                     _ => {}
@@ -1061,31 +1069,39 @@ impl ExprAST {
                                 }
                             } else {
                                 let r_val = r.to_i64();
-                                if r_val == 0 {
+                                if let Some(res) = l.to_i64().checked_div(r_val) {
+                                    ExprValue::Int(res)
+                                } else {
                                     if let Some(err_cell) = ctx.errors {
                                         err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
-                                            message: "Division by zero in integer expression".to_string(),
+                                            message: if r_val == 0 {
+                                                "Division by zero in integer expression".to_string()
+                                            } else {
+                                                "Integer division overflow in expression".to_string()
+                                            },
                                             offset: ctx.stream_pos,
                                         });
                                     }
                                     ExprValue::Int(0)
-                                } else {
-                                    ExprValue::Int(l.to_i64() / r_val)
                                 }
                             }
                         }
                         BinaryOp::Mod => {
                             let r_val = r.to_i64();
-                            if r_val == 0 {
+                            if let Some(res) = l.to_i64().checked_rem(r_val) {
+                                ExprValue::Int(res)
+                            } else {
                                 if let Some(err_cell) = ctx.errors {
                                     err_cell.borrow_mut().push(crate::core::structure::types::ParseError {
-                                        message: "Modulo by zero in expression".to_string(),
+                                        message: if r_val == 0 {
+                                            "Modulo by zero in expression".to_string()
+                                        } else {
+                                            "Integer modulo overflow in expression".to_string()
+                                        },
                                         offset: ctx.stream_pos,
                                     });
                                 }
                                 ExprValue::Int(0)
-                            } else {
-                                ExprValue::Int(l.to_i64() % r_val)
                             }
                         }
                         BinaryOp::Shl => ExprValue::Int(l.to_i64().wrapping_shl(r.to_i64() as u32)),

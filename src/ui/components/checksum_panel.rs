@@ -129,7 +129,7 @@ impl ChecksumPanel {
             } else {
                 None
             };
-            let doc = editor.document.read().unwrap();
+            let doc = editor.document.read().expect("document read lock");
             let buffer = &doc.buffer;
             let total_len = buffer.len();
 

@@ -49,25 +49,34 @@ pub fn crc16_arc(data: &[u8]) -> u16 {
     crc
 }
 
-pub fn crc32(data: &[u8]) -> u32 {
+const fn make_crc32_table() -> [u32; 256] {
     const POLY: u32 = 0xEDB88320;
     let mut table = [0u32; 256];
-    for (i, item) in table.iter_mut().enumerate() {
+    let mut i = 0;
+    while i < 256 {
         let mut crc = i as u32;
-        for _ in 0..8 {
+        let mut j = 0;
+        while j < 8 {
             if crc & 1 != 0 {
                 crc = (crc >> 1) ^ POLY;
             } else {
                 crc >>= 1;
             }
+            j += 1;
         }
-        *item = crc;
+        table[i] = crc;
+        i += 1;
     }
+    table
+}
 
+const CRC32_TABLE: [u32; 256] = make_crc32_table();
+
+pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFFFFFFu32;
     for &byte in data {
         let idx = ((crc ^ byte as u32) & 0xFF) as usize;
-        crc = (crc >> 8) ^ table[idx];
+        crc = (crc >> 8) ^ CRC32_TABLE[idx];
     }
     !crc
 }

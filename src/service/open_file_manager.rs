@@ -141,9 +141,7 @@ impl OpenFileManager {
 
     pub fn find_by_path(&self, path: &Path) -> Option<&OpenEntry> {
         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.entries
-            .iter()
-            .find(|e| e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == canonical_path)
+        self.entries.iter().find(|e| e.path == canonical_path)
     }
 
     pub fn find_by_panel(&self, panel_id: EntityId) -> Option<&OpenEntry> {
@@ -156,10 +154,7 @@ impl OpenFileManager {
 
     pub fn count_for_path(&self, path: &Path) -> usize {
         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.entries
-            .iter()
-            .filter(|e| e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == canonical_path)
-            .count()
+        self.entries.iter().filter(|e| e.path == canonical_path).count()
     }
 
     pub fn active_entry(&self) -> Option<&OpenEntry> {

@@ -33,10 +33,6 @@ pub fn color(index: usize) -> Hsla {
     hex_to_hsla(hex).unwrap_or_else(gpui::white)
 }
 
-pub fn get_color(index: usize) -> Hsla {
-    color(index)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +54,5 @@ mod tests {
         assert!(hex_to_hsla("#12345").is_none());
         assert!(hex_to_hsla("#GG0000").is_none());
         assert_eq!(color(0), color(DEFAULT_PALETTE.len()));
-        assert_eq!(get_color(1), color(1));
     }
 }

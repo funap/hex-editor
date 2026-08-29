@@ -1609,3 +1609,49 @@ types:
     assert!(result.fields[1].children.iter().any(|c| c.id == "is_special" && c.is_instance));
     assert!(result.fields[1].children.iter().any(|c| c.id == "computed_sum" && c.is_instance));
 }
+
+#[test]
+fn test_expression_overflow_division() {
+    use crate::core::structure::expression::{EvalContext, ExprAST, ExprEvaluator};
+    use std::collections::HashMap;
+
+    let mut values = HashMap::new();
+    values.insert("min_val".to_string(), i64::MIN);
+    values.insert("neg_one".to_string(), -1i64);
+
+    let string_values = HashMap::new();
+    let base_path = vec![];
+    let enums = HashMap::new();
+    let errors = std::cell::RefCell::new(Vec::new());
+
+    let ctx = EvalContext {
+        values: &values,
+        string_values: &string_values,
+        byte_arrays: &crate::core::structure::expression::G_EMPTY_BYTE_MAP,
+        base_path: &base_path,
+        stream_eof: false,
+        stream_size: 0,
+        stream_pos: 0,
+        enums: &enums,
+        errors: Some(&errors),
+        instance_resolver: None,
+    };
+
+    // Direct interpreter evaluation
+    let res_div = ExprEvaluator::eval_i64("min_val / neg_one", &ctx);
+    assert_eq!(res_div, 0);
+
+    let res_mod = ExprEvaluator::eval_i64("min_val % neg_one", &ctx);
+    assert_eq!(res_mod, 0);
+
+    // AST evaluation
+    let ast_div = ExprAST::compile("min_val / neg_one").expect("compile div");
+    let res_ast_div = ExprEvaluator::eval_ast_i64(&ast_div, &ctx);
+    assert_eq!(res_ast_div, 0);
+
+    let ast_mod = ExprAST::compile("min_val % neg_one").expect("compile mod");
+    let res_ast_mod = ExprEvaluator::eval_ast_i64(&ast_mod, &ctx);
+    assert_eq!(res_ast_mod, 0);
+
+    assert!(errors.borrow().len() >= 2);
+}

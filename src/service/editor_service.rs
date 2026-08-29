@@ -98,6 +98,9 @@ impl EditorService {
         let path_clone = path.clone();
         let buffer = tokio::task::spawn_blocking(move || -> anyhow::Result<Buffer> {
             let file = std::fs::File::open(&path_clone)?;
+            // SAFETY: Memory mapping the opened file is safe as long as the file is not
+            // concurrently truncated or modified outside this process. Buffer encapsulates
+            // read-only access to this memory mapping.
             let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
             Ok(Buffer::from_mmap(mmap))
         })

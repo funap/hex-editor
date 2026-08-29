@@ -2,6 +2,13 @@
 name = "xvw"
 version = "0.1.0"
 edition = "2024"
+description = "A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/funap/xvw"
+homepage = "https://github.com/funap/xvw"
+keywords = ["hex-editor", "binary", "gpui", "kaitai-struct", "reverse-engineering"]
+categories = ["development-tools", "gui"]
 
 [dependencies]
 dirs = "6.0.0"

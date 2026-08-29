@@ -16,6 +16,16 @@ mod ui;
 use crate::assets::Assets;
 use ui::workspace::Workspace;
 
+#[derive(Default, Clone, Debug)]
+pub struct CliArgs {
+    pub files_to_open: Vec<PathBuf>,
+    pub folder_to_open: Option<PathBuf>,
+    pub ksy_to_load: Option<PathBuf>,
+    pub diff: Option<(PathBuf, PathBuf)>,
+    pub panel: Option<String>,
+    pub sidebar: Option<bool>,
+}
+
 fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -23,7 +33,7 @@ fn main() {
         .expect("initialize tokio runtime");
     let _guard = rt.enter();
 
-    let (files_to_open, folder_to_open) = parse_cli_args();
+    let cli_args = parse_cli_args();
 
     let app = Application::new().with_assets(Assets);
 
@@ -32,28 +42,74 @@ fn main() {
         setup_menus(cx);
         setup_keybindings(cx);
 
-        Workspace::open_window(cx, files_to_open, folder_to_open).detach();
+        Workspace::open_window(cx, cli_args).detach();
     });
 }
 
-/// Parses command line arguments to determine files and folder to open at launch.
-fn parse_cli_args() -> (Vec<PathBuf>, Option<PathBuf>) {
-    let mut files_to_open = Vec::new();
-    let mut folder_to_open = None;
+/// Parses command line arguments to determine files, folder, and options to open at launch.
+fn parse_cli_args() -> CliArgs {
+    let mut args = CliArgs::default();
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
 
-    for arg in std::env::args_os().skip(1) {
-        let path = PathBuf::from(arg);
-        if path.is_file() {
-            files_to_open.push(path);
-        } else if path.is_dir() {
-            // Use the last directory as the folder to open
-            folder_to_open = Some(path);
-        } else {
-            eprintln!("Warning: Path does not exist: {}", path.display());
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--ksy" => {
+                if i + 1 < raw_args.len() {
+                    args.ksy_to_load = Some(PathBuf::from(&raw_args[i + 1]));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--diff" => {
+                if i + 2 < raw_args.len() {
+                    args.diff = Some((PathBuf::from(&raw_args[i + 1]), PathBuf::from(&raw_args[i + 2])));
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            "--folder" => {
+                if i + 1 < raw_args.len() {
+                    args.folder_to_open = Some(PathBuf::from(&raw_args[i + 1]));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--panel" => {
+                if i + 1 < raw_args.len() {
+                    args.panel = Some(raw_args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--no-sidebar" => {
+                args.sidebar = Some(false);
+                i += 1;
+            }
+            "--sidebar" => {
+                args.sidebar = Some(true);
+                i += 1;
+            }
+            other => {
+                let path = PathBuf::from(other);
+                if path.is_file() {
+                    args.files_to_open.push(path);
+                } else if path.is_dir() {
+                    args.folder_to_open = Some(path);
+                } else {
+                    // Check if it's a valid path relative or absolute
+                    args.files_to_open.push(path);
+                }
+                i += 1;
+            }
         }
     }
 
-    (files_to_open, folder_to_open)
+    args
 }
 
 /// Initializes core application state, themes, and UI components.

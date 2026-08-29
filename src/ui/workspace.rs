@@ -2004,27 +2004,96 @@ impl Workspace {
 
     /// Opens a new workspace window with the specified files and folder.
     /// This is the main public API for creating workspace windows.
-    pub fn open_window(cx: &mut App, initial_files: Vec<PathBuf>, initial_folder: Option<PathBuf>) -> Task<()> {
+    pub fn open_window(cx: &mut App, args: crate::CliArgs) -> Task<()> {
         let task = Self::new_local(cx);
         cx.spawn(async move |cx| {
             if let Ok(window) = task.await {
-                if !initial_files.is_empty() {
-                    for file_path in initial_files {
-                        let _ = window.update(cx, |_, _window, cx| {
-                            cx.dispatch_action(&crate::actions::OpenFile {
-                                path: file_path.to_string_lossy().to_string(),
-                            });
+                let _ = window.update(cx, |root, window, cx| {
+                    if let Ok(workspace) = root.view().clone().downcast::<Workspace>() {
+                        workspace.update(cx, |workspace, cx| {
+                            if let Some(folder_path) = args.folder_to_open.clone() {
+                                workspace.left_panel.update(cx, |p, cx| {
+                                    p.file_tree.update(cx, |ft, cx| {
+                                        ft.set_root_path(folder_path, cx);
+                                    });
+                                });
+                            }
+                            if let Some((left_path, right_path)) = args.diff.clone() {
+                                workspace.on_action_open_diff(
+                                    &crate::actions::OpenDiff {
+                                        left_path: left_path.to_string_lossy().to_string(),
+                                        right_path: right_path.to_string_lossy().to_string(),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }
                         });
-                    }
-                }
 
-                if let Some(folder_path) = initial_folder {
-                    let _ = window.update(cx, |_root, _window, cx| {
-                        cx.dispatch_action(&SetFileTreeFolder {
-                            path: folder_path.to_string_lossy().to_string(),
-                        });
-                    });
-                }
+                        let view = workspace.clone();
+                        let files = args.files_to_open.clone();
+                        let ksy_to_load = args.ksy_to_load.clone();
+                        let panel_name = args.panel.clone();
+
+                        cx.spawn_in(window, async move |_, window| {
+                            let editor_service_opt = window.update(|_, cx| AppState::global(cx).editor_service.clone()).ok();
+                            if let Some(editor_service) = editor_service_opt {
+                                for file_path in files {
+                                    let recent_path = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+                                    if let Ok(document) = editor_service.open_file(file_path).await {
+                                        let _ = window.update(|window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.record_recent_file(recent_path.clone(), cx);
+                                                this.open_editor_panel(document, window, cx);
+                                            });
+                                        });
+                                    }
+                                }
+
+                                if let Some(ksy_path) = ksy_to_load {
+                                    let _ = window.update(|window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.load_structure_definition_from_path(ksy_path, window, cx);
+                                        });
+                                    });
+                                }
+
+                                if let Some(panel_name) = panel_name {
+                                    let tab = match panel_name.to_lowercase().as_str() {
+                                        "files" => Some(LeftPanelTab::Files),
+                                        "search" => Some(LeftPanelTab::Search),
+                                        "strings" => Some(LeftPanelTab::Strings),
+                                        "structure" => Some(LeftPanelTab::Structure),
+                                        "inspector" => Some(LeftPanelTab::Inspector),
+                                        "map" | "visual_map" => Some(LeftPanelTab::Map),
+                                        "checksum" => Some(LeftPanelTab::Checksum),
+                                        "bookmarks" => Some(LeftPanelTab::Bookmarks),
+                                        _ => None,
+                                    };
+                                    if let Some(tab) = tab {
+                                        let _ = window.update(|window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.left_panel.update(cx, |p, cx| {
+                                                    p.set_tab(tab, cx);
+                                                });
+                                                this.set_left_panel_visible(true, window, cx);
+                                            });
+                                        });
+                                    }
+                                }
+
+                                if args.sidebar == Some(false) || (args.diff.is_some() && args.sidebar != Some(true)) {
+                                    let _ = window.update(|window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.set_left_panel_visible(false, window, cx);
+                                        });
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
+                    }
+                });
             }
         })
     }

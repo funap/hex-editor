@@ -571,6 +571,93 @@ impl Encoding {
         }
     }
 
+    /// Encodes a Unicode string slice using this encoding.
+    ///
+    /// Returns `Some(Vec<u8>)` on success, or `None` if the string contains characters
+    /// that cannot be represented in this encoding.
+    pub fn encode_str(&self, text: &str) -> Option<Vec<u8>> {
+        if text.is_empty() {
+            return Some(Vec::new());
+        }
+
+        match self {
+            Encoding::Ascii => {
+                if text.is_ascii() {
+                    Some(text.as_bytes().to_vec())
+                } else {
+                    None
+                }
+            }
+            Encoding::Iso8859_1 => {
+                let mut bytes = Vec::with_capacity(text.len());
+                for c in text.chars() {
+                    let code = c as u32;
+                    if code <= 255 {
+                        bytes.push(code as u8);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(bytes)
+            }
+            Encoding::Utf8 => Some(text.as_bytes().to_vec()),
+            Encoding::Utf16Le => {
+                let mut bytes = Vec::with_capacity(text.len() * 2);
+                for unit in text.encode_utf16() {
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
+                Some(bytes)
+            }
+            Encoding::Utf16Be => {
+                let mut bytes = Vec::with_capacity(text.len() * 2);
+                for unit in text.encode_utf16() {
+                    bytes.extend_from_slice(&unit.to_be_bytes());
+                }
+                Some(bytes)
+            }
+            _ => {
+                if let Some(enc) = self.encoding_rs_ref() {
+                    let mut encoder = enc.new_encoder();
+                    let max_len = encoder.max_buffer_length_from_utf8_if_no_unmappables(text.len())?;
+                    let mut dest = vec![0u8; max_len];
+                    let (result, read, written) = encoder.encode_from_utf8_without_replacement(text, &mut dest, true);
+                    if result == encoding_rs::EncoderResult::InputEmpty && read == text.len() {
+                        dest.truncate(written);
+                        return Some(dest);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Decodes and formats a preview text string of up to `byte_len` bytes starting at `offset`.
+    /// Printable characters are rendered as-is, while control codes, invalid sequences,
+    /// or unassigned bytes are replaced with `.`.
+    pub fn format_preview(&self, buffer: &[u8], offset: usize, byte_len: usize) -> String {
+        if offset >= buffer.len() {
+            return String::new();
+        }
+        let end = (offset + byte_len).min(buffer.len());
+        let mut text = String::new();
+        let mut scan = offset;
+        while scan < end {
+            if let Some((c, char_len)) = self.decode_char_at(buffer, scan) {
+                let len = char_len.max(1);
+                if !c.is_control() && c != '\u{FFFD}' {
+                    text.push(c);
+                } else {
+                    text.push('.');
+                }
+                scan += len;
+            } else {
+                text.push('.');
+                scan += 1;
+            }
+        }
+        text
+    }
+
     /// Decodes a single character starting at `offset` in `buffer`.
     ///
     /// Returns `Some((character, byte_len))` if a valid printable character was decoded,
@@ -1020,5 +1107,55 @@ mod tests {
             let deserialized: Encoding = serde_json::from_str(&json).expect("deserialize encoding");
             assert_eq!(*enc, deserialized);
         }
+    }
+
+    #[test]
+    fn test_encoding_encode_str() {
+        // UTF-8
+        assert_eq!(Encoding::Utf8.encode_str("Hello こんにちは"), Some("Hello こんにちは".as_bytes().to_vec()));
+        assert_eq!(Encoding::Utf8.encode_str(""), Some(Vec::new()));
+
+        // ASCII
+        assert_eq!(Encoding::Ascii.encode_str("Hello World!"), Some(b"Hello World!".to_vec()));
+        assert_eq!(Encoding::Ascii.encode_str("こんにちは"), None);
+
+        // ISO-8859-1
+        assert_eq!(Encoding::Iso8859_1.encode_str("Café"), Some(vec![b'C', b'a', b'f', 0xE9]));
+        assert_eq!(Encoding::Iso8859_1.encode_str("こんにちは"), None);
+
+        // UTF-16 LE & BE
+        assert_eq!(Encoding::Utf16Le.encode_str("AB"), Some(vec![0x41, 0x00, 0x42, 0x00]));
+        assert_eq!(Encoding::Utf16Be.encode_str("AB"), Some(vec![0x00, 0x41, 0x00, 0x42]));
+
+        // Shift-JIS
+        let sjis_bytes = Encoding::ShiftJis.encode_str("こんにちは").unwrap();
+        assert_eq!(sjis_bytes, vec![0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD]);
+        assert_eq!(Encoding::ShiftJis.encode_str("Hello"), Some(b"Hello".to_vec()));
+        assert_eq!(Encoding::ShiftJis.encode_str("€"), None);
+
+        // EUC-JP & GBK
+        assert_eq!(Encoding::EucJp.encode_str("日本"), Some(vec![0xC6, 0xFC, 0xCB, 0xDC]));
+        assert_eq!(Encoding::Gbk.encode_str("中文"), Some(vec![0xD6, 0xD0, 0xCE, 0xC4]));
+    }
+
+    #[test]
+    fn test_encoding_format_preview() {
+        // ASCII
+        let ascii_buf = b"Hello, World!";
+        assert_eq!(Encoding::Ascii.format_preview(ascii_buf, 0, 5), "Hello");
+        assert_eq!(Encoding::Ascii.format_preview(ascii_buf, 7, 5), "World");
+
+        // Shift-JIS
+        let sjis_buf = [0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD, 0x41, 0x42];
+        assert_eq!(Encoding::ShiftJis.format_preview(&sjis_buf, 0, 10), "こんにちは");
+        assert_eq!(Encoding::ShiftJis.format_preview(&sjis_buf, 10, 2), "AB");
+
+        // UTF-16 LE
+        let utf16_buf = [0x48, 0x00, 0x65, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F, 0x00];
+        assert_eq!(Encoding::Utf16Le.format_preview(&utf16_buf, 0, 10), "Hello");
+
+        // Unprintable / Invalid bytes replaced by '.'
+        let mixed_buf = [0x00, 0x41, 0xFF, 0x42];
+        assert_eq!(Encoding::Ascii.format_preview(&mixed_buf, 0, 4), ".A.B");
     }
 }

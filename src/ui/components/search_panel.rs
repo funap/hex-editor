@@ -1,5 +1,6 @@
 use crate::core::editor::Editor;
-use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern};
+use crate::core::encoding::Encoding;
+use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern, parse_text_pattern};
 use crate::ui::components::data_table::{TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
@@ -166,12 +167,25 @@ impl SearchPanel {
         };
 
         let mode = self.mode;
+        let encoding = editor_entity.read(cx).encoding;
         let pattern_len = match mode {
-            SearchMode::Text => query.len(),
+            SearchMode::Text => parse_text_pattern(&query, encoding).map(|p| p.len()).unwrap_or(0),
             SearchMode::Hex => parse_hex_pattern(&query).map(|p| p.len()).unwrap_or(0),
         };
 
         if pattern_len == 0 {
+            self.results.clear();
+            self.is_truncated = false;
+            self.selected_index = None;
+            self.last_query = query.clone();
+            self.match_len = 0;
+            if let Some(ed) = &self.editor {
+                ed.update(cx, |ed, cx| {
+                    ed.clear_search();
+                    cx.notify();
+                });
+            }
+            cx.notify();
             return;
         }
 
@@ -200,7 +214,13 @@ impl SearchPanel {
                 .background_executor()
                 .spawn(async move {
                     let pattern = match mode {
-                        SearchMode::Text => query.as_bytes().iter().map(|&b| crate::core::search::PatternByte::new_exact(b)).collect(),
+                        SearchMode::Text => {
+                            if let Some(p) = parse_text_pattern(&query, encoding) {
+                                p
+                            } else {
+                                return (Vec::new(), false);
+                            }
+                        }
                         SearchMode::Hex => {
                             if let Some(p) = parse_hex_pattern(&query) {
                                 p
@@ -334,21 +354,24 @@ impl SearchPanel {
     }
 
     fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
-        let buffer = self.editor.as_ref().and_then(|ed| {
+        let (encoding, buffer) = if let Some(ed) = &self.editor {
             let ed_ref = ed.read(cx);
-            ed_ref.document.read().ok().map(|d| d.buffer.clone())
-        });
+            let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
+            (ed_ref.encoding, buf)
+        } else {
+            (Encoding::Ascii, None)
+        };
         let buffer_slice = buffer.as_ref().map(|b| b.data());
 
         let texts = self.results.iter().take(128).map(|item| match col_ix {
             0 => format!("0x{:08X}", item.offset),
             1 => {
-                let (hex, _) = format_row_previews(buffer_slice, item.offset, self.match_len);
+                let (hex, _) = format_row_previews(buffer_slice, item.offset, self.match_len, encoding);
                 hex
             }
             2 => {
-                let (_, ascii) = format_row_previews(buffer_slice, item.offset, self.match_len);
-                ascii
+                let (_, text) = format_row_previews(buffer_slice, item.offset, self.match_len, encoding);
+                text
             }
             _ => String::new(),
         });
@@ -358,7 +381,7 @@ impl SearchPanel {
     }
 }
 
-fn format_row_previews(buffer_data: Option<&[u8]>, offset: usize, match_len: usize) -> (String, String) {
+fn format_row_previews(buffer_data: Option<&[u8]>, offset: usize, match_len: usize, encoding: Encoding) -> (String, String) {
     let snippet_len = match_len.clamp(4, 16);
     if let Some(data) = buffer_data {
         let end = (offset + snippet_len).min(data.len());
@@ -371,8 +394,8 @@ fn format_row_previews(buffer_data: Option<&[u8]>, offset: usize, match_len: usi
             use std::fmt::Write as _;
             let _ = write!(&mut hex, "{:02X}", b);
         }
-        let ascii: String = slice.iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' }).collect();
-        (hex, ascii)
+        let text = encoding.format_preview(data, offset, snippet_len);
+        (hex, text)
     } else {
         (String::new(), String::new())
     }
@@ -547,10 +570,14 @@ impl Render for SearchPanel {
             let list = uniform_list("search-panel-results-list", self.results.len(), move |range, window, cx| {
                 let this = list_view.read(cx);
                 let theme = cx.theme();
-                let buffer = this.editor.as_ref().and_then(|ed| {
+                let (encoding, buffer) = if let Some(ed) = &this.editor {
                     let ed_ref = ed.read(cx);
-                    ed_ref.document.read().ok().map(|d| d.buffer.clone())
-                });
+                    let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
+                    (ed_ref.encoding, buf)
+                } else {
+                    (Encoding::Ascii, None)
+                };
+                let buffer_data = buffer.as_ref().map(|b| b.data());
 
                 range
                     .map(|idx| {
@@ -574,7 +601,7 @@ impl Render for SearchPanel {
 
                             let offset = item.offset;
                             let offset_value = format!("0x{:08X}", offset);
-                            let (preview_hex, preview_ascii) = format_row_previews(buffer.as_ref().map(|b| b.data()), offset, this.match_len);
+                            let (preview_hex, preview_text) = format_row_previews(buffer_data, offset, this.match_len, encoding);
                             h_flex()
                                 .id(("search-result-item", idx))
                                 .w_full()
@@ -620,7 +647,7 @@ impl Render for SearchPanel {
                                                     .text_xs()
                                                     .font_family("Courier New")
                                                     .text_color(theme.foreground)
-                                                    .child(preview_ascii.clone())
+                                                    .child(preview_text.clone())
                                                     .into_any_element(),
                                                 _ => div().into_any_element(),
                                             };
@@ -695,21 +722,25 @@ impl Render for SearchPanel {
                             let item = this.results.get(idx)?;
                             let offset = item.offset;
                             let offset_value = format!("0x{:08X}", offset);
-                            let buffer = this.editor.as_ref().and_then(|ed| {
+                            let (encoding, buffer) = if let Some(ed) = &this.editor {
                                 let ed_ref = ed.read(cx);
-                                ed_ref.document.read().ok().map(|d| d.buffer.clone())
-                            });
-                            let (preview_hex, preview_ascii) = format_row_previews(buffer.as_ref().map(|b| b.data()), offset, this.match_len);
-                            Some((offset_value, preview_hex, preview_ascii))
+                                let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
+                                (ed_ref.encoding, buf)
+                            } else {
+                                (Encoding::Ascii, None)
+                            };
+                            let buffer_data = buffer.as_ref().map(|b| b.data());
+                            let (preview_hex, preview_text) = format_row_previews(buffer_data, offset, this.match_len, encoding);
+                            Some((offset_value, preview_hex, preview_text))
                         })
                     };
-                    let Some((menu_offset, menu_hex, menu_ascii)) = selected_info else {
+                    let Some((menu_offset, menu_hex, menu_text)) = selected_info else {
                         return menu;
                     };
                     menu.action_context(context_focus_handle.clone())
                         .menu_with_icon("Copy Address", IconName::Hash, Box::new(CopyAddress { value: menu_offset }))
                         .menu_with_icon("Copy Hex Value", IconName::Binary, Box::new(CopyValue { value: menu_hex }))
-                        .menu_with_icon("Copy Text", IconName::TextInitial, Box::new(CopyText { value: menu_ascii }))
+                        .menu_with_icon("Copy Text", IconName::TextInitial, Box::new(CopyText { value: menu_text }))
                 })
                 .into_any_element()
         };
@@ -762,5 +793,49 @@ impl Render for SearchPanel {
 impl Focusable for SearchPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::encoding::Encoding;
+
+    #[test]
+    fn test_format_row_previews_ascii() {
+        let buffer = b"Hello, World!";
+        let (hex, text) = format_row_previews(Some(buffer), 0, 5, Encoding::Ascii);
+        assert_eq!(hex, "48 65 6C 6C 6F");
+        assert_eq!(text, "Hello");
+    }
+
+    #[test]
+    fn test_format_row_previews_sjis() {
+        // "こんにちは" in Shift-JIS
+        let sjis_data = [0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD, 0x00, 0x41];
+        let (hex, text) = format_row_previews(Some(&sjis_data), 0, 4, Encoding::ShiftJis);
+        assert_eq!(hex, "82 B1 82 F1");
+        assert_eq!(text, "こん");
+
+        // Offset at 4 ("にち")
+        let (hex, text) = format_row_previews(Some(&sjis_data), 4, 4, Encoding::ShiftJis);
+        assert_eq!(hex, "82 C9 82 BF");
+        assert_eq!(text, "にち");
+    }
+
+    #[test]
+    fn test_format_row_previews_utf16() {
+        // "AB" in UTF-16 LE
+        let utf16_data = [0x41, 0x00, 0x42, 0x00];
+        let (hex, text) = format_row_previews(Some(&utf16_data), 0, 4, Encoding::Utf16Le);
+        assert_eq!(hex, "41 00 42 00");
+        assert_eq!(text, "AB");
+    }
+
+    #[test]
+    fn test_format_row_previews_none() {
+        let (hex, text) = format_row_previews(None, 0, 4, Encoding::Utf8);
+        assert_eq!(hex, "");
+        assert_eq!(text, "");
     }
 }

@@ -192,7 +192,15 @@ impl Editor {
     }
 
     pub fn set_encoding(&mut self, encoding: Encoding) {
-        self.encoding = encoding;
+        if self.encoding != encoding {
+            self.encoding = encoding;
+            if self.search_state.mode == crate::core::search::SearchMode::Text && !self.search_state.query.is_empty() {
+                self.search_state.results.clear();
+                self.search_state.current_result_index = None;
+                self.search_state.is_full_search_complete = false;
+                self.search_state.generation += 1;
+            }
+        }
     }
 
     pub fn set_radix(&mut self, radix: DisplayRadix) {
@@ -1204,14 +1212,7 @@ impl Editor {
             return None;
         }
         match self.search_state.mode {
-            crate::core::search::SearchMode::Text => Some(
-                self.search_state
-                    .query
-                    .as_bytes()
-                    .iter()
-                    .map(|&b| crate::core::search::PatternByte::new_exact(b))
-                    .collect(),
-            ),
+            crate::core::search::SearchMode::Text => crate::core::search::parse_text_pattern(&self.search_state.query, self.encoding),
             crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&self.search_state.query),
         }
     }
@@ -2580,6 +2581,29 @@ mod tests {
         // Try setting results with an older generation (3)
         editor.set_search_results(vec![5], 3, true);
         assert!(editor.search_state.results.is_empty());
+    }
+
+    #[test]
+    fn test_search_with_encoding() {
+        use crate::core::encoding::Encoding;
+        use crate::core::search::SearchMode;
+
+        // Shift-JIS buffer: "こんにちは" at offset 0
+        let sjis_data = [0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD];
+        let mut editor = create_editor_with_content(&sjis_data);
+        editor.set_encoding(Encoding::ShiftJis);
+
+        editor.set_search_query_and_mode("にち".to_string(), SearchMode::Text);
+        let pattern = editor.search_pattern().expect("valid pattern");
+        assert_eq!(pattern.len(), 4); // "にち" is 4 bytes in Shift-JIS
+
+        let next = editor.find_and_navigate_next();
+        assert_eq!(next, Some(4));
+        assert_eq!(editor.cursor_offset, 4);
+
+        // Switch to UTF-8 encoding: query "にち" in UTF-8 does not match the Shift-JIS bytes
+        editor.set_encoding(Encoding::Utf8);
+        assert_eq!(editor.find_and_navigate_next(), None);
     }
 
     #[test]

@@ -395,7 +395,7 @@ impl EditorPanel {
 
         if !query.is_empty() {
             let pattern = match mode {
-                crate::core::search::SearchMode::Text => Some(query.as_bytes().iter().map(|&b| crate::core::search::PatternByte::new_exact(b)).collect()),
+                crate::core::search::SearchMode::Text => crate::core::search::parse_text_pattern(&query, editor.encoding),
                 crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&query),
             };
 

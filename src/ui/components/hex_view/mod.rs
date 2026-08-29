@@ -1989,7 +1989,7 @@ impl HexView {
                     let off = editor.cursor_offset.min(total.saturating_sub(1));
                     (off, doc.buffer.get_range(off, 1))
                 };
-                (format_bytes(slice, start_offset, format), slice.to_vec())
+                (format_bytes(slice, start_offset, format, editor.encoding), slice.to_vec())
             }
         };
 

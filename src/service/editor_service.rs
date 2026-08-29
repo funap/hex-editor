@@ -162,9 +162,11 @@ impl EditorService {
 
             match options.mode {
                 crate::core::search::SearchMode::Text => {
-                    let pattern: Vec<crate::core::search::PatternByte> =
-                        query.as_bytes().iter().map(|&b| crate::core::search::PatternByte::new_exact(b)).collect();
-                    search::find_occurrences(buffer.data(), &pattern, options.limit, options.range.clone())
+                    if let Some(pattern) = crate::core::search::parse_text_pattern(&query, options.encoding) {
+                        search::find_occurrences(buffer.data(), &pattern, options.limit, options.range.clone())
+                    } else {
+                        Vec::new()
+                    }
                 }
                 crate::core::search::SearchMode::Hex => {
                     if let Some(pattern) = crate::core::search::parse_hex_pattern(&query) {
@@ -224,12 +226,16 @@ impl EditorService {
         viewport_range: Range<usize>,
         cx: &App,
     ) -> (Task<()>, Task<()>) {
-        // Read the generation ID on the main thread from editor
-        let generation = editor.read(cx).search_state.generation;
+        // Read the generation ID and encoding on the main thread from editor
+        let (generation, encoding) = {
+            let ed = editor.read(cx);
+            (ed.search_state.generation, ed.encoding)
+        };
 
         // 1. Immediate viewport search
         let viewport_options = SearchOptions {
             mode,
+            encoding,
             limit: crate::core::search::SearchLimit::Unlimited,
             range: Some(viewport_range),
         };
@@ -238,6 +244,7 @@ impl EditorService {
         // 2. Background full search
         let full_options = SearchOptions {
             mode,
+            encoding,
             limit: crate::core::search::SearchLimit::Unlimited,
             range: None,
         };

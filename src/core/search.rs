@@ -30,6 +30,7 @@ pub enum SearchLimit {
 #[allow(dead_code)]
 pub struct SearchOptions {
     pub mode: SearchMode,
+    pub encoding: crate::core::encoding::Encoding,
     pub limit: SearchLimit,
     pub range: Option<std::ops::Range<usize>>,
 }
@@ -39,14 +40,21 @@ impl SearchOptions {
     pub fn new(mode: SearchMode) -> Self {
         Self {
             mode,
+            encoding: crate::core::encoding::Encoding::default(),
             limit: SearchLimit::Unlimited,
             range: None,
         }
     }
 
+    pub fn with_encoding(mut self, encoding: crate::core::encoding::Encoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
     pub fn with_count_limit(mode: SearchMode, max_results: usize) -> Self {
         Self {
             mode,
+            encoding: crate::core::encoding::Encoding::default(),
             limit: SearchLimit::Count(max_results),
             range: None,
         }
@@ -55,6 +63,7 @@ impl SearchOptions {
     pub fn with_range_limit(mode: SearchMode, range_bytes: usize) -> Self {
         Self {
             mode,
+            encoding: crate::core::encoding::Encoding::default(),
             limit: SearchLimit::Range(range_bytes),
             range: None,
         }
@@ -63,6 +72,7 @@ impl SearchOptions {
     pub fn with_range(mode: SearchMode, range: std::ops::Range<usize>) -> Self {
         Self {
             mode,
+            encoding: crate::core::encoding::Encoding::default(),
             limit: SearchLimit::Unlimited,
             range: Some(range),
         }
@@ -95,6 +105,20 @@ impl PatternByte {
     pub fn matches(&self, byte: u8) -> bool {
         (byte & self.mask) == self.value
     }
+}
+
+/// Parses a text search query into a sequence of `PatternByte` matchers
+/// using the specified `Encoding`.
+/// Returns None if the query is empty or cannot be encoded in `encoding`.
+pub fn parse_text_pattern(query: &str, encoding: crate::core::encoding::Encoding) -> Option<Vec<PatternByte>> {
+    if query.is_empty() {
+        return None;
+    }
+    let bytes = encoding.encode_str(query)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(bytes.into_iter().map(PatternByte::new_exact).collect())
 }
 
 /// Parses a hex search pattern containing hex digits, wildcards (`?` or `*`),
@@ -521,5 +545,59 @@ mod tests {
 
         let text_ph = SearchMode::Text.placeholder();
         assert!(text_ph.starts_with("Text (e.g. "));
+    }
+
+    #[test]
+    fn test_parse_text_pattern() {
+        use crate::core::encoding::Encoding;
+
+        // UTF-8
+        let pat_utf8 = parse_text_pattern("ABC", Encoding::Utf8).unwrap();
+        assert_eq!(
+            pat_utf8,
+            vec![PatternByte::new_exact(b'A'), PatternByte::new_exact(b'B'), PatternByte::new_exact(b'C')]
+        );
+
+        // Shift-JIS
+        let pat_sjis = parse_text_pattern("こん", Encoding::ShiftJis).unwrap();
+        assert_eq!(
+            pat_sjis,
+            vec![
+                PatternByte::new_exact(0x82),
+                PatternByte::new_exact(0xB1),
+                PatternByte::new_exact(0x82),
+                PatternByte::new_exact(0xF1),
+            ]
+        );
+
+        // UTF-16 LE
+        let pat_utf16le = parse_text_pattern("AB", Encoding::Utf16Le).unwrap();
+        assert_eq!(
+            pat_utf16le,
+            vec![
+                PatternByte::new_exact(0x41),
+                PatternByte::new_exact(0x00),
+                PatternByte::new_exact(0x42),
+                PatternByte::new_exact(0x00),
+            ]
+        );
+
+        // Incompatible character returns None
+        assert!(parse_text_pattern("こんにちは", Encoding::Ascii).is_none());
+        assert!(parse_text_pattern("", Encoding::Utf8).is_none());
+    }
+
+    #[test]
+    fn test_find_occurrences_encoded_text() {
+        use crate::core::encoding::Encoding;
+
+        // Search Shift-JIS in buffer
+        let data = [
+            0x00, 0x01, 0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD, // "こんにちは" in SJIS at offset 2
+            0x00, 0x82, 0xB1, 0x82, 0xF1, // "こん" in SJIS at offset 13
+        ];
+        let pattern = parse_text_pattern("こん", Encoding::ShiftJis).unwrap();
+        let results = find_occurrences(&data, &pattern, SearchLimit::Unlimited, None);
+        assert_eq!(results, vec![2, 13]);
     }
 }

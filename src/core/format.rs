@@ -167,17 +167,9 @@ pub fn format_hex_spaces(bytes: &[u8]) -> String {
     result
 }
 
-/// Format bytes as printable text (non-printable bytes rendered as `.`).
-pub fn format_printable_text(bytes: &[u8]) -> String {
-    let mut result = String::with_capacity(bytes.len());
-    for &b in bytes {
-        if (32..=126).contains(&b) {
-            result.push(b as char);
-        } else {
-            result.push('.');
-        }
-    }
-    result
+/// Format bytes as printable text (non-printable bytes rendered as `.`) using the specified encoding.
+pub fn format_printable_text(bytes: &[u8], encoding: crate::core::encoding::Encoding) -> String {
+    encoding.format_preview(bytes, 0, bytes.len())
 }
 
 /// Format bytes as escaped string (e.g. `\x50\x4b\x03\x04...`).
@@ -218,13 +210,13 @@ pub fn format_json_array(bytes: &[u8]) -> String {
 }
 
 /// General entry point to format bytes in any supported `CopyFormat`.
-pub fn format_bytes(bytes: &[u8], start_offset: usize, format: CopyFormat) -> String {
+pub fn format_bytes(bytes: &[u8], start_offset: usize, format: CopyFormat, encoding: crate::core::encoding::Encoding) -> String {
     match format {
         CopyFormat::HexDump => format_hexdump(bytes, start_offset),
         CopyFormat::CppArray => format_cpp_array(bytes),
         CopyFormat::HexStream => format_hex_stream(bytes),
         CopyFormat::HexWithSpaces => format_hex_spaces(bytes),
-        CopyFormat::PrintableText => format_printable_text(bytes),
+        CopyFormat::PrintableText => format_printable_text(bytes, encoding),
         CopyFormat::Base64 => to_base64(bytes),
         CopyFormat::EscapedString => format_escaped_string(bytes),
         CopyFormat::Binary => format_binary(bytes),
@@ -239,16 +231,17 @@ mod tests {
 
     #[test]
     fn test_format_empty() {
-        assert_eq!(format_bytes(&[], 0, CopyFormat::HexDump), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::HexStream), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::HexWithSpaces), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::PrintableText), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::Base64), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::EscapedString), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::Binary), "");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::JsonArray), "[]");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::CppArray), "const unsigned char data[0] = {};");
-        assert_eq!(format_bytes(&[], 0, CopyFormat::RustArray), "const DATA: [u8; 0] = [];");
+        let enc = crate::core::encoding::Encoding::Ascii;
+        assert_eq!(format_bytes(&[], 0, CopyFormat::HexDump, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::HexStream, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::HexWithSpaces, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::PrintableText, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::Base64, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::EscapedString, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::Binary, enc), "");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::JsonArray, enc), "[]");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::CppArray, enc), "const unsigned char data[0] = {};");
+        assert_eq!(format_bytes(&[], 0, CopyFormat::RustArray, enc), "const DATA: [u8; 0] = [];");
     }
 
     #[test]
@@ -293,7 +286,14 @@ mod tests {
     #[test]
     fn test_printable_text() {
         let sample = b"Hi\x00\x1f \x7e\x7f\x80!";
-        assert_eq!(format_printable_text(sample), "Hi.. ~..!".to_string());
+        assert_eq!(format_printable_text(sample, crate::core::encoding::Encoding::Ascii), "Hi.. ~..!".to_string());
+
+        // Shift-JIS printable text
+        let sjis_sample = [0x82, 0xB1, 0x82, 0xF1, 0x00, 0x41];
+        assert_eq!(
+            format_printable_text(&sjis_sample, crate::core::encoding::Encoding::ShiftJis),
+            "こん.A".to_string()
+        );
     }
 
     #[test]

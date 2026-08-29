@@ -674,6 +674,49 @@ types:
 }
 
 #[test]
+fn test_repeat_eos_stops_on_contents_mismatch() {
+    let yaml = r#"
+meta:
+  id: test_repeat_mismatch
+  endian: le
+seq:
+  - id: items
+    type: item
+    repeat: eos
+types:
+  item:
+    seq:
+      - id: magic
+        contents: "PK"
+      - id: data_len
+        type: u2
+      - id: data
+        size: data_len
+"#;
+    let ksy = parse_ksy_yaml(yaml);
+
+    // Item 0: PK + len 4 + 4 bytes data (valid)
+    // Next bytes: not "PK" (garbage payload like deflate compressed stream)
+    let mut data = Vec::new();
+    data.extend_from_slice(b"PK");
+    data.extend_from_slice(&[4, 0]);
+    data.extend_from_slice(b"ABCD");
+    // Invalid magic follows
+    data.extend_from_slice(&[0xD4, 0xBD, 0x7B, 0x7C, 0x53, 0x55]);
+
+    let mut stream = KaitaiStream::new(&data);
+    let interpreter = KaitaiInterpreter::new(ksy);
+    let result = interpreter.parse(&mut stream);
+
+    // Should only have parsed the first item (item 0), and stopped at offset 10 where mismatch occurred
+    assert_eq!(result.fields.len(), 1, "Only the first valid item should be parsed");
+    assert_eq!(result.total_parsed_bytes, 10);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].message, "contents mismatch");
+    assert_eq!(result.errors[0].offset, 10);
+}
+
+#[test]
 fn test_zero_sized_body_does_not_leak_into_next_zip_section_description() {
     let zip_ksy = r#"
 meta:

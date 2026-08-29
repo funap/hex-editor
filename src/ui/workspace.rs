@@ -14,9 +14,9 @@ use crate::app_state::{AppState, InsertModeState};
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::ui::components::status_bar::StatusBar;
-use gpui_component::Root;
 use gpui_component::menu::AppMenuBar;
 use gpui_component::resizable::{h_resizable, resizable_panel};
+use gpui_component::{Root, WindowExt, v_flex};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -523,6 +523,13 @@ impl Workspace {
         cx.notify();
     }
 
+    fn observe_notification(&mut self, notification: &Entity<gpui_component::notification::NotificationList>, cx: &mut Context<Self>) {
+        cx.observe(notification, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
+    }
+
     fn new_local(cx: &mut App) -> Task<anyhow::Result<WindowHandle<Root>>> {
         let mut window_size = size(px(1600.0), px(1200.0));
         if let Some(display) = cx.primary_display() {
@@ -552,7 +559,12 @@ impl Workspace {
 
             let window = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| Self::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
+                let root = cx.new(|cx| Root::new(view.clone(), window, cx));
+                let notification = root.read(cx).notification.clone();
+                view.update(cx, |workspace, cx| {
+                    workspace.observe_notification(&notification, cx);
+                });
+                root
             })?;
 
             window
@@ -1532,10 +1544,22 @@ impl Workspace {
                 }
                 Err(e) => {
                     eprintln!("Failed to parse KSY definition: {}", e);
+                    let _ = window.update(|window, cx| {
+                        window.push_notification(
+                            gpui_component::notification::Notification::error(format!("Failed to parse structure definition: {e}")),
+                            cx,
+                        );
+                    });
                 }
             },
             Err(e) => {
                 eprintln!("Failed to read KSY file at {:?}: {}", path, e);
+                let _ = window.update(|window, cx| {
+                    window.push_notification(
+                        gpui_component::notification::Notification::error(format!("Failed to read structure file: {e}")),
+                        cx,
+                    );
+                });
             }
         })
         .detach();
@@ -2133,6 +2157,23 @@ impl Workspace {
             }
         });
     }
+
+    fn render_bottom_right_notifications(window: &mut Window, cx: &mut App) -> Option<impl IntoElement> {
+        let root = window.root::<Root>()??;
+        let items = root.read(cx).notification.read(cx).notifications();
+        if items.is_empty() {
+            return None;
+        }
+        let items = items.into_iter().rev().take(10).rev();
+
+        Some(
+            div()
+                .absolute()
+                .bottom(px(32.0))
+                .right(px(16.0))
+                .child(v_flex().id("notification-list-bottom-right").gap_3().children(items)),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -2305,7 +2346,7 @@ impl Render for Workspace {
             })
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
+            .children(Self::render_bottom_right_notifications(window, cx))
     }
 }
 
@@ -2415,6 +2456,21 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
                     editor.is_parsing_structure = false;
                     editor.is_finalizing_structure = false;
                     editor.parse_cancel_token = None;
+
+                    if let Some(ref res) = editor.parse_result()
+                        && let Some(err) = res.errors.first()
+                    {
+                        let msg = format!("Structure parse error at offset 0x{:08X}: {}", err.offset, err.message);
+                        if let Some(window) = cx.active_window()
+                            && let Some(window) = window.downcast::<Root>()
+                        {
+                            let _ = window.update(cx, |root, window, cx| {
+                                let note = gpui_component::notification::Notification::error(msg);
+                                root.notification.update(cx, |view, cx| view.push(note, window, cx));
+                                cx.notify();
+                            });
+                        }
+                    }
                 }
                 cx.notify();
                 ParseUpdateDelivery::Applied {

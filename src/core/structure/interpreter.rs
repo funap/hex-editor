@@ -320,6 +320,19 @@ impl KaitaiInterpreter {
                     });
                 }
             });
+            let should_parse = if let Some(cond) = &attr.condition {
+                let ctx = self.make_eval_ctx(stream);
+                if let Some(ref ast) = attr.compiled_condition {
+                    ExprEvaluator::eval_ast_bool(ast, &ctx)
+                } else {
+                    ExprEvaluator::eval_bool(cond, &ctx)
+                }
+            } else {
+                true
+            };
+            if should_parse && parsed.is_empty() && attr.repeat.is_none() {
+                break;
+            }
             fields.extend(parsed);
 
             let cur_pos = stream.pos() as usize;
@@ -774,13 +787,17 @@ impl KaitaiInterpreter {
         }
 
         // Contents validation
-        if let Some(expected) = &attr.contents {
-            self.validate_contents(expected, &value, stream);
+        if let Some(expected) = &attr.contents
+            && !self.validate_contents(expected, &value, stream)
+        {
+            return None;
         }
 
         // Value validation
-        if let Some(valid_rule) = &attr.valid {
-            self.validate_value(valid_rule, &value, stream);
+        if let Some(valid_rule) = &attr.valid
+            && !self.validate_value(valid_rule, &value, stream)
+        {
+            return None;
         }
 
         // Context update
@@ -1155,7 +1172,21 @@ impl KaitaiInterpreter {
                 }
 
                 for nested_attr in &type_def.seq {
-                    fields.extend(self.parse_attr_repeated(nested_attr, &mut sub_stream, nested_scope, false));
+                    let parsed = self.parse_attr_repeated(nested_attr, &mut sub_stream, nested_scope, false);
+                    let should_parse = if let Some(cond) = &nested_attr.condition {
+                        let ctx = self.make_eval_ctx(&sub_stream);
+                        if let Some(ref ast) = nested_attr.compiled_condition {
+                            ExprEvaluator::eval_ast_bool(ast, &ctx)
+                        } else {
+                            ExprEvaluator::eval_bool(cond, &ctx)
+                        }
+                    } else {
+                        true
+                    };
+                    if should_parse && parsed.is_empty() && nested_attr.repeat.is_none() {
+                        return None;
+                    }
+                    fields.extend(parsed);
                 }
 
                 // Evaluate instances after seq so that instances can refer to parsed seq attributes
@@ -1216,7 +1247,21 @@ impl KaitaiInterpreter {
 
                 let mut fields = Vec::new();
                 for nested_attr in &type_def.seq {
-                    fields.extend(self.parse_attr_repeated(nested_attr, stream, nested_scope, false));
+                    let parsed = self.parse_attr_repeated(nested_attr, stream, nested_scope, false);
+                    let should_parse = if let Some(cond) = &nested_attr.condition {
+                        let ctx = self.make_eval_ctx(stream);
+                        if let Some(ref ast) = nested_attr.compiled_condition {
+                            ExprEvaluator::eval_ast_bool(ast, &ctx)
+                        } else {
+                            ExprEvaluator::eval_bool(cond, &ctx)
+                        }
+                    } else {
+                        true
+                    };
+                    if should_parse && parsed.is_empty() && nested_attr.repeat.is_none() {
+                        return None;
+                    }
+                    fields.extend(parsed);
                 }
 
                 // Evaluate instances after seq so that instances can refer to parsed seq attributes
@@ -1253,7 +1298,7 @@ impl KaitaiInterpreter {
         }
     }
 
-    fn validate_contents(&mut self, expected: &serde_yaml::Value, actual: &FieldValue, stream: &KaitaiStream) {
+    fn validate_contents(&mut self, expected: &serde_yaml::Value, actual: &FieldValue, stream: &KaitaiStream) -> bool {
         let mut expected_bytes = Vec::new();
         if let Some(arr) = expected.as_sequence() {
             for v in arr {
@@ -1268,19 +1313,29 @@ impl KaitaiInterpreter {
         } else if let Some(s) = expected.as_str() {
             expected_bytes.extend(s.as_bytes());
         }
-        if !expected_bytes.is_empty()
-            && let FieldValue::Bytes(actual_bytes) = actual
-            && actual_bytes != &expected_bytes
-        {
-            self.errors.borrow_mut().push(ParseError {
-                message: "contents mismatch".into(),
-                offset: stream.pos() as usize,
-            });
+        if !expected_bytes.is_empty() {
+            if let FieldValue::Bytes(actual_bytes) = actual {
+                if actual_bytes != &expected_bytes {
+                    self.errors.borrow_mut().push(ParseError {
+                        message: "contents mismatch".into(),
+                        offset: stream.pos() as usize,
+                    });
+                    return false;
+                }
+            } else {
+                self.errors.borrow_mut().push(ParseError {
+                    message: "contents mismatch: actual value is not bytes".into(),
+                    offset: stream.pos() as usize,
+                });
+                return false;
+            }
         }
+        true
     }
 
-    fn validate_value(&mut self, valid: &serde_yaml::Value, actual: &FieldValue, stream: &KaitaiStream) {
+    fn validate_value(&mut self, valid: &serde_yaml::Value, actual: &FieldValue, stream: &KaitaiStream) -> bool {
         let offset = stream.pos() as usize;
+        let mut ok = true;
         match valid {
             serde_yaml::Value::Mapping(map) => {
                 if let Some(eq_val) = map.get("eq")
@@ -1290,6 +1345,7 @@ impl KaitaiInterpreter {
                         message: format!("validation failed: value {:?} does not equal expected {:?}", actual, eq_val),
                         offset,
                     });
+                    ok = false;
                 }
                 if let Some(min_val) = map.get("min")
                     && let Some(min_n) = min_val.as_i64()
@@ -1299,6 +1355,7 @@ impl KaitaiInterpreter {
                         message: format!("validation failed: value {} is less than min {}", actual.to_i64(), min_n),
                         offset,
                     });
+                    ok = false;
                 }
                 if let Some(max_val) = map.get("max")
                     && let Some(max_n) = max_val.as_i64()
@@ -1308,6 +1365,7 @@ impl KaitaiInterpreter {
                         message: format!("validation failed: value {} is greater than max {}", actual.to_i64(), max_n),
                         offset,
                     });
+                    ok = false;
                 }
                 if let Some(any_of) = map.get("any-of").and_then(|v| v.as_sequence()) {
                     let matched = any_of.iter().any(|expected| Self::check_val_eq(expected, actual));
@@ -1316,6 +1374,7 @@ impl KaitaiInterpreter {
                             message: format!("validation failed: value {:?} not in any-of set", actual),
                             offset,
                         });
+                        ok = false;
                     }
                 }
                 if let Some(expr_val) = map.get("expr").and_then(|v| v.as_str()) {
@@ -1326,6 +1385,7 @@ impl KaitaiInterpreter {
                             message: format!("validation expression failed: {}", expr_val),
                             offset,
                         });
+                        ok = false;
                     }
                 }
             }
@@ -1335,10 +1395,12 @@ impl KaitaiInterpreter {
                         message: format!("validation failed: value {:?} does not equal expected {:?}", actual, valid),
                         offset,
                     });
+                    ok = false;
                 }
             }
             _ => {}
         }
+        ok
     }
 
     fn check_val_eq(expected: &serde_yaml::Value, actual: &FieldValue) -> bool {

@@ -89,10 +89,14 @@ impl SearchPanel {
         let table_state = VirtualTableState::new(default_search_columns());
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(SearchMode::Hex.placeholder()));
 
-        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &input::InputEvent, _window, cx| {
-            if let input::InputEvent::PressEnter { .. } = event {
+        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &input::InputEvent, _window, cx| match event {
+            input::InputEvent::PressEnter { .. } => {
                 this.trigger_search(cx);
             }
+            input::InputEvent::Change => {
+                cx.notify();
+            }
+            _ => {}
         });
 
         let mut this = Self {
@@ -449,6 +453,7 @@ impl Render for SearchPanel {
         let theme = cx.theme();
         let is_focused = self.focus_handle.is_focused(window);
         let has_editor = self.editor.is_some();
+        let is_query_empty = self.input.read(cx).value().trim().is_empty();
         let count = self.results.len();
 
         let badge = if self.is_searching {
@@ -537,7 +542,7 @@ impl Render for SearchPanel {
                             .label(if self.is_searching { "Scanning..." } else { "Find All" })
                             .primary()
                             .with_size(Size::Small)
-                            .disabled(self.is_searching || !has_editor)
+                            .disabled(self.is_searching || !has_editor || is_query_empty)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.trigger_search(cx);
                             })),

@@ -2,6 +2,10 @@ use crate::core::structure::expression::ExprAST;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KsyDefinition {
     pub meta: KsyMeta,
@@ -57,6 +61,15 @@ pub struct KsyAttr {
     pub doc: Option<String>,
     #[serde(rename = "doc-ref")]
     pub doc_ref: Option<serde_yaml::Value>,
+    pub terminator: Option<serde_yaml::Value>,
+    #[serde(default = "default_true")]
+    pub consume: bool,
+    #[serde(default)]
+    pub include: bool,
+    #[serde(rename = "eos-error", default = "default_true")]
+    pub eos_error: bool,
+    #[serde(rename = "pad-right")]
+    pub pad_right: Option<serde_yaml::Value>,
     pub value: Option<String>,
     pub valid: Option<serde_yaml::Value>,
     pub process: Option<serde_yaml::Value>,

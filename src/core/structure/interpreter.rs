@@ -496,11 +496,12 @@ impl KaitaiInterpreter {
         // Handle value instances (computed fields, no stream reading)
         if let Some(value_expr) = &attr.value {
             let ctx = self.make_eval_ctx(stream);
-            let val = if let Some(ref ast) = attr.compiled_value {
-                ExprEvaluator::eval_ast_i64(ast, &ctx)
+            let rich_val = if let Some(ref ast) = attr.compiled_value {
+                ExprEvaluator::eval_ast_rich(ast, &ctx)
             } else {
-                ExprEvaluator::eval_i64(value_expr, &ctx)
+                ExprEvaluator::evaluate_rich(value_expr, &ctx)
             };
+            let val = rich_val.to_i64();
             let field_id = attr.id.clone().unwrap_or_else(|| format!("value_{}", self.field_count));
             let full_id = if self.id_stack.is_empty() {
                 field_id.clone()
@@ -510,6 +511,36 @@ impl KaitaiInterpreter {
             self.context.insert(full_id, val);
             if let Some(ref raw_id) = attr.id {
                 self.context.insert(raw_id.clone(), val);
+            }
+            if is_instance {
+                let f_val = match rich_val {
+                    crate::core::structure::expression::ExprValue::Int(v) => {
+                        if v >= 0 {
+                            FieldValue::U64(v as u64)
+                        } else {
+                            FieldValue::I64(v)
+                        }
+                    }
+                    crate::core::structure::expression::ExprValue::Float(v) => FieldValue::F64(v),
+                    crate::core::structure::expression::ExprValue::Str(s) => FieldValue::String(s),
+                    crate::core::structure::expression::ExprValue::Bool(b) => FieldValue::Bool(b),
+                };
+                let color = palette::get_color(self.color_index);
+                self.color_index += 1;
+                self.field_count += 1;
+                let field = ParsedField {
+                    id: field_id,
+                    field_type: "value".to_string(),
+                    offset: stream.pos() as usize,
+                    size: 0,
+                    value: f_val,
+                    color,
+                    description: attr.doc.clone(),
+                    children: Vec::new(),
+                    enum_label: None,
+                    is_instance: true,
+                };
+                results.push(field);
             }
             return results;
         }
@@ -574,6 +605,16 @@ impl KaitaiInterpreter {
                             }
                             let pos_before = stream.pos();
                             if let Some(field) = self.parse_attr_once(attr, Some(i), stream, scope, is_instance) {
+                                self.context.insert("_".to_string(), field.value.to_i64());
+                                let full_underscore = if self.id_stack.is_empty() {
+                                    "_".to_string()
+                                } else {
+                                    format!("{}._", self.id_stack.join("."))
+                                };
+                                self.context.insert(full_underscore, field.value.to_i64());
+                                for child in &field.children {
+                                    self.context.insert(format!("_.{}", child.id), child.value.to_i64());
+                                }
                                 results.push(field);
                                 on_item(&results, stream.pos() as usize);
                                 let ctx = self.make_eval_ctx(stream);
@@ -703,6 +744,10 @@ impl KaitaiInterpreter {
 
         let typed_result = if let Some(type_str) = &resolved_type {
             self.parse_typed_value(type_str, &type_args, is_little, computed_size, attr, start_offset, old_pos, stream, scope)
+        } else if let Some(term) = Self::attr_terminator(attr) {
+            let buf = stream.read_bytes_term(term, attr.include, attr.consume, attr.eos_error)?;
+            let sz = if attr.consume { buf.len() + 1 } else { buf.len() };
+            Some((FieldValue::Bytes(buf), sz, Vec::new()))
         } else if attr.size_eos {
             let buf = self.read_remaining(stream);
             let s = buf.len();
@@ -731,6 +776,11 @@ impl KaitaiInterpreter {
         // Contents validation
         if let Some(expected) = &attr.contents {
             self.validate_contents(expected, &value, stream);
+        }
+
+        // Value validation
+        if let Some(valid_rule) = &attr.valid {
+            self.validate_value(valid_rule, &value, stream);
         }
 
         // Context update
@@ -870,19 +920,39 @@ impl KaitaiInterpreter {
             "f8be" => Some((FieldValue::F64(stream.read_f8be()?), 8, Vec::new())),
             // String types
             "str" => {
-                let read_size = if attr.size_eos { self.remaining_bytes(stream) } else { size };
-                let buf = stream.read_bytes_slice(read_size)?;
-                let s = self.decode_string(buf, attr);
-                Some((FieldValue::String(s), read_size, Vec::new()))
+                if let Some(term) = Self::attr_terminator(attr) {
+                    let buf = stream.read_bytes_term(term, attr.include, attr.consume, attr.eos_error)?;
+                    let read_sz = if attr.consume { buf.len() + 1 } else { buf.len() };
+                    let s = self.decode_string(&buf, attr);
+                    Some((FieldValue::String(s), read_sz, Vec::new()))
+                } else {
+                    let read_size = if attr.size_eos { self.remaining_bytes(stream) } else { size };
+                    let buf = stream.read_bytes_slice(read_size)?;
+                    let buf_trimmed = if let Some(pad) = Self::attr_pad_right(attr) {
+                        let mut end = buf.len();
+                        while end > 0 && buf[end - 1] == pad {
+                            end -= 1;
+                        }
+                        &buf[..end]
+                    } else {
+                        buf
+                    };
+                    let s = self.decode_string(buf_trimmed, attr);
+                    Some((FieldValue::String(s), read_size, Vec::new()))
+                }
             }
             "strz" => {
-                let buf = stream.read_bytes_term(0, false, true, true)?;
-                let sz = buf.len() + 1;
+                let term = Self::attr_terminator(attr).unwrap_or(0);
+                let buf = stream.read_bytes_term(term, attr.include, attr.consume, attr.eos_error)?;
+                let sz = if attr.consume { buf.len() + 1 } else { buf.len() };
                 let s = self.decode_string(&buf, attr);
                 Some((FieldValue::String(s), sz, Vec::new()))
             }
             // Bit fields (supporting bN, bNle, bNbe)
-            t if t.starts_with('b') => {
+            t if t.starts_with('b')
+                && !t[1..].trim_end_matches("le").trim_end_matches("be").is_empty()
+                && t[1..].trim_end_matches("le").trim_end_matches("be").chars().all(|c| c.is_ascii_digit()) =>
+            {
                 let (bits_str, is_le) = if t.ends_with("le") {
                     (&t[1..t.len() - 2], true)
                 } else if t.ends_with("be") {
@@ -1209,6 +1279,91 @@ impl KaitaiInterpreter {
         }
     }
 
+    fn validate_value(&mut self, valid: &serde_yaml::Value, actual: &FieldValue, stream: &KaitaiStream) {
+        let offset = stream.pos() as usize;
+        match valid {
+            serde_yaml::Value::Mapping(map) => {
+                if let Some(eq_val) = map.get("eq")
+                    && !Self::check_val_eq(eq_val, actual)
+                {
+                    self.errors.borrow_mut().push(ParseError {
+                        message: format!("validation failed: value {:?} does not equal expected {:?}", actual, eq_val),
+                        offset,
+                    });
+                }
+                if let Some(min_val) = map.get("min")
+                    && let Some(min_n) = min_val.as_i64()
+                    && actual.to_i64() < min_n
+                {
+                    self.errors.borrow_mut().push(ParseError {
+                        message: format!("validation failed: value {} is less than min {}", actual.to_i64(), min_n),
+                        offset,
+                    });
+                }
+                if let Some(max_val) = map.get("max")
+                    && let Some(max_n) = max_val.as_i64()
+                    && actual.to_i64() > max_n
+                {
+                    self.errors.borrow_mut().push(ParseError {
+                        message: format!("validation failed: value {} is greater than max {}", actual.to_i64(), max_n),
+                        offset,
+                    });
+                }
+                if let Some(any_of) = map.get("any-of").and_then(|v| v.as_sequence()) {
+                    let matched = any_of.iter().any(|expected| Self::check_val_eq(expected, actual));
+                    if !matched {
+                        self.errors.borrow_mut().push(ParseError {
+                            message: format!("validation failed: value {:?} not in any-of set", actual),
+                            offset,
+                        });
+                    }
+                }
+                if let Some(expr_val) = map.get("expr").and_then(|v| v.as_str()) {
+                    self.context.insert("_".to_string(), actual.to_i64());
+                    let ctx = self.make_eval_ctx(stream);
+                    if !ExprEvaluator::eval_bool(expr_val, &ctx) {
+                        self.errors.borrow_mut().push(ParseError {
+                            message: format!("validation expression failed: {}", expr_val),
+                            offset,
+                        });
+                    }
+                }
+            }
+            serde_yaml::Value::Number(_) | serde_yaml::Value::String(_) => {
+                if !Self::check_val_eq(valid, actual) {
+                    self.errors.borrow_mut().push(ParseError {
+                        message: format!("validation failed: value {:?} does not equal expected {:?}", actual, valid),
+                        offset,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_val_eq(expected: &serde_yaml::Value, actual: &FieldValue) -> bool {
+        match expected {
+            serde_yaml::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    actual.to_i64() == i
+                } else if let Some(u) = n.as_u64() {
+                    actual.to_i64() as u64 == u
+                } else {
+                    false
+                }
+            }
+            serde_yaml::Value::String(s) => {
+                if (s.starts_with("0x") || s.starts_with("0X"))
+                    && let Ok(u) = i64::from_str_radix(&s[2..], 16)
+                {
+                    return actual.to_i64() == u;
+                }
+                actual.to_string_value() == *s
+            }
+            _ => false,
+        }
+    }
+
     fn resolve_size_attr(&self, attr: &KsyAttr, stream: &KaitaiStream) -> Option<usize> {
         if let Some(ref ast) = attr.compiled_size {
             let ctx = self.make_eval_ctx(stream);
@@ -1259,5 +1414,37 @@ impl KaitaiInterpreter {
 
     fn read_remaining(&self, stream: &mut KaitaiStream) -> Vec<u8> {
         stream.read_bytes_remaining().unwrap_or_default()
+    }
+
+    fn attr_terminator(attr: &KsyAttr) -> Option<u8> {
+        match &attr.terminator {
+            Some(serde_yaml::Value::Number(n)) => n.as_u64().map(|v| v as u8),
+            Some(serde_yaml::Value::String(s)) => {
+                if s.starts_with("0x") || s.starts_with("0X") {
+                    u8::from_str_radix(&s[2..], 16).ok()
+                } else if let Ok(n) = s.parse::<u8>() {
+                    Some(n)
+                } else {
+                    s.as_bytes().first().copied()
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn attr_pad_right(attr: &KsyAttr) -> Option<u8> {
+        match &attr.pad_right {
+            Some(serde_yaml::Value::Number(n)) => n.as_u64().map(|v| v as u8),
+            Some(serde_yaml::Value::String(s)) => {
+                if s.starts_with("0x") || s.starts_with("0X") {
+                    u8::from_str_radix(&s[2..], 16).ok()
+                } else if let Ok(n) = s.parse::<u8>() {
+                    Some(n)
+                } else {
+                    s.as_bytes().first().copied()
+                }
+            }
+            _ => None,
+        }
     }
 }

@@ -1605,5 +1605,7 @@ types:
     }
 
     assert_eq!(result.fields[1].id, "records[0]");
-    assert_eq!(result.fields[1].children.len(), 4);
+    assert_eq!(result.fields[1].children.len(), 6);
+    assert!(result.fields[1].children.iter().any(|c| c.id == "is_special" && c.is_instance));
+    assert!(result.fields[1].children.iter().any(|c| c.id == "computed_sum" && c.is_instance));
 }

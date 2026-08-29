@@ -8,6 +8,8 @@ pub mod stream;
 pub mod types;
 
 #[cfg(test)]
+mod spec_compliance_tests;
+#[cfg(test)]
 mod tests;
 
 pub use definition::*;

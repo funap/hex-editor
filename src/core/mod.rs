@@ -10,6 +10,7 @@ pub mod editor;
 pub mod encoding;
 pub mod format;
 pub mod goto;
+pub mod hex_import;
 pub mod history;
 pub mod layout;
 pub mod new_file;

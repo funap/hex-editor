@@ -1319,6 +1319,7 @@ impl Editor {
             && self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
             && self.custom_joins.read().expect("custom_joins read lock").is_empty()
             && self.empty_lines.read().expect("empty_lines read lock").is_empty()
+            && !self.has_address_gaps()
             && let Some(parse_res) = self.parse_result()
             && let Some(line_map) = &parse_res.structure_line_map
         {
@@ -1350,9 +1351,16 @@ impl Editor {
                 let empty_lines_guard = self.empty_lines.read().expect("empty_lines read lock");
                 let mut empty_line_counts = empty_lines_guard.clone();
 
+                let doc_guard = self.document.read().expect("document read lock");
+                let mut segment_breaks = std::collections::BTreeSet::new();
+                doc_guard.address_map.collect_segment_breaks(&mut segment_breaks);
+                doc_guard.address_map.collect_gap_lines(&mut empty_line_counts);
+                drop(doc_guard);
+
                 let mut layout_events: Vec<usize> = Vec::new();
                 layout_events.extend(custom_breaks_guard.iter().copied());
                 layout_events.extend(custom_joins_guard.iter().copied());
+                layout_events.extend(segment_breaks.iter().copied());
                 layout_events.extend(empty_line_counts.keys().copied());
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
@@ -1367,6 +1375,7 @@ impl Editor {
 
                 let mut break_events: Vec<usize> = Vec::new();
                 break_events.extend(custom_breaks_guard.iter().copied());
+                break_events.extend(segment_breaks.iter().copied());
                 break_events.extend(empty_line_counts.keys().copied());
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
@@ -1739,6 +1748,32 @@ impl Editor {
             || !self.custom_joins.read().expect("custom_joins read lock").is_empty()
             || !self.empty_lines.read().expect("empty_lines read lock").is_empty()
             || (self.show_inline_structure_view && !self.is_parsing_structure && self.parse_result.read().expect("parse_result read lock").is_some())
+            || self.has_address_gaps()
+    }
+
+    /// Returns the base address of the document.
+    pub fn base_address(&self) -> usize {
+        self.document.read().expect("document read lock").base_address()
+    }
+
+    /// Converts a buffer offset to its physical memory address.
+    pub fn offset_to_address(&self, offset: usize) -> usize {
+        self.document.read().expect("document read lock").offset_to_address(offset)
+    }
+
+    /// Returns the physical memory address of the current cursor position.
+    pub fn cursor_address(&self) -> usize {
+        self.offset_to_address(self.cursor_offset)
+    }
+
+    /// Converts a physical memory address to a buffer offset.
+    pub fn address_to_offset(&self, address: usize) -> Option<usize> {
+        self.document.read().expect("document read lock").address_to_offset(address)
+    }
+
+    /// Returns true if the document has multiple discontinuous memory segments with address gaps.
+    pub fn has_address_gaps(&self) -> bool {
+        self.document.read().expect("document read lock").address_map.has_gaps()
     }
 
     pub fn toggle_struct_collapsed(&mut self, struct_id: &str) {
@@ -3468,5 +3503,49 @@ mod tests {
         editor.go_to_offset(50, true);
         assert_eq!(editor.cursor_offset, 50);
         assert_eq!(editor.selection_range(), Some(10..50));
+    }
+
+    #[test]
+    fn test_editor_insert_bytes_updates_address_map() {
+        use crate::core::buffer::Buffer;
+        use crate::core::document::Document;
+        use crate::core::hex_import::{AddressMap, MemorySegment};
+        use std::path::PathBuf;
+
+        let map = AddressMap::from_segments(vec![
+            MemorySegment {
+                buffer_offset: 0,
+                address: 0x00FD_0000,
+                length: 10,
+            },
+            MemorySegment {
+                buffer_offset: 10,
+                address: 0x0100_0000,
+                length: 10,
+            },
+        ]);
+
+        let doc = Document::new(PathBuf::from("test.mot"), Buffer::new(vec![0u8; 20])).with_address_map(map);
+        let mut editor = Editor::new(Arc::new(RwLock::new(doc)));
+
+        assert_eq!(editor.offset_to_address(10), 0x0100_0000);
+
+        // Insert 2 bytes at offset 5 (inside first segment)
+        editor.insert_bytes(5, vec![0xAA, 0xBB]);
+
+        assert_eq!(editor.total_size(), 22);
+        // First segment mapping
+        assert_eq!(editor.offset_to_address(0), 0x00FD_0000);
+        assert_eq!(editor.offset_to_address(5), 0x00FD_0005);
+        assert_eq!(editor.offset_to_address(6), 0x00FD_0006);
+        assert_eq!(editor.offset_to_address(11), 0x00FD_000B);
+        // Second segment mapping shifted in buffer to offset 12, address STILL 0x0100_0000!
+        assert_eq!(editor.offset_to_address(12), 0x0100_0000);
+        assert_eq!(editor.offset_to_address(21), 0x0100_0009);
+
+        // Undo
+        editor.undo();
+        assert_eq!(editor.total_size(), 20);
+        assert_eq!(editor.offset_to_address(10), 0x0100_0000);
     }
 }

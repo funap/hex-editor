@@ -3604,7 +3604,12 @@ impl Render for HexView {
             })
             .context_menu({
                 let focus_handle = self.focus_handle.clone();
+                let editor = self.editor.clone();
                 move |menu, window, cx| {
+                    let (is_read_only, can_undo, can_redo, has_selection) = {
+                        let ed = editor.read(cx);
+                        (ed.is_read_only(), ed.can_undo(), ed.can_redo(), ed.has_selection())
+                    };
                     menu.action_context(focus_handle.clone())
                         .submenu("Radix", window, cx, move |menu, _window, _cx| {
                             menu.menu("Hexadecimal (16)", Box::new(SetRadixHex))
@@ -3632,23 +3637,23 @@ impl Render for HexView {
                             })
                         })
                         .separator()
-                        .menu("Undo", Box::new(Undo))
-                        .menu("Redo", Box::new(Redo))
-                        .menu("Cut", Box::new(Cut))
-                        .menu("Copy", Box::new(Copy))
+                        .menu_with_disabled("Undo", Box::new(Undo), is_read_only || !can_undo)
+                        .menu_with_disabled("Redo", Box::new(Redo), is_read_only || !can_redo)
+                        .menu_with_disabled("Cut", Box::new(Cut), is_read_only || !has_selection)
+                        .menu_with_disabled("Copy", Box::new(Copy), !has_selection)
                         .submenu("Copy As", window, cx, move |menu, _window, _cx| {
-                            menu.menu("as Hex Dump", Box::new(CopyAsHexDump))
-                                .menu("as C++ Array", Box::new(CopyAsCppArray))
-                                .menu("as Hex Stream", Box::new(CopyAsHexStream))
-                                .menu("as Hex with Spaces", Box::new(CopyAsHexSpaces))
-                                .menu("as Printable Text", Box::new(CopyAsPrintableText))
-                                .menu("as Base64", Box::new(CopyAsBase64))
-                                .menu("as Escaped String", Box::new(CopyAsEscapedString))
-                                .menu("as Binary", Box::new(CopyAsBinary))
-                                .menu("as Rust Array", Box::new(CopyAsRustArray))
-                                .menu("as JSON Array", Box::new(CopyAsJsonArray))
+                            menu.menu_with_disabled("as Hex Dump", Box::new(CopyAsHexDump), !has_selection)
+                                .menu_with_disabled("as C++ Array", Box::new(CopyAsCppArray), !has_selection)
+                                .menu_with_disabled("as Hex Stream", Box::new(CopyAsHexStream), !has_selection)
+                                .menu_with_disabled("as Hex with Spaces", Box::new(CopyAsHexSpaces), !has_selection)
+                                .menu_with_disabled("as Printable Text", Box::new(CopyAsPrintableText), !has_selection)
+                                .menu_with_disabled("as Base64", Box::new(CopyAsBase64), !has_selection)
+                                .menu_with_disabled("as Escaped String", Box::new(CopyAsEscapedString), !has_selection)
+                                .menu_with_disabled("as Binary", Box::new(CopyAsBinary), !has_selection)
+                                .menu_with_disabled("as Rust Array", Box::new(CopyAsRustArray), !has_selection)
+                                .menu_with_disabled("as JSON Array", Box::new(CopyAsJsonArray), !has_selection)
                         })
-                        .menu("Paste", Box::new(Paste))
+                        .menu_with_disabled("Paste", Box::new(Paste), is_read_only)
                         .separator()
                         .submenu("Bookmark", window, cx, move |menu, _window, _cx| {
                             menu.menu("Red", Box::new(BookmarkRed))
@@ -3678,9 +3683,9 @@ impl Render for HexView {
                         .menu("Find / Replace...", Box::new(ToggleSearch))
                         .menu("Select All", Box::new(SelectAll))
                         .separator()
-                        .menu("Break Line", Box::new(AddCustomBreak))
-                        .menu("Join Lines", Box::new(JoinLine))
-                        .menu("Reset Layout", Box::new(ClearAllCustomBreaks))
+                        .menu_with_disabled("Break Line", Box::new(AddCustomBreak), is_read_only)
+                        .menu_with_disabled("Join Lines", Box::new(JoinLine), is_read_only)
+                        .menu_with_disabled("Reset Layout", Box::new(ClearAllCustomBreaks), is_read_only)
                 }
             })
     }

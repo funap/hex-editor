@@ -57,6 +57,7 @@ impl Command for ReplaceRangeCommand {
             document
                 .buffer
                 .replace_range(self.position..self.position.saturating_add(self.old.len()), &self.new);
+            document.address_map.adjust_after_edit(self.position, self.old.len(), self.new.len());
         }
         editor.adjust_after_edit(self.position, self.old.len(), self.new.len());
         editor.restore_cursor_state(self.after);
@@ -70,6 +71,7 @@ impl Command for ReplaceRangeCommand {
             document
                 .buffer
                 .replace_range(self.position..self.position.saturating_add(self.new.len()), &self.old);
+            document.address_map.adjust_after_edit(self.position, self.new.len(), self.old.len());
         }
         editor.adjust_after_edit(self.position, self.new.len(), self.old.len());
         editor.restore_cursor_state(self.before);
@@ -100,6 +102,7 @@ impl Command for InsertCharCommand {
             && self.position <= document.buffer.len()
         {
             document.buffer.insert(self.position, self.c);
+            document.address_map.adjust_after_edit(self.position, 0, 1);
             inserted = true;
         }
         self.inserted = inserted;
@@ -115,6 +118,9 @@ impl Command for InsertCharCommand {
             && self.position < document.buffer.len()
         {
             removed = document.buffer.remove(self.position).is_some();
+            if removed {
+                document.address_map.adjust_after_edit(self.position, 1, 0);
+            }
         }
         if removed {
             editor.adjust_after_edit(self.position, 1, 0);
@@ -143,6 +149,9 @@ impl Command for DeleteCharCommand {
             } else {
                 deleted = document.buffer.remove(self.position).is_some();
             }
+            if deleted {
+                document.address_map.adjust_after_edit(self.position, 1, 0);
+            }
         }
         if deleted {
             editor.adjust_after_edit(self.position, 1, 0);
@@ -156,6 +165,7 @@ impl Command for DeleteCharCommand {
             && self.position <= document.buffer.len()
         {
             document.buffer.insert(self.position, c);
+            document.address_map.adjust_after_edit(self.position, 0, 1);
             inserted = true;
         }
         if inserted {

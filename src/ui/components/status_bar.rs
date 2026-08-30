@@ -53,11 +53,11 @@ impl Render for StatusBar {
         let theme = cx.theme();
         let active_editor = self.active_editor.as_ref().and_then(|e| e.upgrade());
 
-        let (cursor_offset, total_size) = if let Some(editor) = &active_editor {
+        let (_cursor_offset, total_size, cursor_addr) = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            (editor.cursor_offset, editor.total_size())
+            (editor.cursor_offset, editor.total_size(), editor.cursor_address())
         } else {
-            (0, 0)
+            (0, 0, 0)
         };
 
         let (current_byte_info, raw_byte_val) = if let Some(editor) = &active_editor {
@@ -100,21 +100,19 @@ impl Render for StatusBar {
                 if let Some(range) = editor.selected_range_or_cursor() {
                     let len = range.len();
                     let end_inclusive = range.end.saturating_sub(1);
+                    let start_addr = editor.offset_to_address(range.start);
+                    let end_addr = editor.offset_to_address(end_inclusive);
                     let byte_word = if len == 1 { "byte" } else { "bytes" };
-                    let text = format!("0x{:X} - 0x{:X} (0x{:X} | {} {})", range.start, end_inclusive, len, len, byte_word);
-                    let copy_val = format!("0x{:X}..0x{:X}", range.start, end_inclusive);
+                    let text = format!("0x{:X} - 0x{:X} (0x{:X} | {} {})", start_addr, end_addr, len, len, byte_word);
+                    let copy_val = format!("0x{:X}..0x{:X}", start_addr, end_addr);
                     (text, copy_val)
                 } else {
-                    (
-                        format!("0x{:X} ({})", editor.cursor_offset, editor.cursor_offset),
-                        format!("0x{:X}", editor.cursor_offset),
-                    )
+                    let cur_addr = editor.cursor_address();
+                    (format!("0x{:X} ({})", cur_addr, cur_addr), format!("0x{:X}", cur_addr))
                 }
             } else {
-                (
-                    format!("0x{:X} ({})", editor.cursor_offset, editor.cursor_offset),
-                    format!("0x{:X}", editor.cursor_offset),
-                )
+                let cur_addr = editor.cursor_address();
+                (format!("0x{:X} ({})", cur_addr, cur_addr), format!("0x{:X}", cur_addr))
             }
         } else {
             ("0x0 (0)".to_string(), "0x0".to_string())
@@ -209,7 +207,6 @@ impl Render for StatusBar {
                     .child(
                         div()
                             .id("status-position")
-                            .font_family("Courier New")
                             .font_medium()
                             .text_color(theme.foreground)
                             .cursor_pointer()
@@ -222,8 +219,8 @@ impl Render for StatusBar {
                                 }
                             })
                             .context_menu({
-                                let offset_hex = format!("0x{:X}", cursor_offset);
-                                let offset_dec = format!("{}", cursor_offset);
+                                let offset_hex = format!("0x{:X}", cursor_addr);
+                                let offset_dec = format!("{}", cursor_addr);
                                 let pos_str = position_copy_val.clone();
                                 move |menu, _window, _cx| {
                                     let off_h = offset_hex.clone();
@@ -246,7 +243,6 @@ impl Render for StatusBar {
                         el.child(div().w_px().h_3().bg(theme.border)).child(
                             div()
                                 .id("status-val-pill")
-                                .font_family("Courier New")
                                 .text_color(theme.muted_foreground)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(theme.foreground))

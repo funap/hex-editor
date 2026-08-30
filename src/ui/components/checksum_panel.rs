@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::checksum;
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
@@ -267,11 +268,13 @@ impl ChecksumPanel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_row(
         label: &'static str,
         display_value: String,
         copy_value: String,
         all_text: Option<String>,
+        font_family: &str,
         view: &Entity<Self>,
         window: &mut Window,
         theme: &gpui_component::Theme,
@@ -314,7 +317,7 @@ impl ChecksumPanel {
                         div()
                             .flex_1()
                             .text_right()
-                            .font_family("Courier New")
+                            .font_family(font_family.to_string())
                             .text_xs()
                             .overflow_hidden()
                             .text_ellipsis()
@@ -382,11 +385,15 @@ impl Render for ChecksumPanel {
             data_len = range.len();
             if data_len > 0 {
                 let end_inclusive = range.end.saturating_sub(1);
-                range_desc = format!("Range: 0x{:08X} - 0x{:08X} ({} bytes)", range.start, end_inclusive, data_len);
+                let start_addr = editor.offset_to_address(range.start);
+                let end_addr = editor.offset_to_address(end_inclusive);
+                range_desc = format!("Range: 0x{:08X} - 0x{:08X} ({} bytes)", start_addr, end_addr, data_len);
             } else {
                 range_desc = "No selection (0 bytes)".to_string();
             }
         }
+
+        let font_family = cx.global::<Appearance>().font_family.clone();
 
         let info_section = v_flex()
             .p_2()
@@ -394,7 +401,7 @@ impl Render for ChecksumPanel {
             .border_b_1()
             .border_color(theme.border)
             .child(div().text_xs().text_color(theme.muted_foreground).child(info_text))
-            .child(div().text_xs().font_family("Courier New").text_color(theme.foreground).child(range_desc));
+            .child(div().text_xs().font_family(font_family.clone()).text_color(theme.foreground).child(range_desc));
 
         // Range selection
         let range_selector = h_flex()
@@ -460,7 +467,8 @@ impl Render for ChecksumPanel {
             .child(
                 Button::new("calc_button")
                     .label("Calculate")
-                    .disabled(self.editor.is_none() || data_len == 0 || self.is_calculating)
+                    .primary()
+                    .disabled(data_len == 0 || self.is_calculating)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.trigger_calculation(cx);
                     })),
@@ -498,6 +506,7 @@ impl Render for ChecksumPanel {
                     sum8_str,
                     format!("0x{:02X}", res.sum8),
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -507,6 +516,7 @@ impl Render for ChecksumPanel {
                     sum16_str,
                     format!("0x{:04X}", res.sum16),
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -516,6 +526,7 @@ impl Render for ChecksumPanel {
                     sum32_str,
                     format!("0x{:08X}", res.sum32),
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -525,6 +536,7 @@ impl Render for ChecksumPanel {
                     sum64_str,
                     format!("0x{:016X}", res.sum64),
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -534,6 +546,7 @@ impl Render for ChecksumPanel {
                     adler32_str.clone(),
                     adler32_str,
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -543,6 +556,7 @@ impl Render for ChecksumPanel {
                     crc16_ccitt_str.clone(),
                     crc16_ccitt_str,
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
@@ -552,13 +566,41 @@ impl Render for ChecksumPanel {
                     crc16_arc_str.clone(),
                     crc16_arc_str,
                     all_opt.clone(),
+                    &font_family,
                     &view,
                     window,
                     theme,
                 ))
-                .child(Self::render_row("CRC-32", crc32_str.clone(), crc32_str, all_opt.clone(), &view, window, theme))
-                .child(Self::render_row("MD5", md5_str.clone(), md5_str, all_opt.clone(), &view, window, theme))
-                .child(Self::render_row("SHA-256", sha256_str.clone(), sha256_str, all_opt, &view, window, theme))
+                .child(Self::render_row(
+                    "CRC-32",
+                    crc32_str.clone(),
+                    crc32_str,
+                    all_opt.clone(),
+                    &font_family,
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "MD5",
+                    md5_str.clone(),
+                    md5_str,
+                    all_opt.clone(),
+                    &font_family,
+                    &view,
+                    window,
+                    theme,
+                ))
+                .child(Self::render_row(
+                    "SHA-256",
+                    sha256_str.clone(),
+                    sha256_str,
+                    all_opt,
+                    &font_family,
+                    &view,
+                    window,
+                    theme,
+                ))
                 .overflow_y_scrollbar()
                 .into_any_element()
         } else {

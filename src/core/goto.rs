@@ -146,8 +146,15 @@ fn parse_number_with_base(s: &str, default_radix: GotoRadix) -> Result<usize, Go
 /// - Named positions (`begin`, `start`, `first`, `end`, `eof`, `last`)
 /// - Percentage (`50%`, `75.5%`, `100%`)
 /// - Line / Row syntax (`L10`, `line 10`, `:10`)
-/// - Segment:Offset syntax (`0000:0100`)
-pub fn parse_goto_offset(input: &str, current_cursor: usize, total_size: usize, default_radix: GotoRadix) -> Result<ParsedGotoOffset, GotoParseError> {
+///
+/// Parses a goto offset expression from user input using an AddressMap to resolve physical memory addresses.
+pub fn parse_goto_offset_with_map(
+    input: &str,
+    current_cursor: usize,
+    total_size: usize,
+    default_radix: GotoRadix,
+    address_map: &crate::core::hex_import::AddressMap,
+) -> Result<ParsedGotoOffset, GotoParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(GotoParseError::Empty);
@@ -284,8 +291,27 @@ pub fn parse_goto_offset(input: &str, current_cursor: usize, total_size: usize, 
         }
     }
 
-    // Standard absolute offset
+    // Standard absolute address / offset
     let val = parse_number_with_base(trimmed, default_radix)?;
+
+    // If document has custom base address or memory segments, map physical address to offset
+    if (address_map.base_address() > 0 || address_map.has_gaps())
+        && let Some(mapped_offset) = address_map.address_to_offset(val)
+    {
+        let clamped = if total_size == 0 {
+            0
+        } else {
+            mapped_offset.min(total_size.saturating_sub(1))
+        };
+        let is_out_of_bounds = mapped_offset >= total_size && total_size > 0;
+        return Ok(ParsedGotoOffset {
+            target_offset: clamped,
+            raw_target: val,
+            origin: GotoOrigin::Absolute,
+            is_out_of_bounds,
+        });
+    }
+
     let clamped = if total_size == 0 { 0 } else { val.min(total_size.saturating_sub(1)) };
     let is_out_of_bounds = val >= total_size && total_size > 0;
     Ok(ParsedGotoOffset {
@@ -294,6 +320,18 @@ pub fn parse_goto_offset(input: &str, current_cursor: usize, total_size: usize, 
         origin: GotoOrigin::Absolute,
         is_out_of_bounds,
     })
+}
+
+/// Parses a goto offset expression from user input.
+#[allow(dead_code)]
+pub fn parse_goto_offset(input: &str, current_cursor: usize, total_size: usize, default_radix: GotoRadix) -> Result<ParsedGotoOffset, GotoParseError> {
+    parse_goto_offset_with_map(
+        input,
+        current_cursor,
+        total_size,
+        default_radix,
+        &crate::core::hex_import::AddressMap::default(),
+    )
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
-use crate::core::goto::{GotoParseError, GotoRadix, ParsedGotoOffset, parse_goto_offset};
+use crate::core::goto::{GotoParseError, GotoRadix, ParsedGotoOffset, parse_goto_offset_with_map};
+use crate::core::hex_import::AddressMap;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
@@ -27,6 +28,7 @@ pub struct GotoOffsetBar {
     radix: GotoRadix,
     current_cursor: usize,
     total_size: usize,
+    address_map: AddressMap,
     parsed_result: Option<Result<ParsedGotoOffset, GotoParseError>>,
 }
 
@@ -50,13 +52,15 @@ impl GotoOffsetBar {
             radix: GotoRadix::Hex,
             current_cursor: 0,
             total_size: 0,
+            address_map: AddressMap::default(),
             parsed_result: None,
         }
     }
 
-    pub fn set_context_info(&mut self, current_cursor: usize, total_size: usize, cx: &mut Context<Self>) {
+    pub fn set_context_info(&mut self, current_cursor: usize, total_size: usize, address_map: AddressMap, cx: &mut Context<Self>) {
         self.current_cursor = current_cursor;
         self.total_size = total_size;
+        self.address_map = address_map;
         let query = self.input.read(cx).value().to_string();
         self.update_parsed_result(&query, cx);
     }
@@ -66,7 +70,13 @@ impl GotoOffsetBar {
         if trimmed.is_empty() {
             self.parsed_result = None;
         } else {
-            self.parsed_result = Some(parse_goto_offset(trimmed, self.current_cursor, self.total_size, self.radix));
+            self.parsed_result = Some(parse_goto_offset_with_map(
+                trimmed,
+                self.current_cursor,
+                self.total_size,
+                self.radix,
+                &self.address_map,
+            ));
         }
         cx.notify();
     }
@@ -85,7 +95,7 @@ impl GotoOffsetBar {
 
     pub fn execute_jump(&mut self, extend_selection: bool, cx: &mut Context<Self>) {
         let query = self.input.read(cx).value().to_string();
-        if let Ok(parsed) = parse_goto_offset(&query, self.current_cursor, self.total_size, self.radix) {
+        if let Ok(parsed) = parse_goto_offset_with_map(&query, self.current_cursor, self.total_size, self.radix, &self.address_map) {
             cx.emit(GotoBarEvent::Jump {
                 offset: parsed.target_offset,
                 extend_selection,
@@ -100,13 +110,17 @@ impl Render for GotoOffsetBar {
 
         let preview_info = match &self.parsed_result {
             None => {
-                let text = format!("Pos: 0x{:X} / Size: 0x{:X}", self.current_cursor, self.total_size);
+                let current_addr = self.address_map.offset_to_address(self.current_cursor);
+                let text = format!("Pos: 0x{:X} / Size: 0x{:X}", current_addr, self.total_size);
                 div().text_sm().text_color(theme.muted_foreground).child(text)
             }
             Some(Ok(parsed)) => {
-                let text = format!("Target: 0x{:X} ({} dec)", parsed.target_offset, parsed.target_offset);
+                let target_addr = self.address_map.offset_to_address(parsed.target_offset);
+                let text = format!("Target: 0x{:X} ({} dec)", target_addr, target_addr);
+                let max_offset = self.total_size.saturating_sub(1);
+                let max_addr = self.address_map.offset_to_address(max_offset);
                 let warning = if parsed.is_out_of_bounds {
-                    format!(" ⚠ (max 0x{:X})", self.total_size.saturating_sub(1))
+                    format!(" ⚠ (max 0x{:X})", max_addr)
                 } else {
                     String::new()
                 };

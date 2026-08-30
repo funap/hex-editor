@@ -252,14 +252,18 @@ pub fn paint_centered_ascii_glyphs(shaped: &gpui::ShapedLine, entries: &[AsciiCe
 
 #[inline]
 pub fn format_offset_08(offset: usize) -> SharedString {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [b'0'; 8];
-    let mut val = offset;
-    for i in (0..8).rev() {
-        buf[i] = DIGITS[val & 0xf];
-        val >>= 4;
+    if offset > 0xFFFF_FFFF {
+        SharedString::from(format!("{:016x}", offset))
+    } else {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut buf = [b'0'; 8];
+        let mut val = offset;
+        for i in (0..8).rev() {
+            buf[i] = DIGITS[val & 0xf];
+            val >>= 4;
+        }
+        SharedString::from(std::str::from_utf8(&buf).expect("valid ascii utf8").to_string())
     }
-    SharedString::from(std::str::from_utf8(&buf).expect("valid ascii utf8").to_string())
 }
 
 pub struct RowPaintParams<'a> {
@@ -341,9 +345,81 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     let insert_cursor_active = params.insert_mode && params.is_focused && window.is_window_active();
     let insert_selection_active = params.min_sel <= params.max_sel;
 
+    // Check for Address Gap Separator Row
+    let gap_info = if chunk_len == 0 {
+        params.doc.address_map.gap_before_offset(offset)
+    } else {
+        None
+    };
+
+    if let Some((gap_start, gap_end)) = gap_info {
+        let (offset_w, gap) = if is_struct_mode {
+            (params.address_col_width, SECTION_GAP)
+        } else {
+            (if params.show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
+        };
+
+        if is_struct_mode || params.show_offset {
+            let addr_str = SharedString::from("--------");
+            let run = gpui::TextRun {
+                len: addr_str.len(),
+                font: font.clone(),
+                color: muted_color.opacity(0.6),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line(addr_str, params.font_size, &[run], None);
+            let addr_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
+            let _ = shaped.paint(addr_pos, line_height, window, cx);
+
+            let base_x = params.bounds.left() + px(8.0);
+            let div1_x = base_x + px(offset_w + (gap / 2.0));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div1_x, params.bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_color.opacity(0.4),
+            ));
+        }
+
+        let base_x = params.bounds.left() + px(8.0);
+        let bar_start_x = base_x + px(offset_w + gap);
+        let bar_end_x = params.bounds.right() - px(VERTICAL_SCROLLBAR_WIDTH + 8.0);
+        let bar_width = (bar_end_x - bar_start_x).max(px(0.0));
+
+        let gap_size = gap_end.saturating_sub(gap_start);
+        let gap_label = format!(
+            "── Address Gap: 0x{:08X} - 0x{:08X} (0x{:X} / {} bytes unmapped) ──",
+            gap_start, gap_end, gap_size, gap_size
+        );
+        let run = gpui::TextRun {
+            len: gap_label.len(),
+            font: font.clone(),
+            color: accent_fg_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped_label = window
+            .text_system()
+            .shape_line(SharedString::from(gap_label), params.font_size * 0.9, &[run], None);
+
+        let bar_bounds = Bounds::new(point(bar_start_x, params.bounds.top() + px(2.0)), size(bar_width, px(ROW_HEIGHT - 4.0)));
+        let theme = cx.theme();
+        window.paint_quad(gpui::fill(bar_bounds, theme.accent.opacity(0.12)));
+        let outline = gpui::outline(bar_bounds, border_color.opacity(0.4), gpui::BorderStyle::Solid).border_widths(px(1.0));
+        window.paint_quad(outline);
+
+        let text_x = bar_start_x + px(12.0);
+        let text_pos = point(text_x, params.bounds.top() + px(2.0));
+        let _ = shaped_label.paint(text_pos, line_height, window, cx);
+        return;
+    }
+
+    let physical_address = params.doc.offset_to_address(offset);
+
     // 1. Draw Left Columns (Address OR Offset)
     let (offset_w, gap) = if is_struct_mode {
-        let addr_str = format_offset_08(offset);
+        let addr_str = format_offset_08(physical_address);
         let run = gpui::TextRun {
             len: addr_str.len(),
             font: font.clone(),
@@ -358,7 +434,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         (params.address_col_width, SECTION_GAP)
     } else {
         if params.show_offset {
-            let offset_str = format_offset_08(offset);
+            let offset_str = format_offset_08(physical_address);
             let run = gpui::TextRun {
                 len: offset_str.len(),
                 font: font.clone(),

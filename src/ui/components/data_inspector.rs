@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::ui::icon::IconName;
@@ -69,7 +70,15 @@ impl DataInspector {
         }
     }
 
-    fn render_row(&self, label: &'static str, value: String, view: &Entity<Self>, window: &mut Window, theme: &gpui_component::Theme) -> impl IntoElement {
+    fn render_row(
+        &self,
+        label: &'static str,
+        value: String,
+        font_family: &str,
+        view: &Entity<Self>,
+        window: &mut Window,
+        theme: &gpui_component::Theme,
+    ) -> impl IntoElement {
         let val_for_click = value.clone();
         let val_for_right_click = value.clone();
 
@@ -105,7 +114,7 @@ impl DataInspector {
                     .overflow_hidden()
                     .min_w_0()
                     .text_xs()
-                    .font_family("Courier New")
+                    .font_family(font_family.to_string())
                     .text_color(theme.foreground)
                     .child(value),
             )
@@ -366,6 +375,7 @@ impl Render for DataInspector {
         let context_view = view.clone();
         let context_focus_handle = self.focus_handle.clone();
 
+        let font_family = cx.global::<Appearance>().font_family.clone();
         let header = crate::ui::style::panel_header("DATA INSPECTOR", is_focused, theme, None, Some(endian_controls.into_any_element()));
         let container = crate::ui::style::panel_container(is_focused, theme);
 
@@ -405,31 +415,31 @@ impl Render for DataInspector {
                     .overflow_y_scrollbar()
                     .p_2()
                     .child(self.render_section_header("HEXADECIMAL", theme))
-                    .child(self.render_row("Hex (1 byte)", hex8_val, &view, window, theme))
-                    .child(self.render_row("Hex (2 bytes)", hex16_val, &view, window, theme))
-                    .child(self.render_row("Hex (4 bytes)", hex32_val, &view, window, theme))
-                    .child(self.render_row("Hex (8 bytes)", hex64_val, &view, window, theme))
+                    .child(self.render_row("Hex (1 byte)", hex8_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Hex (2 bytes)", hex16_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Hex (4 bytes)", hex32_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Hex (8 bytes)", hex64_val, &font_family, &view, window, theme))
                     .child(self.render_section_header("INTEGERS", theme))
-                    .child(self.render_row("Int8", i8_val, &view, window, theme))
-                    .child(self.render_row("UInt8", u8_val, &view, window, theme))
-                    .child(self.render_row("Int16", i16_val, &view, window, theme))
-                    .child(self.render_row("UInt16", u16_val, &view, window, theme))
-                    .child(self.render_row("Int32", i32_val, &view, window, theme))
-                    .child(self.render_row("UInt32", u32_val, &view, window, theme))
-                    .child(self.render_row("Int64", i64_val, &view, window, theme))
-                    .child(self.render_row("UInt64", u64_val, &view, window, theme))
+                    .child(self.render_row("Int8", i8_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UInt8", u8_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Int16", i16_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UInt16", u16_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Int32", i32_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UInt32", u32_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Int64", i64_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UInt64", u64_val, &font_family, &view, window, theme))
                     .child(self.render_section_header("FLOATS", theme))
-                    .child(self.render_row("Float32", f32_val, &view, window, theme))
-                    .child(self.render_row("Float64", f64_val, &view, window, theme))
+                    .child(self.render_row("Float32", f32_val, &font_family, &view, window, theme))
+                    .child(self.render_row("Float64", f64_val, &font_family, &view, window, theme))
                     .child(self.render_section_header("TIME", theme))
-                    .child(self.render_row("Unix Time (32-bit)", unix_time_32, &view, window, theme))
-                    .child(self.render_row("Unix Time (64-bit)", unix_time_64, &view, window, theme))
+                    .child(self.render_row("Unix Time (32-bit)", unix_time_32, &font_family, &view, window, theme))
+                    .child(self.render_row("Unix Time (64-bit)", unix_time_64, &font_family, &view, window, theme))
                     .child(self.render_section_header("TEXT", theme))
-                    .child(self.render_row("ASCII", ascii_val, &view, window, theme))
-                    .child(self.render_row("UTF-8", utf8_val, &view, window, theme))
-                    .child(self.render_row("UTF-16", utf16_val, &view, window, theme))
+                    .child(self.render_row("ASCII", ascii_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UTF-8", utf8_val, &font_family, &view, window, theme))
+                    .child(self.render_row("UTF-16", utf16_val, &font_family, &view, window, theme))
                     .when_some(current_encoding.zip(current_enc_val), |parent, (enc_label, enc_val)| {
-                        parent.child(self.render_row(enc_label, enc_val, &view, window, theme))
+                        parent.child(self.render_row(enc_label, enc_val, &font_family, &view, window, theme))
                     }),
             )
     }

@@ -315,6 +315,7 @@ impl BookmarkItem {
         self.color.to_hsla()
     }
 
+    #[allow(dead_code)]
     pub fn format_offset(&self) -> String {
         format!("0x{:08X}", self.offset)
     }

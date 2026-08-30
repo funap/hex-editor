@@ -2,6 +2,7 @@
 
 use crate::core::bookmark::BookmarkItem;
 use crate::core::buffer::Buffer;
+use crate::core::hex_import::AddressMap;
 use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +16,7 @@ pub struct Document {
     pub history: History,
     pub last_saved_version: usize,
     read_only: bool,
+    pub address_map: AddressMap,
     pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
     pub ksy_definition: Arc<RwLock<Option<Arc<KsyDefinition>>>>,
     pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
@@ -31,6 +33,7 @@ impl Document {
             history: History::new(),
             last_saved_version: 0,
             read_only: false,
+            address_map: AddressMap::default(),
             bookmarks: Arc::new(RwLock::new(Vec::new())),
             ksy_definition: Arc::new(RwLock::new(None)),
             parse_result: Arc::new(RwLock::new(None)),
@@ -45,6 +48,27 @@ impl Document {
         let mut document = Self::new(path, buffer);
         document.read_only = true;
         document
+    }
+
+    /// Sets the address map for this document and returns self.
+    pub fn with_address_map(mut self, address_map: AddressMap) -> Self {
+        self.address_map = address_map;
+        self
+    }
+
+    /// Returns the base address of the document.
+    pub fn base_address(&self) -> usize {
+        self.address_map.base_address()
+    }
+
+    /// Converts a linear buffer offset to its physical memory address.
+    pub fn offset_to_address(&self, offset: usize) -> usize {
+        self.address_map.offset_to_address(offset)
+    }
+
+    /// Converts a physical memory address to a linear buffer offset.
+    pub fn address_to_offset(&self, address: usize) -> Option<usize> {
+        self.address_map.address_to_offset(address)
     }
 
     pub fn path(&self) -> &Path {

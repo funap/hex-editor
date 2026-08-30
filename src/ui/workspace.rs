@@ -14,7 +14,6 @@ use crate::app_state::{AppState, InsertModeState};
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::ui::components::status_bar::StatusBar;
-use gpui_component::menu::AppMenuBar;
 use gpui_component::resizable::{h_resizable, resizable_panel};
 use gpui_component::{Root, WindowExt, v_flex};
 use std::cell::Cell;
@@ -226,6 +225,31 @@ pub fn init(cx: &mut App) {
             workspace.on_action_open_file_dialog(&OpenFileDialog, window, cx);
         });
     });
+    cx.on_action::<crate::actions::ImportHexOrMot>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_import_hex_or_mot(&crate::actions::ImportHexOrMot, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ExportBookmarks>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_export_bookmarks(&crate::actions::ExportBookmarks, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ImportBookmarks>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_import_bookmarks(&crate::actions::ImportBookmarks, window, cx);
+        });
+    });
+    cx.on_action::<Save>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_save(&Save, window, cx);
+        });
+    });
+    cx.on_action::<SaveAs>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_save_as(&SaveAs, window, cx);
+        });
+    });
     cx.on_action::<OpenFolder>(|_, cx| {
         defer_in_active_workspace(cx, |workspace, window, cx| {
             workspace.on_action_open_folder(&OpenFolder, window, cx);
@@ -294,8 +318,8 @@ impl Workspace {
         })
         .detach();
 
-        let app_menu_bar = AppMenuBar::new(window, cx);
-        let title_bar = cx.new(|_cx| AppTitleBar { app_menu_bar });
+        let workspace_weak = cx.entity().downgrade();
+        let title_bar = cx.new(|cx| AppTitleBar::new(workspace_weak, window, cx));
 
         cx.subscribe_in(&title_bar, window, |this, _, event, window, cx| match event {
             crate::ui::components::title_bar::AppTitleBarEvent::OpenSettings => {
@@ -1514,6 +1538,68 @@ impl Workspace {
         .detach();
     }
 
+    fn on_action_import_hex_or_mot(&mut self, _: &crate::actions::ImportHexOrMot, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select Motorola S-Record or Intel HEX file to import".into()),
+        });
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            if let Some(path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                let content_res = tokio::fs::read_to_string(&path).await;
+                match content_res {
+                    Ok(content) => match crate::core::hex_import::parse_hex_or_mot(&content) {
+                        Ok(import_result) => {
+                            window
+                                .update(|window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                                        this.record_recent_file(canonical_path.clone(), cx);
+                                        let buffer = crate::core::buffer::Buffer::new(import_result.data);
+                                        let doc =
+                                            crate::core::document::Document::new(canonical_path, buffer).with_address_map(import_result.address_map.clone());
+                                        let doc_arc = std::sync::Arc::new(std::sync::RwLock::new(doc));
+                                        this.open_editor_panel(doc_arc, window, cx);
+                                        let gap_msg = if import_result.address_map.has_gaps() {
+                                            format!(" ({} segments with address gaps)", import_result.address_map.segments.len())
+                                        } else {
+                                            String::new()
+                                        };
+                                        window.push_notification(
+                                            gpui_component::notification::Notification::info(format!(
+                                                "Imported {} successfully{}",
+                                                import_result.format.label(),
+                                                gap_msg
+                                            )),
+                                            cx,
+                                        );
+                                    });
+                                })
+                                .ok();
+                        }
+                        Err(e) => {
+                            let _ = window.update(|window, cx| {
+                                window.push_notification(
+                                    gpui_component::notification::Notification::error(format!("Failed to parse hex/mot file: {}", e)),
+                                    cx,
+                                );
+                            });
+                        }
+                    },
+                    Err(e) => {
+                        let _ = window.update(|window, cx| {
+                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to read file: {}", e)), cx);
+                        });
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
     fn select_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let tab = match activity {
             Activity::Files => LeftPanelTab::Files,
@@ -1739,6 +1825,10 @@ impl Workspace {
             )
         };
         if is_read_only {
+            window.push_notification(
+                gpui_component::notification::Notification::warning("Cannot save: document is in read-only mode. Toggle read-only mode or use Save As."),
+                cx,
+            );
             return;
         }
         if !path.exists() {
@@ -1749,25 +1839,31 @@ impl Workspace {
         let task = service.save_document(document.clone(), cx);
         let workspace = cx.entity().clone();
 
-        cx.spawn(async move |_, cx| {
+        cx.spawn_in(window, async move |_, window| {
             let result = task.await;
-            workspace
-                .update(cx, |_, cx| {
+            let _ = window.update(|window, cx| {
+                workspace.update(cx, |_, cx| {
                     match result {
                         Ok(()) => {
                             let should_mark_saved = document.read().map(|document| document.history.state_id() == state_id).unwrap_or(false);
                             if should_mark_saved {
                                 document.write().expect("document write lock").mark_as_saved();
                             }
+                            let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+                            window.push_notification(gpui_component::notification::Notification::info(format!("Saved {}", file_name)), cx);
                             editor.update(cx, |_, cx| cx.notify());
                         }
                         Err(error) => {
                             eprintln!("Failed to save document: {error}");
+                            window.push_notification(
+                                gpui_component::notification::Notification::error(format!("Failed to save document: {error}")),
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
-                })
-                .ok();
+                });
+            });
         })
         .detach();
     }
@@ -1859,31 +1955,43 @@ impl Workspace {
         let Some(editor) = self.active_editor(cx) else {
             return;
         };
-        let (document, state_id, default_name, parent_dir) = {
+        let (document, state_id, default_name, parent_dir, default_ext) = {
             let editor_read = editor.read(cx);
             let document = editor_read.document.clone();
             let document_read = document.read().expect("document read lock");
-            let default_name = document_read
-                .path()
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| "untitled.bin".to_string());
-            let parent_dir = document_read
-                .path()
+            let path = document_read.path();
+            let default_ext = document_read.address_map.default_extension(path);
+
+            let default_name = if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.is_empty() || file_name == "Untitled" || file_name == "untitled" {
+                    format!("untitled.{}", default_ext)
+                } else if path.extension().is_none() {
+                    format!("{}.{}", file_name, default_ext)
+                } else {
+                    file_name.to_string()
+                }
+            } else {
+                format!("untitled.{}", default_ext)
+            };
+
+            let parent_dir = path
                 .parent()
                 .filter(|p| p.exists())
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")));
-            (document.clone(), document_read.history.state_id(), default_name, parent_dir)
+            (document.clone(), document_read.history.state_id(), default_name, parent_dir, default_ext)
         };
         let prompt = cx.prompt_for_new_path(&parent_dir, Some(&default_name));
         let workspace = cx.entity().clone();
         let service = AppState::global(cx).editor_service.clone();
 
         cx.spawn_in(window, async move |_, window| {
-            let Some(path) = prompt.await.ok().and_then(|result| result.ok()).flatten() else {
+            let Some(mut path) = prompt.await.ok().and_then(|result| result.ok()).flatten() else {
                 return;
             };
+            if path.extension().is_none() {
+                path.set_extension(default_ext);
+            }
             let task = window.update(|_, cx| service.save_document_to_path(document.clone(), path.clone(), cx)).ok();
             let Some(task) = task else {
                 return;
@@ -2318,6 +2426,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_show_bookmarks_tab))
             .on_action(cx.listener(Self::on_action_export_bookmarks))
             .on_action(cx.listener(Self::on_action_import_bookmarks))
+            .on_action(cx.listener(Self::on_action_import_hex_or_mot))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
             .on_action(cx.listener(Self::on_action_load_structure_definition_from_history))
             .on_action(cx.listener(Self::on_action_remove_structure_definition_from_history))

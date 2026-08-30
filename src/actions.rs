@@ -404,3 +404,7 @@ pub struct ExportBookmarks;
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ImportBookmarks;
+
+/// Imports a Motorola S-Record or Intel HEX file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ImportHexOrMot;

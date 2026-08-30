@@ -53,7 +53,6 @@ pub fn panel_badge(count_or_text: impl Into<SharedString>, theme: &Theme) -> Div
         .rounded_sm()
         .bg(theme.muted.opacity(0.6))
         .text_xs()
-        .font_family("Courier New")
         .text_color(theme.muted_foreground)
         .child(count_or_text.into())
 }

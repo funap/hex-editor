@@ -134,6 +134,7 @@ fn init_app_state(cx: &mut App) {
     ui::components::strings_panel::init(cx);
     ui::components::struct_tree_view::init(cx);
     ui::components::bookmark_panel::init(cx);
+    ui::components::title_bar::init(cx);
     ui::panels::editor_panel::init(cx);
     ui::panels::diff_panel::init(cx);
 }
@@ -151,19 +152,26 @@ fn setup_menus(cx: &mut App) {
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Save", crate::actions::Save),
                 gpui::MenuItem::action("Save As...", crate::actions::SaveAs),
-                gpui::MenuItem::action("Toggle Read-only", crate::actions::ToggleReadOnly),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::submenu(gpui::Menu {
+                    name: "Import".into(),
+                    items: vec![gpui::MenuItem::action("Motorola S-Record / Intel HEX...", crate::actions::ImportHexOrMot)],
+                }),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Close Tab", crate::actions::CloseActivePanel),
-                gpui::MenuItem::action("Close Other Tabs", crate::actions::CloseOtherTabs),
-                gpui::MenuItem::action("Close Tabs to Right", crate::actions::CloseTabsToRight),
-                gpui::MenuItem::action("Close Saved Tabs", crate::actions::CloseSavedTabs),
-                gpui::MenuItem::action("Close All Tabs", crate::actions::CloseAllTabs),
+                gpui::MenuItem::submenu(gpui::Menu {
+                    name: "Close Other Tabs".into(),
+                    items: vec![
+                        gpui::MenuItem::action("Close Others", crate::actions::CloseOtherTabs),
+                        gpui::MenuItem::action("Close Tabs to Right", crate::actions::CloseTabsToRight),
+                        gpui::MenuItem::action("Close Saved Tabs", crate::actions::CloseSavedTabs),
+                        gpui::MenuItem::action("Close All Tabs", crate::actions::CloseAllTabs),
+                    ],
+                }),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Copy Path", crate::actions::CopyPath),
                 gpui::MenuItem::action("Copy File Name", crate::actions::CopyFileName),
                 gpui::MenuItem::action("Reveal in File Manager", crate::actions::RevealInExplorer),
-                gpui::MenuItem::separator(),
-                gpui::MenuItem::action("Settings", crate::actions::OpenSettings),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Quit", crate::actions::Quit),
             ],
@@ -372,6 +380,11 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-shift-o", crate::actions::OpenFolder, None),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("ctrl-shift-o", crate::actions::OpenFolder, None),
+        // Save
+        #[cfg(target_os = "macos")]
+        gpui::KeyBinding::new("cmd-s", crate::actions::Save, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("ctrl-s", crate::actions::Save, None),
         // Panels & Views
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new("cmd-b", crate::actions::ToggleLeftPanel, None),

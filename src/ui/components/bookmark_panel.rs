@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
@@ -627,6 +628,7 @@ impl BookmarkPanel {
             .gap_1p5();
 
         // 1. Header row: Color Dot + Offset + Size + Action Buttons
+        let font_family = cx.global::<Appearance>().font_family.clone();
         let header_row = h_flex()
             .w_full()
             .justify_between()
@@ -673,11 +675,18 @@ impl BookmarkPanel {
                                     .gap_2()
                                     .child(
                                         div()
-                                            .font_family("Courier New")
+                                            .font_family(font_family.clone())
                                             .text_xs()
                                             .font_semibold()
                                             .text_color(theme.foreground)
-                                            .child(item.format_offset()),
+                                            .child({
+                                                let address_map = self
+                                                    .editor
+                                                    .as_ref()
+                                                    .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.address_map.clone()))
+                                                    .unwrap_or_default();
+                                                format!("0x{:08X}", address_map.offset_to_address(item.offset))
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -686,7 +695,7 @@ impl BookmarkPanel {
                                             .rounded_sm()
                                             .bg(theme.muted.opacity(0.5))
                                             .text_xs()
-                                            .font_family("Courier New")
+                                            .font_family(font_family.clone())
                                             .text_color(theme.muted_foreground)
                                             .child(format!("{} B", item.size)),
                                     ),

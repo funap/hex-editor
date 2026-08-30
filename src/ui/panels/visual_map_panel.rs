@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
@@ -374,6 +375,7 @@ impl VisualMapPanel {
 
     fn render_width_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
+        let font_family = cx.global::<Appearance>().font_family.clone();
         h_flex()
             .justify_between()
             .items_center()
@@ -420,7 +422,7 @@ impl VisualMapPanel {
                             .py_0p5()
                             .rounded_sm()
                             .bg(theme.muted.opacity(0.4))
-                            .font_family("Courier New")
+                            .font_family(font_family)
                             .text_xs()
                             .font_semibold()
                             .text_color(theme.foreground)
@@ -598,6 +600,7 @@ impl VisualMapPanel {
     fn render_footer(&self, buffer_len: usize, total_rows: usize, theme: &gpui_component::Theme, cx: &App) -> impl IntoElement + use<> {
         let border_color = theme.border;
         let muted_color = theme.muted_foreground;
+        let font_family = cx.global::<Appearance>().font_family.clone();
 
         if let Some((offset, byte)) = self.hovered_info {
             let cat = ByteCategory::of(byte);
@@ -608,6 +611,8 @@ impl VisualMapPanel {
             } else {
                 format!("0x{:02X}", byte)
             };
+
+            let display_addr = self.editor.as_ref().map(|ed| ed.read(cx).offset_to_address(offset)).unwrap_or(offset);
 
             h_flex()
                 .w_full()
@@ -621,11 +626,16 @@ impl VisualMapPanel {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().font_family("Courier New").text_color(theme.foreground).child(format!("0x{:08X}", offset)))
+                        .child(
+                            div()
+                                .font_family(font_family.clone())
+                                .text_color(theme.foreground)
+                                .child(format!("0x{:08X}", display_addr)),
+                        )
                         .child(div().text_color(muted_color).child("|"))
                         .child(
                             div()
-                                .font_family("Courier New")
+                                .font_family(font_family.clone())
                                 .text_color(theme.foreground)
                                 .child(format!("0x{:02X} ({})", byte, byte)),
                         )
@@ -635,7 +645,7 @@ impl VisualMapPanel {
                                 .py_0p5()
                                 .rounded_sm()
                                 .bg(theme.muted.opacity(0.4))
-                                .font_family("Courier New")
+                                .font_family(font_family.clone())
                                 .text_color(theme.foreground)
                                 .child(char_repr),
                         ),
@@ -652,7 +662,7 @@ impl VisualMapPanel {
                 )
         } else {
             let cursor_str = self.editor.as_ref().map(|ed| {
-                let cur = ed.read(cx).cursor_offset;
+                let cur = ed.read(cx).cursor_address();
                 format!("Cursor: 0x{:08X}", cur)
             });
 
@@ -677,7 +687,7 @@ impl VisualMapPanel {
                                 .gap_2()
                                 .items_center()
                                 .child(div().child("|"))
-                                .child(div().font_family("Courier New").child(c))
+                                .child(div().font_family(font_family.clone()).child(c))
                         })),
                 )
                 .child(div().child(format!("{} cols @ x{}", self.cols, self.pixel_size)))

@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::radix::DisplayRadix;
 use crate::core::structure::{ParseResult, ParsedField, format_parse_result_as_text, format_parse_result_as_yaml};
@@ -1013,6 +1014,7 @@ impl StructTreeView {
         cx: &App,
     ) -> AnyElement {
         let theme = cx.theme();
+        let font_family = cx.global::<Appearance>().font_family.clone();
         let bg_color = if is_selected {
             if is_focused { theme.selection } else { theme.muted_foreground.opacity(0.3) }
         } else {
@@ -1117,7 +1119,7 @@ impl StructTreeView {
                                 .into_any_element(),
                             1 => div()
                                 .text_xs()
-                                .font_family("Courier New")
+                                .font_family(font_family.clone())
                                 .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
                                 .child(format!("0x{:X}", field_offset))
                                 .into_any_element(),
@@ -1125,13 +1127,13 @@ impl StructTreeView {
                                 .rounded_sm()
                                 .bg(theme.accent.opacity(0.14))
                                 .text_xs()
-                                .font_family("Courier New")
+                                .font_family(font_family.clone())
                                 .text_color(theme.accent)
                                 .child(type_label.clone())
                                 .into_any_element(),
                             3 => div()
                                 .text_xs()
-                                .font_family("Courier New")
+                                .font_family(font_family.clone())
                                 .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
                                 .child(format!("{} B", format_with_commas(field.size)))
                                 .into_any_element(),

@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern, parse_text_pattern};
@@ -407,17 +408,19 @@ impl SearchPanel {
     }
 
     fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
-        let (encoding, buffer) = if let Some(ed) = &self.editor {
+        let (encoding, buffer, address_map) = if let Some(ed) = &self.editor {
             let ed_ref = ed.read(cx);
-            let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
-            (ed_ref.encoding, buf)
+            let doc = ed_ref.document.read().ok();
+            let buf = doc.as_ref().map(|d| d.buffer.clone());
+            let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
+            (ed_ref.encoding, buf, map)
         } else {
-            (Encoding::Ascii, None)
+            (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
         };
         let buffer_slice = buffer.as_ref().map(|b| b.data());
 
         let texts = self.results.iter().take(128).map(|item| match col_ix {
-            0 => format!("0x{:08X}", item.offset),
+            0 => format!("0x{:08X}", address_map.offset_to_address(item.offset)),
             1 => {
                 let (hex, _) = format_row_previews(buffer_slice, item.offset, self.match_len, encoding);
                 hex
@@ -501,6 +504,7 @@ impl Render for SearchPanel {
         let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
 
         let theme = cx.theme();
+        let font_family = cx.global::<Appearance>().font_family.clone();
         let is_table_focused = self.table_state.focus_handle.as_ref().is_some_and(|h| h.is_focused(window));
         let is_focused = self.focus_handle.is_focused(window) || is_table_focused;
         let has_editor = self.editor.is_some();
@@ -668,12 +672,14 @@ impl Render for SearchPanel {
                 let this = list_view.read(cx);
                 let theme = cx.theme();
 
-                let (encoding, buffer) = if let Some(ed) = &this.editor {
+                let (encoding, buffer, address_map) = if let Some(ed) = &this.editor {
                     let ed_ref = ed.read(cx);
-                    let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
-                    (ed_ref.encoding, buf)
+                    let doc = ed_ref.document.read().ok();
+                    let buf = doc.as_ref().map(|d| d.buffer.clone());
+                    let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
+                    (ed_ref.encoding, buf, map)
                 } else {
-                    (Encoding::Ascii, None)
+                    (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
                 };
                 let buffer_data = buffer.as_ref().map(|b| b.data());
 
@@ -701,7 +707,7 @@ impl Render for SearchPanel {
                             };
 
                             let offset = item.offset;
-                            let offset_value = format!("0x{:08X}", offset);
+                            let offset_value = format!("0x{:08X}", address_map.offset_to_address(offset));
                             let (preview_hex, preview_text) = format_row_previews(buffer_data, offset, this.match_len, encoding);
                             h_flex()
                                 .id(("search-result-item", idx))
@@ -739,20 +745,20 @@ impl Render for SearchPanel {
                                             let cell_content = match col_ix {
                                                 0 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .font_semibold()
                                                     .text_color(if is_selected { theme.accent_foreground } else { theme.muted_foreground })
                                                     .child(offset_value.clone())
                                                     .into_any_element(),
                                                 1 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .text_color(theme.muted_foreground)
                                                     .child(preview_hex.clone())
                                                     .into_any_element(),
                                                 2 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .text_color(theme.foreground)
                                                     .child(preview_text.clone())
                                                     .into_any_element(),
@@ -857,14 +863,16 @@ impl Render for SearchPanel {
                         this.selected_index.and_then(|idx| {
                             let item = this.results.get(idx)?;
                             let offset = item.offset;
-                            let offset_value = format!("0x{:08X}", offset);
-                            let (encoding, buffer) = if let Some(ed) = &this.editor {
+                            let (encoding, buffer, address_map) = if let Some(ed) = &this.editor {
                                 let ed_ref = ed.read(cx);
-                                let buf = ed_ref.document.read().ok().map(|d| d.buffer.clone());
-                                (ed_ref.encoding, buf)
+                                let doc = ed_ref.document.read().ok();
+                                let buf = doc.as_ref().map(|d| d.buffer.clone());
+                                let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
+                                (ed_ref.encoding, buf, map)
                             } else {
-                                (Encoding::Ascii, None)
+                                (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
                             };
+                            let offset_value = format!("0x{:08X}", address_map.offset_to_address(offset));
                             let buffer_data = buffer.as_ref().map(|b| b.data());
                             let (preview_hex, preview_text) = format_row_previews(buffer_data, offset, this.match_len, encoding);
                             Some((offset_value, preview_hex, preview_text))

@@ -320,8 +320,9 @@ impl EditorPanel {
             self.is_search_visible = false;
             let cursor_offset = self.editor.read(cx).cursor_offset;
             let total_size = self.editor.read(cx).total_size();
+            let address_map = self.editor.read(cx).document.read().expect("doc read").address_map.clone();
             self.goto_bar.update(cx, |bar, cx| {
-                bar.set_context_info(cursor_offset, total_size, cx);
+                bar.set_context_info(cursor_offset, total_size, address_map, cx);
                 bar.focus(window, cx);
             });
         } else {

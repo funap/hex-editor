@@ -1,3 +1,4 @@
+use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::strings::{DEFAULT_MIN_STRING_LENGTH, StringMatch, find_strings_limited};
@@ -356,9 +357,14 @@ impl StringsPanel {
 
     fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         let visible_indices = self.sorted_indices(cx);
+        let address_map = self
+            .editor
+            .as_ref()
+            .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.address_map.clone()))
+            .unwrap_or_default();
         let texts = visible_indices.iter().take(128).filter_map(|&index| {
             self.results.get(index).map(|item| match col_ix {
-                0 => format!("0x{:08X}", item.offset),
+                0 => format!("0x{:08X}", address_map.offset_to_address(item.offset)),
                 1 => item.byte_len.to_string(),
                 2 => preview_text(&item.text),
                 _ => String::new(),
@@ -563,6 +569,7 @@ impl Render for StringsPanel {
         let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
 
         let theme = cx.theme();
+        let font_family = cx.global::<Appearance>().font_family.clone();
         let is_table_focused = self.table_state.focus_handle.as_ref().is_some_and(|h| h.is_focused(window));
         let is_focused = self.focus_handle.is_focused(window) || is_table_focused;
         let has_editor = self.editor.is_some();
@@ -709,6 +716,12 @@ impl Render for StringsPanel {
             let list = uniform_list("strings-virtual-table", row_count, move |visible_range, window, cx| {
                 let this = list_view.read(cx);
                 let theme = cx.theme();
+                let address_map = this
+                    .editor
+                    .as_ref()
+                    .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.address_map.clone()))
+                    .unwrap_or_default();
+
                 visible_range
                     .map(|row_ix| {
                         if let Some(&index) = visible_indices.get(row_ix)
@@ -738,7 +751,7 @@ impl Render for StringsPanel {
                             let preview = preview_text(&item.text);
                             let offset = item.offset;
                             let byte_len = item.byte_len;
-                            let offset_value = format!("0x{:08X}", offset);
+                            let offset_value = format!("0x{:08X}", address_map.offset_to_address(offset));
 
                             h_flex()
                                 .id(("strings-result-item", index))
@@ -776,19 +789,19 @@ impl Render for StringsPanel {
                                             let cell_content = match col_ix {
                                                 0 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .text_color(offset_color)
                                                     .child(offset_value.clone())
                                                     .into_any_element(),
                                                 1 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .text_color(theme.muted_foreground)
                                                     .child(byte_len.to_string())
                                                     .into_any_element(),
                                                 2 => div()
                                                     .text_xs()
-                                                    .font_family("Courier New")
+                                                    .font_family(font_family.clone())
                                                     .text_color(theme.foreground)
                                                     .child(preview.clone())
                                                     .into_any_element(),
@@ -887,7 +900,12 @@ impl Render for StringsPanel {
                         let this = context_view.read(cx);
                         this.selected_index.and_then(|idx| {
                             let item = this.results.get(idx)?;
-                            let offset_value = format!("0x{:08X}", item.offset);
+                            let address_map = this
+                                .editor
+                                .as_ref()
+                                .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.address_map.clone()))
+                                .unwrap_or_default();
+                            let offset_value = format!("0x{:08X}", address_map.offset_to_address(item.offset));
                             let value = item.text.clone();
                             Some((offset_value, value))
                         })

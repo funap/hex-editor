@@ -96,16 +96,35 @@ impl EditorService {
 
         // If not in the cache, read the file using memory mapping without holding any lock.
         let path_clone = path.clone();
-        let buffer = tokio::task::spawn_blocking(move || -> anyhow::Result<Buffer> {
+        let (buffer, address_map) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Buffer, crate::core::hex_import::AddressMap)> {
+            let is_likely_hex_mot = path_clone
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| {
+                    let e = ext.to_ascii_lowercase();
+                    matches!(e.as_str(), "mot" | "srec" | "s19" | "s28" | "s37" | "s" | "hex" | "ihex" | "ihx")
+                })
+                .unwrap_or(false);
+
+            if is_likely_hex_mot
+                && let Ok(content) = std::fs::read_to_string(&path_clone)
+                && let Ok(import_result) = crate::core::hex_import::parse_hex_or_mot(&content)
+            {
+                let buf = Buffer::new(import_result.data);
+                return Ok((buf, import_result.address_map));
+            }
+
             let file = std::fs::File::open(&path_clone)?;
             // SAFETY: Memory mapping the opened file is safe as long as the file is not
             // concurrently truncated or modified outside this process. Buffer encapsulates
             // read-only access to this memory mapping.
             let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
-            Ok(Buffer::from_mmap(mmap))
+            Ok((Buffer::from_mmap(mmap), crate::core::hex_import::AddressMap::default()))
         })
         .await??;
-        let new_document = Arc::new(RwLock::new(Document::new_read_only(path.clone(), buffer)));
+        let mut doc = Document::new_read_only(path.clone(), buffer);
+        doc = doc.with_address_map(address_map);
+        let new_document = Arc::new(RwLock::new(doc));
 
         // Acquire a write lock to insert the new document into the cache.
         let mut documents = self.documents.write().expect("documents write lock");
@@ -129,15 +148,22 @@ impl EditorService {
     /// Writes the current document snapshot to its path on a background
     /// executor. The document lock is released before any filesystem await.
     pub fn save_document(&self, document: Arc<RwLock<Document>>, cx: &App) -> Task<anyhow::Result<()>> {
-        let (path, contents) = {
+        let (path, contents, address_map) = {
             let document = document.read().expect("document read lock");
             if document.is_read_only() {
                 return cx.background_executor().spawn(async { Err(anyhow::anyhow!("document is read-only")) });
             }
-            (document.path().to_path_buf(), document.buffer.data().to_vec())
+            (document.path().to_path_buf(), document.buffer.data().to_vec(), document.address_map.clone())
         };
         cx.background_executor().spawn(async move {
-            std::fs::write(path, contents)?;
+            let bytes_to_write = if crate::core::hex_import::is_mot_extension(&path) {
+                crate::core::hex_import::export_motorola_srec(&contents, &address_map).into_bytes()
+            } else if crate::core::hex_import::is_hex_extension(&path) {
+                crate::core::hex_import::export_intel_hex(&contents, &address_map).into_bytes()
+            } else {
+                crate::core::hex_import::export_raw_binary(&contents, &address_map, 0x00)
+            };
+            std::fs::write(path, bytes_to_write)?;
             Ok(())
         })
     }
@@ -145,12 +171,19 @@ impl EditorService {
     /// Writes a document snapshot to an explicit path on a background
     /// executor. This is used by Save As workflows.
     pub fn save_document_to_path(&self, document: Arc<RwLock<Document>>, path: PathBuf, cx: &App) -> Task<anyhow::Result<()>> {
-        let contents = {
+        let (contents, address_map) = {
             let document = document.read().expect("document read lock");
-            document.buffer.data().to_vec()
+            (document.buffer.data().to_vec(), document.address_map.clone())
         };
         cx.background_executor().spawn(async move {
-            std::fs::write(path, contents)?;
+            let bytes_to_write = if crate::core::hex_import::is_mot_extension(&path) {
+                crate::core::hex_import::export_motorola_srec(&contents, &address_map).into_bytes()
+            } else if crate::core::hex_import::is_hex_extension(&path) {
+                crate::core::hex_import::export_intel_hex(&contents, &address_map).into_bytes()
+            } else {
+                crate::core::hex_import::export_raw_binary(&contents, &address_map, 0x00)
+            };
+            std::fs::write(path, bytes_to_write)?;
             Ok(())
         })
     }
@@ -337,5 +370,37 @@ mod tests {
         let result = service.open_file(path).await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_document_with_address_map_to_bin_and_mot() {
+        let data = vec![0x11, 0x22, 0x33, 0x44];
+        let map = crate::core::hex_import::AddressMap::from_segments(vec![
+            crate::core::hex_import::MemorySegment {
+                buffer_offset: 0,
+                address: 4,
+                length: 2,
+            },
+            crate::core::hex_import::MemorySegment {
+                buffer_offset: 2,
+                address: 8,
+                length: 2,
+            },
+        ]);
+
+        let doc = Document::new(PathBuf::from("test.mot"), crate::core::buffer::Buffer::new(data)).with_address_map(map);
+
+        let bin_path = PathBuf::from("output.bin");
+        let mot_path = PathBuf::from("output.mot");
+
+        assert!(!crate::core::hex_import::is_mot_extension(&bin_path));
+        assert!(crate::core::hex_import::is_mot_extension(&mot_path));
+
+        let bin_bytes = crate::core::hex_import::export_raw_binary(doc.buffer.data(), &doc.address_map, 0x00);
+        assert_eq!(bin_bytes.len(), 10);
+        assert_eq!(bin_bytes, vec![0, 0, 0, 0, 0x11, 0x22, 0, 0, 0x33, 0x44]);
+
+        let mot_string = crate::core::hex_import::export_motorola_srec(doc.buffer.data(), &doc.address_map);
+        assert!(mot_string.contains("S1") || mot_string.contains("S2") || mot_string.contains("S3"));
     }
 }

@@ -22,6 +22,13 @@ Engineered to be snappy, intuitive, and versatile for reverse engineering, firmw
 
 ---
 
+> [!WARNING]
+> **Alpha Software Notice & Disclaimer**  
+> `xvw` is currently in early alpha stage and has not been fully evaluated or hardened. Please **make reliable backups** of your files before editing. Use at your own risk.  
+> We actively welcome feedback, bug reports, and contributions! Feel free to [open an issue](https://github.com/funap/xvw/issues) or submit a pull request.
+
+---
+
 ## ✨ Features at a Glance
 
 - ⚡ **Instant Multi-GB File Loading**  
@@ -167,6 +174,15 @@ Decode and search binary data with built-in support for 40+ text encodings:
 - **ISO-8859 Family**: ISO-8859-1 through ISO-8859-16 (Latin 1–10, Cyrillic, Arabic, Greek, Hebrew, Celtic, etc.)
 - **Windows Code Pages**: Windows-1250 through Windows-1258
 - **Legacy & Mac**: KOI8-R, KOI8-U, Mac OS Roman, IBM866
+
+---
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are very welcome!
+
+- 🐛 **Found a bug or have a suggestion?** Please [open an issue](https://github.com/funap/xvw/issues) on GitHub.
+- 💡 **Want to contribute?** Pull requests are always appreciated! Please check existing issues or start a discussion before making large architectural changes.
 
 ---
 

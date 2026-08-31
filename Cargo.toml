@@ -1,6 +1,6 @@
 [package]
 name = "xvw"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
 readme = "README.md"

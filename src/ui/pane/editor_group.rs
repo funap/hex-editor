@@ -637,7 +637,7 @@ impl Render for EditorGroup {
                                         }
                                     })
                                     .child(
-                                        Icon::new(if is_read_only { IconName::Eye } else { IconName::File })
+                                        Icon::new(if is_read_only { IconName::PenOff } else { IconName::File })
                                             .size(px(14.0))
                                             .text_color(if is_active { theme.primary } else { theme.muted_foreground }),
                                     )

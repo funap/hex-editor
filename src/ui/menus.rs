@@ -211,6 +211,44 @@ fn build_edit_menu() -> MenuDef {
                     MenuItemDef::action_with_condition("Export Bookmarks...", crate::actions::ExportBookmarks, |s| s.has_doc),
                 ],
             ),
+            MenuItemDef::submenu(
+                "Bookmark Visibility",
+                vec![
+                    MenuItemDef::action_with_condition("Show All Bookmarks", crate::actions::ShowAllBookmarks, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Hide All Bookmarks", crate::actions::HideAllBookmarks, |s| s.has_doc),
+                    MenuItemDef::separator(),
+                    MenuItemDef::action_with_condition("Show Only Bookmarked Regions", crate::actions::ToggleHideUnbookmarked, |s| s.has_doc),
+                    MenuItemDef::separator(),
+                    MenuItemDef::action_with_condition("Unfold at Cursor", crate::actions::UnfoldBookmarkAtCursor, |s| s.has_doc),
+                    MenuItemDef::separator(),
+                    MenuItemDef::submenu(
+                        "Toggle by Color",
+                        vec![
+                            MenuItemDef::action_with_condition("Red", crate::actions::ToggleBookmarkRed, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Orange", crate::actions::ToggleBookmarkOrange, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Yellow", crate::actions::ToggleBookmarkYellow, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Green", crate::actions::ToggleBookmarkGreen, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Cyan", crate::actions::ToggleBookmarkCyan, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Blue", crate::actions::ToggleBookmarkBlue, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Purple", crate::actions::ToggleBookmarkPurple, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Pink", crate::actions::ToggleBookmarkPink, |s| s.has_doc),
+                        ],
+                    ),
+                    MenuItemDef::submenu(
+                        "Show Only Color",
+                        vec![
+                            MenuItemDef::action_with_condition("Only Red", crate::actions::ShowOnlyBookmarkRed, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Orange", crate::actions::ShowOnlyBookmarkOrange, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Yellow", crate::actions::ShowOnlyBookmarkYellow, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Green", crate::actions::ShowOnlyBookmarkGreen, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Cyan", crate::actions::ShowOnlyBookmarkCyan, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Blue", crate::actions::ShowOnlyBookmarkBlue, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Purple", crate::actions::ShowOnlyBookmarkPurple, |s| s.has_doc),
+                            MenuItemDef::action_with_condition("Only Pink", crate::actions::ShowOnlyBookmarkPink, |s| s.has_doc),
+                        ],
+                    ),
+                ],
+            ),
         ],
     }
 }
@@ -282,17 +320,13 @@ fn build_view_menu() -> MenuDef {
             MenuItemDef::submenu(
                 "Custom Line Breaks",
                 vec![
-                    MenuItemDef::action_with_condition("Break Line", crate::actions::AddCustomBreak, |s| !s.is_read_only && s.has_doc),
-                    MenuItemDef::action_with_condition("Join Lines", crate::actions::JoinLine, |s| !s.is_read_only && s.has_doc),
+                    MenuItemDef::action_with_condition("Break Line", crate::actions::AddCustomBreak, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Join Lines", crate::actions::JoinLine, |s| s.has_doc),
                     MenuItemDef::separator(),
-                    MenuItemDef::action_with_condition("Remove Break Backward", crate::actions::RemoveCustomBreakBackward, |s| {
-                        !s.is_read_only && s.has_doc
-                    }),
-                    MenuItemDef::action_with_condition("Remove Break Forward", crate::actions::RemoveCustomBreakForward, |s| {
-                        !s.is_read_only && s.has_doc
-                    }),
+                    MenuItemDef::action_with_condition("Remove Break Backward", crate::actions::RemoveCustomBreakBackward, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Remove Break Forward", crate::actions::RemoveCustomBreakForward, |s| s.has_doc),
                     MenuItemDef::separator(),
-                    MenuItemDef::action_with_condition("Reset Custom Breaks", crate::actions::ClearAllCustomBreaks, |s| !s.is_read_only && s.has_doc),
+                    MenuItemDef::action_with_condition("Reset Custom Breaks", crate::actions::ClearAllCustomBreaks, |s| s.has_doc),
                 ],
             ),
         ],

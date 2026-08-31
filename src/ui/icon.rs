@@ -50,6 +50,7 @@ pub enum IconName {
     BookmarkX,
     Binoculars,
     PenLine,
+    PenOff,
     Palette,
     Sparkles,
 
@@ -129,6 +130,7 @@ impl IconNamed for IconName {
             Self::BookmarkX => "icons/bookmark-x.svg",
             Self::Binoculars => "icons/binoculars.svg",
             Self::PenLine => "icons/pen-line.svg",
+            Self::PenOff => "icons/pen-off.svg",
             Self::Palette => "icons/palette.svg",
             Self::Sparkles => "icons/sparkles.svg",
             Self::Search => "icons/search.svg",

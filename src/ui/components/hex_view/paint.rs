@@ -345,6 +345,97 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     let insert_cursor_active = params.insert_mode && params.is_focused && window.is_window_active();
     let insert_selection_active = params.min_sel <= params.max_sel;
 
+    // Check for Folded Bookmark or Unbookmarked Region Row
+    let fold_summary = params
+        .doc
+        .fold_bookmark_summary_at(offset)
+        .map(|s| (s.end_offset, Some(s.color), s.comment, s.is_unbookmarked));
+
+    if let Some((fold_end, color, comment, is_unbookmarked)) = fold_summary {
+        let (offset_w, gap) = if is_struct_mode {
+            (params.address_col_width, SECTION_GAP)
+        } else {
+            (if params.show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
+        };
+
+        let fold_start_addr = params.doc.offset_to_address(offset);
+        let fold_end_addr = params.doc.offset_to_address(fold_end);
+
+        if is_struct_mode || params.show_offset {
+            let addr_str = format_offset_08(fold_start_addr);
+            let run = gpui::TextRun {
+                len: addr_str.len(),
+                font: font.clone(),
+                color: muted_color.opacity(0.8),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line(addr_str, params.font_size, &[run], None);
+            let addr_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
+            let _ = shaped.paint(addr_pos, line_height, window, cx);
+
+            let base_x = params.bounds.left() + px(8.0);
+            let div1_x = base_x + px(offset_w + (gap / 2.0));
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(div1_x, params.bounds.top()), size(px(1.0), px(ROW_HEIGHT))),
+                border_color.opacity(0.4),
+            ));
+        }
+
+        let base_x = params.bounds.left() + px(8.0);
+        let bar_start_x = base_x + px(offset_w + gap);
+        let bar_end_x = params.bounds.right() - px(VERTICAL_SCROLLBAR_WIDTH + 8.0);
+        let bar_width = (bar_end_x - bar_start_x).max(px(0.0));
+
+        let fold_size = fold_end.saturating_sub(offset);
+        let fold_label = if is_unbookmarked {
+            format!(
+                "── Unbookmarked: 0x{:08X} - 0x{:08X} (0x{:X} / {} bytes) ──",
+                fold_start_addr, fold_end_addr, fold_size, fold_size
+            )
+        } else if !comment.is_empty() {
+            format!(
+                "── {}: 0x{:08X} - 0x{:08X} (0x{:X} / {} bytes) ──",
+                comment, fold_start_addr, fold_end_addr, fold_size, fold_size
+            )
+        } else {
+            format!(
+                "── 0x{:08X} - 0x{:08X} (0x{:X} / {} bytes) ──",
+                fold_start_addr, fold_end_addr, fold_size, fold_size
+            )
+        };
+        let (fill_bg, border_tint, text_tint) = if is_unbookmarked {
+            (muted_color.opacity(0.12), border_color.opacity(0.4), muted_color)
+        } else if let Some(c) = color {
+            (c.to_hsla().opacity(0.18), c.to_badge_hsla().opacity(0.5), c.to_badge_hsla())
+        } else {
+            (muted_color.opacity(0.12), border_color.opacity(0.4), muted_color)
+        };
+
+        let run = gpui::TextRun {
+            len: fold_label.len(),
+            font: font.clone(),
+            color: text_tint,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped_label = window
+            .text_system()
+            .shape_line(SharedString::from(fold_label), params.font_size * 0.9, &[run], None);
+
+        let bar_bounds = Bounds::new(point(bar_start_x, params.bounds.top() + px(2.0)), size(bar_width, px(ROW_HEIGHT - 4.0)));
+        window.paint_quad(gpui::fill(bar_bounds, fill_bg));
+        let outline = gpui::outline(bar_bounds, border_tint, gpui::BorderStyle::Solid).border_widths(px(1.0));
+        window.paint_quad(outline);
+
+        let text_x = bar_start_x + px(12.0);
+        let text_pos = point(text_x, params.bounds.top() + px(2.0));
+        let _ = shaped_label.paint(text_pos, line_height, window, cx);
+        return;
+    }
+
     // Check for Address Gap Separator Row
     let gap_info = if chunk_len == 0 {
         params.doc.address_map.gap_before_offset(offset)

@@ -238,6 +238,66 @@ pub struct JoinLine;
 pub struct ClearAllCustomBreaks;
 
 #[derive(Clone, PartialEq, Action)]
+pub struct ShowAllBookmarks;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct HideAllBookmarks;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkRed;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkOrange;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkYellow;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkGreen;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkCyan;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkBlue;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkPurple;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleBookmarkPink;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkRed;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkOrange;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkYellow;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkGreen;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkCyan;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkBlue;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkPurple;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ShowOnlyBookmarkPink;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct UnfoldBookmarkAtCursor;
+
+#[derive(Clone, PartialEq, Action)]
+pub struct ToggleHideUnbookmarked;
+
+#[derive(Clone, PartialEq, Action)]
 pub struct ActivateNextTab;
 
 #[derive(Clone, PartialEq, Action)]

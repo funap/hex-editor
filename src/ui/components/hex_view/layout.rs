@@ -132,6 +132,7 @@ pub fn make_hex_view_layout(input: LayoutInput) -> HexViewLayout {
 /// Build the exact text stream used by the batched Hex renderer and retain the
 /// byte/text ranges needed to translate shaped coordinates back to bytes.
 pub fn build_hex_text_source(chunk: &[u8], line_offset: usize, radix: DisplayRadix, group_size: ByteGroupSize, is_big_endian: bool) -> HexTextSource {
+    let chunk = if chunk.len() > 1024 { &chunk[..1024] } else { chunk };
     let group_bytes = group_size.byte_count();
     let mut text = String::with_capacity(chunk.len().saturating_mul(3));
     let mut groups = Vec::with_capacity(chunk.len().div_ceil(group_bytes));

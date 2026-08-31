@@ -8,8 +8,9 @@ use gpui_component::{ActiveTheme, Sizable};
 use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
     ClearAllCustomBreaks, ClearBookmark, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump, CopyAsHexSpaces,
-    CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd, JoinLine, Paste, Redo,
-    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ToggleGoToAddress, ToggleSearch, Undo,
+    CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, FocusHexView, GoToBeginning, GoToEnd, HideAllBookmarks, JoinLine, Paste, Redo,
+    RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll, ShowAllBookmarks, ToggleGoToAddress, ToggleHideUnbookmarked,
+    ToggleSearch, Undo, UnfoldBookmarkAtCursor,
 };
 use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
@@ -616,6 +617,22 @@ impl EditorPanel {
     pub fn clear_all_custom_breaks(&mut self, action: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
         self.hex_view.update(cx, |hv, cx| hv.clear_all_custom_breaks(action, window, cx));
     }
+
+    pub fn show_all_bookmarks(&mut self, action: &ShowAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.show_all_bookmarks(action, window, cx));
+    }
+
+    pub fn hide_all_bookmarks(&mut self, action: &HideAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.hide_all_bookmarks(action, window, cx));
+    }
+
+    pub fn toggle_hide_unbookmarked(&mut self, action: &ToggleHideUnbookmarked, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.toggle_hide_unbookmarked(action, window, cx));
+    }
+
+    pub fn unfold_bookmark_at_cursor(&mut self, action: &UnfoldBookmarkAtCursor, window: &mut Window, cx: &mut Context<Self>) {
+        self.hex_view.update(cx, |hv, cx| hv.unfold_bookmark_at_cursor(action, window, cx));
+    }
 }
 
 impl EventEmitter<PanelEvent> for EditorPanel {}
@@ -784,6 +801,10 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::remove_custom_break_forward))
             .on_action(cx.listener(Self::join_line))
             .on_action(cx.listener(Self::clear_all_custom_breaks))
+            .on_action(cx.listener(Self::show_all_bookmarks))
+            .on_action(cx.listener(Self::hide_all_bookmarks))
+            .on_action(cx.listener(Self::toggle_hide_unbookmarked))
+            .on_action(cx.listener(Self::unfold_bookmark_at_cursor))
             .when(self.is_search_visible, |el| el.child(self.search_bar.clone()))
             .when(self.is_goto_visible, |el| el.child(self.goto_bar.clone()))
             .child(div().flex_1().w_full().min_h_0().child(self.hex_view.clone()))

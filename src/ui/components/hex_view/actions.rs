@@ -1,7 +1,7 @@
 use super::types::CONTEXT;
 use crate::actions::{
     AddCustomBreak, ClearAllCustomBreaks, Copy, CopyAsHexDump, Cut, GoToBeginning, GoToEnd, JoinLine, Paste, Redo, SearchNext, SearchPrev, ToggleGoToAddress,
-    ToggleSearch, Undo,
+    ToggleSearch, Undo, UnfoldBookmarkAtCursor,
 };
 use gpui::*;
 
@@ -140,5 +140,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-backspace", ClearAllCustomBreaks, Some(CONTEXT)),
+        // Bookmark Visibility
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-]", UnfoldBookmarkAtCursor, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-]", UnfoldBookmarkAtCursor, Some(CONTEXT)),
     ]);
 }

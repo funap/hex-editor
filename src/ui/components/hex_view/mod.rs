@@ -17,10 +17,13 @@ pub use types::*;
 use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
     ClearAllCustomBreaks, ClearBookmark, ClearStructureDefinition, Copy, CopyAsBase64, CopyAsBinary, CopyAsCppArray, CopyAsEscapedString, CopyAsHexDump,
-    CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportBookmarks, ImportBookmarks, JoinLine,
+    CopyAsHexSpaces, CopyAsHexStream, CopyAsJsonArray, CopyAsPrintableText, CopyAsRustArray, Cut, ExportBookmarks, HideAllBookmarks, ImportBookmarks, JoinLine,
     LoadStructureDefinition, Paste, Redo, RemoveCustomBreakBackward, RemoveCustomBreakForward, SearchNext, SearchPrev, SelectAll as AppSelectAll,
     SetByteOrderBigEndian, SetByteOrderLittleEndian, SetEncoding, SetGroupSize1, SetGroupSize2, SetGroupSize4, SetGroupSize8, SetRadixBin, SetRadixDec,
-    SetRadixHex, SetRadixOct, ShowBookmarksTab, ShowStructureTab, ToggleByteOrder, ToggleInlineStructureView, ToggleSearch, Undo,
+    SetRadixHex, SetRadixOct, ShowAllBookmarks, ShowBookmarksTab, ShowOnlyBookmarkBlue, ShowOnlyBookmarkCyan, ShowOnlyBookmarkGreen, ShowOnlyBookmarkOrange,
+    ShowOnlyBookmarkPink, ShowOnlyBookmarkPurple, ShowOnlyBookmarkRed, ShowOnlyBookmarkYellow, ShowStructureTab, ToggleBookmarkBlue, ToggleBookmarkCyan,
+    ToggleBookmarkGreen, ToggleBookmarkOrange, ToggleBookmarkPink, ToggleBookmarkPurple, ToggleBookmarkRed, ToggleBookmarkYellow, ToggleByteOrder,
+    ToggleHideUnbookmarked, ToggleInlineStructureView, ToggleSearch, Undo, UnfoldBookmarkAtCursor,
 };
 use crate::app_state::InsertModeState;
 use crate::core::clipboard::parse_paste_bytes;
@@ -1979,6 +1982,67 @@ impl HexView {
         self.notify_document_changed(cx);
     }
 
+    pub fn show_all_bookmarks(&mut self, _: &ShowAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.show_all_bookmarks();
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
+    pub fn hide_all_bookmarks(&mut self, _: &HideAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.hide_all_bookmarks();
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
+    pub fn toggle_bookmark_color(&mut self, color: crate::core::bookmark::BookmarkColor, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.toggle_bookmark_color(color);
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
+    pub fn show_only_bookmark_color(&mut self, color: crate::core::bookmark::BookmarkColor, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.show_only_bookmark_color(color);
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
+    pub fn toggle_hide_unbookmarked(&mut self, _: &ToggleHideUnbookmarked, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.toggle_hide_unbookmarked();
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
+    pub fn unfold_bookmark_at_cursor(&mut self, _: &UnfoldBookmarkAtCursor, window: &mut Window, cx: &mut Context<Self>) {
+        cx.focus_self(window);
+        self.cursor_reveal_pending = true;
+        self.editor.update(cx, |editor, cx| {
+            let offset = editor.cursor_offset;
+            editor.unfold_bookmark_at(offset);
+            cx.notify();
+        });
+        self.notify_document_changed(cx);
+    }
+
     fn copy_formatted(&self, format: CopyFormat, window: &mut Window, cx: &mut Context<Self>) {
         let (formatted, raw_bytes) = {
             let editor = self.editor.read(cx);
@@ -2257,10 +2321,16 @@ impl HexView {
         let line_starts = editor.line_starts();
         let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
         let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
-        let row_idx = (self.scroll_offset + row_offset_in_view).min(line_starts.len().saturating_sub(1));
+        let row_idx = self.scroll_offset + row_offset_in_view;
+        if row_idx >= line_starts.len() {
+            return None;
+        }
         let line_offset = line_starts.get(row_idx)?;
         let next_offset = line_starts.get(row_idx + 1).unwrap_or(doc.buffer.len());
         let chunk_len = next_offset.saturating_sub(line_offset);
+        if editor.is_folded(line_offset) {
+            return None;
+        }
         if chunk_len == 0 {
             if insert_mode {
                 let parse_result = editor.parse_result();
@@ -2407,8 +2477,14 @@ impl HexView {
 
         let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
         let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
-        let row_idx = (self.scroll_offset + row_offset_in_view).min(line_starts.len().saturating_sub(1));
+        let row_idx = self.scroll_offset + row_offset_in_view;
+        if row_idx >= line_starts.len() {
+            return None;
+        }
         let line_offset = line_starts.get(row_idx)?;
+        if editor.is_folded(line_offset) {
+            return Some(line_offset);
+        }
 
         let next_offset = if row_idx + 1 < line_starts.len() {
             line_starts.get(row_idx + 1).unwrap_or(buffer_len)
@@ -2581,16 +2657,21 @@ impl Render for HexView {
                 let row = Editor::find_line_index(reveal_cursor_offset, &line_starts);
                 let line_offset = line_starts.get(row).unwrap_or(0);
                 let next_offset = line_starts.get(row + 1).unwrap_or(total_size);
-                editor.document.read().ok().map(|doc| {
-                    let source = build_hex_text_source(
-                        doc.buffer.get_range(line_offset, next_offset.saturating_sub(line_offset)),
-                        line_offset,
-                        self.radix,
-                        self.group_size,
-                        self.is_big_endian,
-                    );
-                    (reveal_cursor_offset.saturating_sub(line_offset), source, total_size, next_offset)
-                })
+                if editor.is_folded(line_offset) {
+                    None
+                } else {
+                    let chunk_len = next_offset.saturating_sub(line_offset).min(64);
+                    editor.document.read().ok().map(|doc| {
+                        let source = build_hex_text_source(
+                            doc.buffer.get_range(line_offset, chunk_len),
+                            line_offset,
+                            self.radix,
+                            self.group_size,
+                            self.is_big_endian,
+                        );
+                        (reveal_cursor_offset.saturating_sub(line_offset), source, total_size, next_offset)
+                    })
+                }
             };
             if let Some((cursor_in_row, source, total_size, next_offset)) = cursor_layout {
                 let cursor_range = source
@@ -3144,6 +3225,58 @@ impl Render for HexView {
             .on_action(cx.listener(Self::remove_custom_break_forward))
             .on_action(cx.listener(Self::join_line))
             .on_action(cx.listener(Self::clear_all_custom_breaks))
+            .on_action(cx.listener(Self::show_all_bookmarks))
+            .on_action(cx.listener(Self::hide_all_bookmarks))
+            .on_action(cx.listener(Self::toggle_hide_unbookmarked))
+            .on_action(cx.listener(Self::unfold_bookmark_at_cursor))
+            .on_action(cx.listener(|this, _: &ToggleBookmarkRed, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Red, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkOrange, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Orange, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkYellow, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Yellow, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkGreen, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Green, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkCyan, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Cyan, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkBlue, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Blue, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkPurple, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Purple, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleBookmarkPink, window, cx| this.toggle_bookmark_color(crate::core::bookmark::BookmarkColor::Pink, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowOnlyBookmarkRed, window, cx| this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Red, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowOnlyBookmarkOrange, window, cx| {
+                this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Orange, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowOnlyBookmarkYellow, window, cx| {
+                this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Yellow, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ShowOnlyBookmarkGreen, window, cx| {
+                    this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Green, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowOnlyBookmarkCyan, window, cx| this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Cyan, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowOnlyBookmarkBlue, window, cx| this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Blue, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowOnlyBookmarkPurple, window, cx| {
+                this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Purple, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ShowOnlyBookmarkPink, window, cx| this.show_only_bookmark_color(crate::core::bookmark::BookmarkColor::Pink, window, cx)),
+            )
             .on_action(cx.listener(Self::bookmark_red))
             .on_action(cx.listener(Self::bookmark_orange))
             .on_action(cx.listener(Self::bookmark_yellow))
@@ -3259,6 +3392,14 @@ impl Render for HexView {
                             cx.notify();
                         });
                     } else if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                        if this.editor.read(cx).is_folded(target_pos) {
+                            this.editor.update(cx, |editor, cx| {
+                                editor.unfold_bookmark_at(target_pos);
+                                cx.notify();
+                            });
+                            this.notify_document_changed(cx);
+                            return;
+                        }
                         let selection_anchor = {
                             let editor = this.editor.read(cx);
                             editor.selection().anchor()
@@ -3389,7 +3530,18 @@ impl Render for HexView {
                         }
                     }
 
-                    if let Some(target_pos) = this.offset_from_point(event.position, window, cx) {
+                    let target_pos = this.offset_from_point(event.position, window, cx).or_else(|| {
+                        if let Some(list_b) = this.list_bounds.get()
+                            && f32::from(event.position.y) >= f32::from(list_b.top())
+                        {
+                            let editor = this.editor.read(cx);
+                            Some(editor.total_size())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(target_pos) = target_pos {
                         let mouse_selection_anchor = this.mouse_selection_anchor;
                         let is_ascii = this.active_column == EditColumn::Ascii;
                         let insert_mode = InsertModeState::is_enabled(cx);
@@ -3672,6 +3824,35 @@ impl Render for HexView {
                                 .menu("Export Bookmarks...", Box::new(ExportBookmarks))
                                 .menu("Import Bookmarks...", Box::new(ImportBookmarks))
                         })
+                        .submenu("Bookmark Visibility", window, cx, move |menu, window, cx| {
+                            menu.menu("Show All Bookmarks", Box::new(ShowAllBookmarks))
+                                .menu("Hide All Bookmarks", Box::new(HideAllBookmarks))
+                                .separator()
+                                .menu("Show Only Bookmarked Regions", Box::new(ToggleHideUnbookmarked))
+                                .separator()
+                                .menu("Unfold at Cursor", Box::new(UnfoldBookmarkAtCursor))
+                                .separator()
+                                .submenu("Toggle by Color", window, cx, move |m, _window, _cx| {
+                                    m.menu("Red", Box::new(ToggleBookmarkRed))
+                                        .menu("Orange", Box::new(ToggleBookmarkOrange))
+                                        .menu("Yellow", Box::new(ToggleBookmarkYellow))
+                                        .menu("Green", Box::new(ToggleBookmarkGreen))
+                                        .menu("Cyan", Box::new(ToggleBookmarkCyan))
+                                        .menu("Blue", Box::new(ToggleBookmarkBlue))
+                                        .menu("Purple", Box::new(ToggleBookmarkPurple))
+                                        .menu("Pink", Box::new(ToggleBookmarkPink))
+                                })
+                                .submenu("Show Only Color", window, cx, move |m, _window, _cx| {
+                                    m.menu("Only Red", Box::new(ShowOnlyBookmarkRed))
+                                        .menu("Only Orange", Box::new(ShowOnlyBookmarkOrange))
+                                        .menu("Only Yellow", Box::new(ShowOnlyBookmarkYellow))
+                                        .menu("Only Green", Box::new(ShowOnlyBookmarkGreen))
+                                        .menu("Only Cyan", Box::new(ShowOnlyBookmarkCyan))
+                                        .menu("Only Blue", Box::new(ShowOnlyBookmarkBlue))
+                                        .menu("Only Purple", Box::new(ShowOnlyBookmarkPurple))
+                                        .menu("Only Pink", Box::new(ShowOnlyBookmarkPink))
+                                })
+                        })
                         .submenu("Structure", window, cx, move |menu, _window, _cx| {
                             menu.menu("Toggle Inline Structure View", Box::new(ToggleInlineStructureView))
                                 .menu("Load Structure Definition...", Box::new(LoadStructureDefinition))
@@ -3683,9 +3864,9 @@ impl Render for HexView {
                         .menu("Find / Replace...", Box::new(ToggleSearch))
                         .menu("Select All", Box::new(SelectAll))
                         .separator()
-                        .menu_with_disabled("Break Line", Box::new(AddCustomBreak), is_read_only)
-                        .menu_with_disabled("Join Lines", Box::new(JoinLine), is_read_only)
-                        .menu_with_disabled("Reset Layout", Box::new(ClearAllCustomBreaks), is_read_only)
+                        .menu("Break Line", Box::new(AddCustomBreak))
+                        .menu("Join Lines", Box::new(JoinLine))
+                        .menu("Reset Layout", Box::new(ClearAllCustomBreaks))
                 }
             })
     }

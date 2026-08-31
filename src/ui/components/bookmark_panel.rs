@@ -548,6 +548,130 @@ impl Render for BookmarkPanel {
 
         let header = crate::ui::style::panel_header("BOOKMARKS", is_focused, &theme, badge, Some(actions.into_any_element()));
 
+        let filter_toolbar = if !has_editor || bookmarks.is_empty() {
+            None
+        } else {
+            let mut chips_row = h_flex().items_center().gap_1().flex_wrap();
+
+            for &preset_color in BookmarkColor::ALL_PRESETS {
+                let color_count = bookmarks.iter().filter(|b| b.color == preset_color).count();
+                if color_count == 0 {
+                    continue;
+                }
+                let is_color_hidden = self
+                    .editor
+                    .as_ref()
+                    .map(|ed| ed.read(cx).is_bookmark_color_hidden(preset_color))
+                    .unwrap_or(false);
+                let badge_hsla = preset_color.to_badge_hsla();
+
+                let chip = Button::new(SharedString::from(format!("filter-bm-{}", preset_color.name())))
+                    .ghost()
+                    .with_size(Size::XSmall)
+                    .tooltip(if is_color_hidden {
+                        format!("Expand {} bookmarks (currently folded)", preset_color.name())
+                    } else {
+                        format!("Fold {} bookmarks", preset_color.name())
+                    })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        if let Some(ed) = &this.editor {
+                            ed.update(cx, |editor, cx| {
+                                editor.toggle_bookmark_color(preset_color);
+                                cx.notify();
+                            });
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .opacity(if is_color_hidden { 0.45 } else { 1.0 })
+                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(badge_hsla))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if is_color_hidden { theme.muted_foreground } else { theme.foreground })
+                                    .child(color_count.to_string()),
+                            ),
+                    );
+
+                chips_row = chips_row.child(chip);
+            }
+
+            let is_hide_unbookmarked = self.editor.as_ref().map(|ed| ed.read(cx).is_hide_unbookmarked()).unwrap_or(false);
+
+            let filter_actions = h_flex()
+                .items_center()
+                .gap_0p5()
+                .child({
+                    let btn = Button::new("toggle-hide-unbookmarked")
+                        .icon(IconName::Bookmark)
+                        .with_size(Size::XSmall)
+                        .tooltip(if is_hide_unbookmarked {
+                            "Show all file data (currently showing bookmarks only)"
+                        } else {
+                            "Show only bookmarked regions (fold unbookmarked data)"
+                        })
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            if let Some(ed) = &this.editor {
+                                ed.update(cx, |editor, cx| {
+                                    editor.toggle_hide_unbookmarked();
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            }
+                        }));
+                    if is_hide_unbookmarked { btn.primary() } else { btn.ghost() }
+                })
+                .child(
+                    Button::new("expand-all-bm")
+                        .ghost()
+                        .icon(IconName::Eye)
+                        .with_size(Size::XSmall)
+                        .tooltip("Expand all bookmarks")
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            if let Some(ed) = &this.editor {
+                                ed.update(cx, |editor, cx| {
+                                    editor.show_all_bookmarks();
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("fold-all-bm")
+                        .ghost()
+                        .icon(IconName::EyeOff)
+                        .with_size(Size::XSmall)
+                        .tooltip("Fold all bookmarks")
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            if let Some(ed) = &this.editor {
+                                ed.update(cx, |editor, cx| {
+                                    editor.hide_all_bookmarks();
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            }
+                        })),
+                );
+
+            let filter_row = h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .bg(theme.muted.opacity(0.15))
+                .border_b_1()
+                .border_color(theme.border.opacity(0.4))
+                .child(chips_row)
+                .child(filter_actions);
+
+            Some(filter_row)
+        };
+
         // Content body
         let body = if !has_editor {
             crate::ui::style::panel_empty_state(
@@ -581,9 +705,7 @@ impl Render for BookmarkPanel {
                 .into_any_element()
         };
 
-        let container = crate::ui::style::panel_container(is_focused, &theme);
-
-        container
+        let mut container = crate::ui::style::panel_container(is_focused, &theme)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::move_up))
@@ -595,8 +717,13 @@ impl Render for BookmarkPanel {
             .on_action(cx.listener(Self::select_current))
             .on_action(cx.listener(Self::edit_comment))
             .on_action(cx.listener(Self::delete_selected))
-            .child(header)
-            .child(body)
+            .child(header);
+
+        if let Some(toolbar) = filter_toolbar {
+            container = container.child(toolbar);
+        }
+
+        container.child(body)
     }
 }
 
@@ -618,12 +745,16 @@ impl BookmarkPanel {
 
         let bg_color = if is_selected { theme.selection } else { theme.sidebar };
 
+        let is_item_hidden = self.editor.as_ref().map(|ed| ed.read(cx).is_bookmark_item_hidden(item)).unwrap_or(false);
+        let item_id_vis = item_id.clone();
+
         let mut row_container = v_flex()
             .w_full()
             .rounded_md()
             .border_1()
             .border_color(if is_selected { theme.accent } else { theme.border.opacity(0.5) })
             .bg(bg_color)
+            .opacity(if is_item_hidden { 0.6 } else { 1.0 })
             .p_2()
             .gap_1p5();
 
@@ -706,6 +837,29 @@ impl BookmarkPanel {
                 h_flex()
                     .items_center()
                     .gap_0p5()
+                    .child(
+                        Button::new(SharedString::from(format!("vis-{}", item_id)))
+                            .ghost()
+                            .icon(if is_item_hidden { IconName::EyeOff } else { IconName::Eye })
+                            .with_size(Size::XSmall)
+                            .tooltip(if is_item_hidden {
+                                "Expand bookmark in hex view"
+                            } else {
+                                "Fold bookmark in hex view"
+                            })
+                            .on_click(cx.listener({
+                                let item_id = item_id_vis.clone();
+                                move |this, _, _window, cx| {
+                                    if let Some(ed) = &this.editor {
+                                        ed.update(cx, |editor, cx| {
+                                            editor.toggle_bookmark_item_visibility(&item_id);
+                                            cx.notify();
+                                        });
+                                        cx.notify();
+                                    }
+                                }
+                            })),
+                    )
                     .child(
                         Button::new(SharedString::from(format!("nav-{}", item_id)))
                             .ghost()

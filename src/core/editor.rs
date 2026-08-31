@@ -28,6 +28,8 @@ pub struct SearchState {
     pub generation: usize,
 }
 
+pub use crate::core::document::FoldedBookmarkSummary;
+
 /// Represents the editor.
 pub struct Editor {
     // Shared document containing buffer and history
@@ -65,12 +67,15 @@ pub struct Editor {
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
     pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
+    pub hidden_bookmark_colors: Arc<RwLock<std::collections::HashSet<crate::core::bookmark::BookmarkColor>>>,
+    pub hidden_bookmark_ids: Arc<RwLock<std::collections::HashSet<String>>>,
+    pub hide_unbookmarked: Arc<RwLock<bool>>,
     cached_line_map: RefCell<Option<LineMap>>,
 }
 
 impl Editor {
     pub fn new(document: Arc<RwLock<Document>>) -> Self {
-        let (bookmarks, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines) = {
+        let (bookmarks, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines, hidden_bookmark_colors, hidden_bookmark_ids, hide_unbookmarked) = {
             let doc = document.read().expect("document read lock");
             (
                 doc.bookmarks.clone(),
@@ -79,6 +84,9 @@ impl Editor {
                 doc.custom_breaks.clone(),
                 doc.custom_joins.clone(),
                 doc.empty_lines.clone(),
+                doc.hidden_bookmark_colors.clone(),
+                doc.hidden_bookmark_ids.clone(),
+                doc.hide_unbookmarked.clone(),
             )
         };
 
@@ -90,6 +98,9 @@ impl Editor {
             custom_breaks,
             custom_joins,
             empty_lines,
+            hidden_bookmark_colors,
+            hidden_bookmark_ids,
+            hide_unbookmarked,
             encoding: Encoding::default(),
             radix: DisplayRadix::default(),
             group_size: ByteGroupSize::default(),
@@ -135,21 +146,21 @@ impl Editor {
         }
     }
 
-    /// 上方向の次のデータ行（空行をスキップ）のインデックスを返す。
-    fn prev_data_line(idx: usize, line_starts: &LineMap) -> Option<usize> {
+    /// 上方向の次のデータ行（空行・折りたたみ行をスキップ）のインデックスを返す。
+    fn prev_data_line(idx: usize, line_starts: &LineMap, folded_regions: &std::collections::BTreeMap<usize, usize>) -> Option<usize> {
         let mut i = idx.checked_sub(1)?;
         if line_starts.is_empty() {
             return None;
         }
-        // 行の長さを確認して空行をスキップ
+        // 行の長さを確認して空行・折りたたみ行をスキップ
         loop {
             let line_start = line_starts.get(i)?;
             let line_end = if i + 1 < line_starts.len() {
                 line_starts.get(i + 1)?
             } else {
-                return Some(i);
+                return if folded_regions.contains_key(&line_start) { None } else { Some(i) };
             };
-            if line_end > line_start {
+            if line_end > line_start && !folded_regions.contains_key(&line_start) {
                 return Some(i);
             }
             if i == 0 {
@@ -159,13 +170,13 @@ impl Editor {
         }
     }
 
-    /// 下方向の次のデータ行（空行をスキップ）のインデックスを返す。
-    fn next_data_line(idx: usize, line_starts: &LineMap, total_size: usize) -> Option<usize> {
+    /// 下方向の次のデータ行（空行・折りたたみ行をスキップ）のインデックスを返す。
+    fn next_data_line(idx: usize, line_starts: &LineMap, total_size: usize, folded_regions: &std::collections::BTreeMap<usize, usize>) -> Option<usize> {
         let mut i = idx + 1;
         while i < line_starts.len() {
             let line_start = line_starts.get(i)?;
             let line_end = if i + 1 < line_starts.len() { line_starts.get(i + 1)? } else { total_size };
-            if line_end > line_start {
+            if line_end > line_start && !folded_regions.contains_key(&line_start) {
                 return Some(i);
             }
             i += 1;
@@ -794,8 +805,9 @@ impl Editor {
         let total_size = self.total_size();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(offset, &line_starts);
+        let folded_regions = self.computed_folded_regions();
 
-        if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size) {
+        if let Some(next_idx) = Self::next_data_line(current_line_idx, &line_starts, total_size, &folded_regions) {
             let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = offset - current_line_start;
             let next_line_start = line_starts.get(next_idx).expect("valid next line start");
@@ -831,8 +843,9 @@ impl Editor {
         let step = self.group_size.byte_count();
         let line_starts = self.line_starts();
         let current_line_idx = Self::find_line_index(offset, &line_starts);
+        let folded_regions = self.computed_folded_regions();
 
-        if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts) {
+        if let Some(prev_idx) = Self::prev_data_line(current_line_idx, &line_starts, &folded_regions) {
             let current_line_start = line_starts.get(current_line_idx).expect("valid current line start");
             let offset_in_line = offset - current_line_start;
             let prev_line_start = line_starts.get(prev_idx).expect("valid prev line start");
@@ -1019,6 +1032,7 @@ impl Editor {
     pub fn go_to_offset(&mut self, offset: usize, extend_selection: bool) {
         let total = self.total_size();
         let target = if total == 0 { 0 } else { offset.min(total.saturating_sub(1)) };
+        self.auto_unfold_if_needed(target);
         if extend_selection {
             let anchor = if self.has_selection() { self.selection.anchor() } else { self.cursor_offset };
             self.cursor_offset = target;
@@ -1269,10 +1283,13 @@ impl Editor {
     /// wrapping around if necessary. Updates cursor offset and returns the match offset.
     pub fn find_and_navigate_next(&mut self) -> Option<usize> {
         let pattern = self.search_pattern()?;
-        let doc = self.document.read().ok()?;
-        let data = doc.buffer.data();
-        let from_offset = self.cursor_offset.saturating_add(1);
-        let next_offset = crate::core::search::find_next_occurrence(data, &pattern, from_offset)?;
+        let next_offset = {
+            let doc = self.document.read().ok()?;
+            let data = doc.buffer.data();
+            let from_offset = self.cursor_offset.saturating_add(1);
+            crate::core::search::find_next_occurrence(data, &pattern, from_offset)?
+        };
+        self.auto_unfold_if_needed(next_offset);
         self.cursor_offset = next_offset;
         Some(next_offset)
     }
@@ -1281,9 +1298,12 @@ impl Editor {
     /// wrapping around if necessary. Updates cursor offset and returns the match offset.
     pub fn find_and_navigate_prev(&mut self) -> Option<usize> {
         let pattern = self.search_pattern()?;
-        let doc = self.document.read().ok()?;
-        let data = doc.buffer.data();
-        let prev_offset = crate::core::search::find_prev_occurrence(data, &pattern, self.cursor_offset)?;
+        let prev_offset = {
+            let doc = self.document.read().ok()?;
+            let data = doc.buffer.data();
+            crate::core::search::find_prev_occurrence(data, &pattern, self.cursor_offset)?
+        };
+        self.auto_unfold_if_needed(prev_offset);
         self.cursor_offset = prev_offset;
         Some(prev_offset)
     }
@@ -1297,6 +1317,7 @@ impl Editor {
             };
             self.search_state.current_result_index = Some(next_index);
             let offset = self.search_state.results[next_index];
+            self.auto_unfold_if_needed(offset);
             self.cursor_offset = offset;
             Some(offset)
         } else {
@@ -1319,6 +1340,8 @@ impl Editor {
             && self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
             && self.custom_joins.read().expect("custom_joins read lock").is_empty()
             && self.empty_lines.read().expect("empty_lines read lock").is_empty()
+            && self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock").is_empty()
+            && self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").is_empty()
             && !self.has_address_gaps()
             && let Some(parse_res) = self.parse_result()
             && let Some(line_map) = &parse_res.structure_line_map
@@ -1332,6 +1355,7 @@ impl Editor {
             LineMap::Standard { total_size: self.total_size() }
         } else {
             let total_size = self.total_size();
+            let folded_regions_guard = self.computed_folded_regions();
             let mut segments = Vec::new();
 
             if total_size == 0 {
@@ -1362,6 +1386,10 @@ impl Editor {
                 layout_events.extend(custom_joins_guard.iter().copied());
                 layout_events.extend(segment_breaks.iter().copied());
                 layout_events.extend(empty_line_counts.keys().copied());
+                for (&s, &e) in folded_regions_guard.iter() {
+                    layout_events.push(s);
+                    layout_events.push(e);
+                }
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
@@ -1377,6 +1405,10 @@ impl Editor {
                 break_events.extend(custom_breaks_guard.iter().copied());
                 break_events.extend(segment_breaks.iter().copied());
                 break_events.extend(empty_line_counts.keys().copied());
+                for (&s, &e) in folded_regions_guard.iter() {
+                    break_events.push(s);
+                    break_events.push(e);
+                }
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
                     && let Some(parse_res) = self.parse_result()
@@ -1390,6 +1422,22 @@ impl Editor {
                 let mut break_idx = 0;
 
                 while current < total_size {
+                    // Check if current is a fold start
+                    if let Some(&fold_end) = folded_regions_guard.get(&current) {
+                        segments.push(LayoutSegment {
+                            start_offset: current,
+                            start_line: current_line,
+                            byte_len: fold_end - current,
+                            line_count: 1,
+                            kind: SegmentKind::Custom {
+                                starts: Arc::new(vec![current]),
+                            },
+                        });
+                        current = fold_end;
+                        current_line += 1;
+                        continue;
+                    }
+
                     // Find next event > current
                     while event_idx < layout_events.len() && layout_events[event_idx] <= current {
                         event_idx += 1;
@@ -1444,6 +1492,16 @@ impl Editor {
                     let start_line = current_line;
 
                     while current < total_size {
+                        // If current is a fold start, finish this segment if not empty, or handle fold
+                        if let Some(&fold_end) = folded_regions_guard.get(&current) {
+                            if !starts.is_empty() {
+                                break;
+                            }
+                            starts.push(current);
+                            current = fold_end;
+                            break;
+                        }
+
                         // Check if we can transition back to Standard mode.
                         if !starts.is_empty() {
                             while event_idx < layout_events.len() && layout_events[event_idx] < current {
@@ -1527,8 +1585,12 @@ impl Editor {
                     SegmentKind::Custom { starts } => {
                         let next_start_offset = if i + 1 < segments.len() { segments[i + 1].start_offset } else { total_size };
                         for j in 0..seg.line_count {
+                            let line_st = starts[j];
+                            if folded_regions_guard.contains_key(&line_st) {
+                                continue;
+                            }
                             let end = if j + 1 < seg.line_count { starts[j + 1] } else { next_start_offset };
-                            max_bytes_per_row = max_bytes_per_row.max(end.saturating_sub(starts[j]));
+                            max_bytes_per_row = max_bytes_per_row.max(end.saturating_sub(line_st));
                         }
                     }
                 }
@@ -1747,8 +1809,285 @@ impl Editor {
         !self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
             || !self.custom_joins.read().expect("custom_joins read lock").is_empty()
             || !self.empty_lines.read().expect("empty_lines read lock").is_empty()
+            || !self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock").is_empty()
+            || !self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").is_empty()
+            || *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock")
             || (self.show_inline_structure_view && !self.is_parsing_structure && self.parse_result.read().expect("parse_result read lock").is_some())
             || self.has_address_gaps()
+    }
+
+    /// Returns the active folded intervals [start, end) computed from hidden bookmarks or unbookmarked gaps.
+    /// Overlapping and adjacent intervals are merged into disjoint union ranges.
+    pub fn computed_folded_regions(&self) -> std::collections::BTreeMap<usize, usize> {
+        if let Ok(doc) = self.document.read() {
+            doc.computed_folded_regions()
+        } else {
+            std::collections::BTreeMap::new()
+        }
+    }
+
+    /// Returns summary details for a folded region starting at `offset`.
+    pub fn fold_bookmark_summary_at(&self, offset: usize) -> Option<FoldedBookmarkSummary> {
+        self.document.read().ok()?.fold_bookmark_summary_at(offset)
+    }
+
+    pub fn is_bookmark_color_hidden(&self, color: BookmarkColor) -> bool {
+        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
+        if hidden_colors.contains(&color) {
+            return true;
+        }
+        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
+        if hidden_ids.is_empty() {
+            return false;
+        }
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+        let mut count_total = 0;
+        let mut count_hidden = 0;
+        for b in bookmarks.iter() {
+            if b.color == color {
+                count_total += 1;
+                if hidden_ids.contains(&b.id) {
+                    count_hidden += 1;
+                }
+            }
+        }
+        count_total > 0 && count_total == count_hidden
+    }
+
+    pub fn is_bookmark_id_hidden(&self, id: &str) -> bool {
+        self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").contains(id)
+    }
+
+    pub fn is_bookmark_item_hidden(&self, item: &BookmarkItem) -> bool {
+        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
+        if hidden_colors.contains(&item.color) {
+            return true;
+        }
+        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
+        hidden_ids.contains(&item.id)
+    }
+
+    pub fn toggle_bookmark_color(&mut self, color: BookmarkColor) {
+        if self.is_bookmark_color_hidden(color) {
+            self.show_bookmark_color(color);
+        } else {
+            self.hide_bookmark_color(color);
+        }
+    }
+
+    pub fn show_bookmark_color(&mut self, color: BookmarkColor) {
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
+        {
+            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+            colors.remove(&color);
+            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+            for b in &bookmarks {
+                if b.color == color {
+                    ids.remove(&b.id);
+                }
+            }
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn hide_bookmark_color(&mut self, color: BookmarkColor) {
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
+        {
+            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+            colors.insert(color);
+            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+            for b in &bookmarks {
+                if b.color == color {
+                    ids.remove(&b.id);
+                }
+            }
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn show_only_bookmark_color(&mut self, target_color: BookmarkColor) {
+        let all_colors: Vec<BookmarkColor> = {
+            let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+            bookmarks.iter().map(|b| b.color).collect()
+        };
+        {
+            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+            colors.clear();
+            for c in all_colors {
+                if c != target_color {
+                    colors.insert(c);
+                }
+            }
+            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+            ids.clear();
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn show_all_bookmarks(&mut self) {
+        {
+            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+            colors.clear();
+            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+            ids.clear();
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn hide_all_bookmarks(&mut self) {
+        let all_colors: Vec<BookmarkColor> = {
+            let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+            bookmarks.iter().map(|b| b.color).collect()
+        };
+        {
+            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+            for c in all_colors {
+                colors.insert(c);
+            }
+            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+            ids.clear();
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn toggle_bookmark_item_visibility(&mut self, id: &str) {
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
+        let target_item = bookmarks.iter().find(|b| b.id == id).cloned();
+
+        let mut hidden_colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+        let mut hidden_ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+
+        if let Some(target) = target_item {
+            if hidden_colors.contains(&target.color) {
+                hidden_colors.remove(&target.color);
+                for other_bm in &bookmarks {
+                    if other_bm.color == target.color && other_bm.id != id {
+                        hidden_ids.insert(other_bm.id.clone());
+                    }
+                }
+                hidden_ids.remove(id);
+            } else if hidden_ids.contains(id) {
+                hidden_ids.remove(id);
+            } else {
+                hidden_ids.insert(id.to_string());
+            }
+        } else if hidden_ids.contains(id) {
+            hidden_ids.remove(id);
+        } else {
+            hidden_ids.insert(id.to_string());
+        }
+        drop(hidden_colors);
+        drop(hidden_ids);
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn unfold_bookmark_at(&mut self, offset: usize) -> bool {
+        let folded = self.computed_folded_regions();
+        let found = folded.iter().find(|&(&start, &end)| offset >= start && offset < end);
+        if let Some((&start, &end)) = found {
+            let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
+            let mut colors_to_decompose = std::collections::HashSet::new();
+            let mut ids_to_unhide = Vec::new();
+
+            for it in &bookmarks {
+                if it.offset < end && it.offset.saturating_add(it.size) > start {
+                    colors_to_decompose.insert(it.color);
+                    ids_to_unhide.push(it.id.clone());
+                }
+            }
+
+            let mut changed = false;
+            {
+                let mut hidden_colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
+                let mut hidden_ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+
+                for &color in &colors_to_decompose {
+                    if hidden_colors.contains(&color) {
+                        hidden_colors.remove(&color);
+                        for other_bm in &bookmarks {
+                            if other_bm.color == color {
+                                let other_start = other_bm.offset;
+                                let other_end = other_bm.offset.saturating_add(other_bm.size);
+                                if !(other_start < end && other_end > start) {
+                                    hidden_ids.insert(other_bm.id.clone());
+                                }
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+
+                for id in ids_to_unhide {
+                    if hidden_ids.remove(&id) {
+                        changed = true;
+                    }
+                }
+            }
+
+            if *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock") {
+                if colors_to_decompose.is_empty() {
+                    *self.hide_unbookmarked.write().expect("hide_unbookmarked write lock") = false;
+                    changed = true;
+                }
+            }
+
+            if changed {
+                self.cached_line_map.replace(None);
+                return true;
+            }
+            false
+        } else {
+            false
+        }
+    }
+
+    pub fn is_hide_unbookmarked(&self) -> bool {
+        *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock")
+    }
+
+    pub fn toggle_hide_unbookmarked(&mut self) {
+        {
+            let mut val = self.hide_unbookmarked.write().expect("hide_unbookmarked write lock");
+            *val = !*val;
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn set_hide_unbookmarked(&mut self, hide: bool) {
+        {
+            let mut val = self.hide_unbookmarked.write().expect("hide_unbookmarked write lock");
+            *val = hide;
+        }
+        self.cached_line_map.replace(None);
+    }
+
+    pub fn auto_unfold_if_needed(&mut self, target_offset: usize) -> bool {
+        self.unfold_bookmark_at(target_offset)
+    }
+
+    pub fn is_folded(&self, offset: usize) -> bool {
+        let regions = self.computed_folded_regions();
+        for (&s, &e) in regions.iter() {
+            if offset >= s && offset < e {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn fold_end_at(&self, start: usize) -> Option<usize> {
+        let regions = self.computed_folded_regions();
+        regions.get(&start).copied()
+    }
+
+    pub fn fold_containing(&self, offset: usize) -> Option<(usize, usize)> {
+        let regions = self.computed_folded_regions();
+        for (&s, &e) in regions.iter() {
+            if offset >= s && offset < e {
+                return Some((s, e));
+            }
+        }
+        None
     }
 
     /// Returns the base address of the document.
@@ -1794,6 +2133,7 @@ impl Editor {
         self.custom_breaks.read().expect("custom_breaks read lock").len()
             + self.custom_joins.read().expect("custom_joins read lock").len()
             + self.empty_lines.read().expect("empty_lines read lock").values().sum::<usize>()
+            + self.computed_folded_regions().len()
     }
 
     pub fn prev_search_result(&mut self) -> Option<usize> {
@@ -1806,6 +2146,7 @@ impl Editor {
 
             self.search_state.current_result_index = Some(prev_index);
             let offset = self.search_state.results[prev_index];
+            self.auto_unfold_if_needed(offset);
             self.cursor_offset = offset;
             Some(offset)
         } else {
@@ -3547,5 +3888,403 @@ mod tests {
         editor.undo();
         assert_eq!(editor.total_size(), 20);
         assert_eq!(editor.offset_to_address(10), 0x0100_0000);
+    }
+
+    #[test]
+    fn test_bookmark_visibility_basic_and_line_starts() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+        assert_eq!(editor.line_starts().len(), 7); // 100 / 16 ceil = 7
+
+        let bm = BookmarkItem::new(16, 48, BookmarkColor::Red, "Header");
+        editor.bookmarks.write().unwrap().push(bm);
+
+        // Initially visible
+        assert_eq!(editor.line_starts().len(), 7);
+        assert!(!editor.is_folded(16));
+
+        // Hide Red bookmarks
+        editor.hide_bookmark_color(BookmarkColor::Red);
+        assert!(editor.is_bookmark_color_hidden(BookmarkColor::Red));
+        assert!(editor.is_folded(16));
+        assert!(editor.is_folded(20));
+        assert!(editor.is_folded(63));
+        assert!(!editor.is_folded(15));
+        assert!(!editor.is_folded(64));
+        assert_eq!(editor.fold_end_at(16), Some(64));
+        assert_eq!(editor.fold_containing(30), Some((16, 64)));
+
+        let summary = editor.fold_bookmark_summary_at(16).unwrap();
+        assert_eq!(summary.start_offset, 16);
+        assert_eq!(summary.end_offset, 64);
+        assert_eq!(summary.size, 48);
+        assert_eq!(summary.color, BookmarkColor::Red);
+        assert_eq!(summary.comment, "Header");
+
+        let line_starts = editor.line_starts();
+        assert_eq!(line_starts.len(), 5);
+        assert_eq!(line_starts.get(0), Some(0));
+        assert_eq!(line_starts.get(1), Some(16)); // Folded bookmark row
+        assert_eq!(line_starts.get(2), Some(64));
+        assert_eq!(line_starts.get(3), Some(80));
+        assert_eq!(line_starts.get(4), Some(96));
+
+        assert_eq!(Editor::find_line_index(0, &line_starts), 0);
+        assert_eq!(Editor::find_line_index(15, &line_starts), 0);
+        assert_eq!(Editor::find_line_index(16, &line_starts), 1);
+        assert_eq!(Editor::find_line_index(30, &line_starts), 1);
+        assert_eq!(Editor::find_line_index(63, &line_starts), 1);
+        assert_eq!(Editor::find_line_index(64, &line_starts), 2);
+    }
+
+    #[test]
+    fn test_bookmark_visibility_overlapping_and_merging() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        editor.bookmarks.write().unwrap().extend(vec![
+            BookmarkItem::new(20, 20, BookmarkColor::Red, "Part 1"),    // [20, 40)
+            BookmarkItem::new(35, 25, BookmarkColor::Orange, "Part 2"), // [35, 60)
+            BookmarkItem::new(70, 10, BookmarkColor::Blue, "Part 3"),   // [70, 80)
+        ]);
+
+        // Hide Red: [20, 40)
+        editor.hide_bookmark_color(BookmarkColor::Red);
+        assert_eq!(editor.fold_containing(25), Some((20, 40)));
+        assert!(!editor.is_folded(50));
+
+        // Hide Orange: [20, 40) and [35, 60) merge into [20, 60)
+        editor.hide_bookmark_color(BookmarkColor::Orange);
+        assert_eq!(editor.fold_containing(25), Some((20, 60)));
+        assert_eq!(editor.fold_containing(55), Some((20, 60)));
+
+        // Hide Blue: disjoint [70, 80)
+        editor.hide_bookmark_color(BookmarkColor::Blue);
+        assert_eq!(editor.fold_containing(25), Some((20, 60)));
+        assert_eq!(editor.fold_containing(75), Some((70, 80)));
+        assert!(!editor.is_folded(65));
+    }
+
+    #[test]
+    fn test_bookmark_visibility_show_only_and_show_all() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        editor.bookmarks.write().unwrap().extend(vec![
+            BookmarkItem::new(10, 20, BookmarkColor::Red, "RedSec"),
+            BookmarkItem::new(40, 20, BookmarkColor::Blue, "BlueSec"),
+            BookmarkItem::new(70, 20, BookmarkColor::Green, "GreenSec"),
+        ]);
+
+        // Show only Blue: Red and Green are hidden, Blue remains visible
+        editor.show_only_bookmark_color(BookmarkColor::Blue);
+        assert!(editor.is_bookmark_color_hidden(BookmarkColor::Red));
+        assert!(editor.is_bookmark_color_hidden(BookmarkColor::Green));
+        assert!(!editor.is_bookmark_color_hidden(BookmarkColor::Blue));
+
+        assert!(editor.is_folded(15));
+        assert!(!editor.is_folded(45));
+        assert!(editor.is_folded(75));
+
+        // Show all
+        editor.show_all_bookmarks();
+        assert!(!editor.is_folded(15));
+        assert!(!editor.is_folded(45));
+        assert!(!editor.is_folded(75));
+
+        // Hide all
+        editor.hide_all_bookmarks();
+        assert!(editor.is_folded(15));
+        assert!(editor.is_folded(45));
+        assert!(editor.is_folded(75));
+    }
+
+    #[test]
+    fn test_bookmark_visibility_individual_toggle() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        let bm1 = BookmarkItem::new(10, 20, BookmarkColor::Yellow, "BM 1");
+        let bm2 = BookmarkItem::new(50, 20, BookmarkColor::Yellow, "BM 2");
+        let id1 = bm1.id.clone();
+        let id2 = bm2.id.clone();
+        editor.bookmarks.write().unwrap().extend(vec![bm1, bm2]);
+
+        // Toggle individual bookmark 1
+        editor.toggle_bookmark_item_visibility(&id1);
+        assert!(editor.is_bookmark_id_hidden(&id1));
+        assert!(!editor.is_bookmark_id_hidden(&id2));
+        assert!(editor.is_folded(15));
+        assert!(!editor.is_folded(55));
+
+        // Toggle individual bookmark 1 back
+        editor.toggle_bookmark_item_visibility(&id1);
+        assert!(!editor.is_bookmark_id_hidden(&id1));
+        assert!(!editor.is_folded(15));
+    }
+
+    #[test]
+    fn test_bookmark_visibility_cursor_navigation_skips_fold() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 64];
+        let mut editor = create_editor_with_content(&content);
+
+        let bm = BookmarkItem::new(16, 32, BookmarkColor::Cyan, "Middle");
+        editor.bookmarks.write().unwrap().push(bm);
+        editor.hide_bookmark_color(BookmarkColor::Cyan);
+
+        // Initial cursor at 0
+        assert_eq!(editor.cursor_offset, 0);
+
+        // Move down: should skip 16..48 fold row and land on 48
+        editor.move_down();
+        assert_eq!(editor.cursor_offset, 48);
+
+        // Move up: should skip back to 0
+        editor.move_up();
+        assert_eq!(editor.cursor_offset, 0);
+    }
+
+    #[test]
+    fn test_bookmark_visibility_auto_unfold_on_goto_and_search() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let mut data = vec![0u8; 100];
+        data[30..36].copy_from_slice(b"TARGET");
+        let mut editor = create_editor_with_content(&data);
+
+        let bm = BookmarkItem::new(20, 30, BookmarkColor::Purple, "Section");
+        editor.bookmarks.write().unwrap().push(bm);
+        editor.hide_bookmark_color(BookmarkColor::Purple);
+        assert!(editor.is_folded(30));
+
+        // go_to_offset should auto-unfold
+        editor.go_to_offset(30, false);
+        assert_eq!(editor.cursor_offset, 30);
+        assert!(!editor.is_folded(30));
+
+        // Re-hide Purple
+        editor.hide_bookmark_color(BookmarkColor::Purple);
+        assert!(editor.is_folded(30));
+
+        // Search navigation should auto-unfold
+        editor.set_search_query_and_mode("TARGET".to_string(), crate::core::search::SearchMode::Text);
+        let match_offset = editor.find_and_navigate_next();
+        assert_eq!(match_offset, Some(30));
+        assert_eq!(editor.cursor_offset, 30);
+        assert!(!editor.is_folded(30));
+    }
+
+    #[test]
+    fn test_bookmark_visibility_adjust_after_edit() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        let bm = BookmarkItem::new(40, 20, BookmarkColor::Pink, "Payload");
+        editor.bookmarks.write().unwrap().push(bm);
+        editor.hide_bookmark_color(BookmarkColor::Pink);
+        assert_eq!(editor.fold_containing(50), Some((40, 60)));
+
+        // Insert 5 bytes before the fold -> bookmark shifts to 45..65
+        editor.insert_bytes(10, vec![0xAA; 5]);
+        assert_eq!(editor.fold_containing(50), Some((45, 65)));
+
+        // Remove 5 bytes before the fold -> bookmark shifts back to 40..60
+        editor.replace_range(10..15, vec![]);
+        assert_eq!(editor.fold_containing(50), Some((40, 60)));
+    }
+
+    #[test]
+    fn test_bookmark_visibility_hide_unbookmarked() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        // Add 2 bookmarks: [20..36) (Red), [60..80) (Blue)
+        editor.bookmarks.write().unwrap().extend(vec![
+            BookmarkItem::new(20, 16, BookmarkColor::Red, "Header"),
+            BookmarkItem::new(60, 20, BookmarkColor::Blue, "Data"),
+        ]);
+
+        // Enable hide_unbookmarked
+        editor.toggle_hide_unbookmarked();
+        assert!(editor.is_hide_unbookmarked());
+
+        // Computed folds should be the unbookmarked gaps:
+        // [0..20), [36..60), [80..100)
+        let folds = editor.computed_folded_regions();
+        assert_eq!(folds.len(), 3);
+        assert_eq!(folds.get(&0), Some(&20));
+        assert_eq!(folds.get(&36), Some(&60));
+        assert_eq!(folds.get(&80), Some(&100));
+
+        assert!(editor.is_folded(10));
+        assert!(!editor.is_folded(25)); // Inside first bookmark
+        assert!(editor.is_folded(45));
+        assert!(!editor.is_folded(70)); // Inside second bookmark
+        assert!(editor.is_folded(90));
+
+        let summary0 = editor.fold_bookmark_summary_at(0).unwrap();
+        assert_eq!(summary0.comment, "Unbookmarked");
+        assert!(summary0.is_unbookmarked);
+
+        // Check line_starts in hide_unbookmarked mode:
+        // Line 0: Fold [0..20)
+        // Line 1: Data row 20..36 (16 bytes = 1 hex row)
+        // Line 2: Fold [36..60)
+        // Line 3: Data row 60..76
+        // Line 4: Data row 76..80
+        // Line 5: Fold [80..100)
+        let line_starts = editor.line_starts();
+        assert_eq!(line_starts.len(), 6);
+        assert_eq!(line_starts.get(0), Some(0));
+        assert_eq!(line_starts.get(1), Some(20));
+        assert_eq!(line_starts.get(2), Some(36));
+        assert_eq!(line_starts.get(3), Some(60));
+        assert_eq!(line_starts.get(4), Some(76));
+        assert_eq!(line_starts.get(5), Some(80));
+
+        // Now also hide Red bookmark: [20..36) becomes folded as its own Red fold banner,
+        // separate from unbookmarked gaps [0..20) and [36..60)!
+        editor.hide_bookmark_color(BookmarkColor::Red);
+        let folds2 = editor.computed_folded_regions();
+        assert_eq!(folds2.len(), 4);
+        assert_eq!(folds2.get(&0), Some(&20));
+        assert_eq!(folds2.get(&20), Some(&36));
+        assert_eq!(folds2.get(&36), Some(&60));
+        assert_eq!(folds2.get(&80), Some(&100));
+
+        let summary_gap0 = editor.fold_bookmark_summary_at(0).unwrap();
+        assert!(summary_gap0.is_unbookmarked);
+
+        let summary_red = editor.fold_bookmark_summary_at(20).unwrap();
+        assert!(!summary_red.is_unbookmarked);
+        assert_eq!(summary_red.color, BookmarkColor::Red);
+        assert_eq!(summary_red.comment, "Header");
+
+        let summary_gap1 = editor.fold_bookmark_summary_at(36).unwrap();
+        assert!(summary_gap1.is_unbookmarked);
+    }
+
+    #[test]
+    fn test_bookmark_visibility_hide_unbookmarked_navigation() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        editor.bookmarks.write().unwrap().extend(vec![
+            BookmarkItem::new(16, 16, BookmarkColor::Green, "Green1"),
+            BookmarkItem::new(64, 16, BookmarkColor::Green, "Green2"),
+        ]);
+
+        editor.set_hide_unbookmarked(true);
+
+        // Initial cursor at offset 16 (first byte of first visible bookmark)
+        editor.go_to_offset(16, false);
+        assert_eq!(editor.cursor_offset, 16);
+
+        // Move down: should skip unbookmarked gap [32..64) and land on 64 (start of next bookmark)
+        editor.move_down();
+        assert_eq!(editor.cursor_offset, 64);
+
+        // Move up: should skip back to 16
+        editor.move_up();
+        assert_eq!(editor.cursor_offset, 16);
+    }
+
+    #[test]
+    fn test_unfold_single_bookmark_when_color_hidden() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        // Add 3 Red bookmarks: [10..20), [40..50), [70..80)
+        let bm1 = BookmarkItem::new(10, 10, BookmarkColor::Red, "Red 1");
+        let bm2 = BookmarkItem::new(40, 10, BookmarkColor::Red, "Red 2");
+        let bm3 = BookmarkItem::new(70, 10, BookmarkColor::Red, "Red 3");
+        let id1 = bm1.id.clone();
+        let id2 = bm2.id.clone();
+        let id3 = bm3.id.clone();
+
+        editor.bookmarks.write().unwrap().extend(vec![bm1, bm2, bm3]);
+
+        // Hide all Red bookmarks
+        editor.hide_bookmark_color(BookmarkColor::Red);
+        assert!(editor.is_folded(10));
+        assert!(editor.is_folded(40));
+        assert!(editor.is_folded(70));
+
+        // Click/unfold ONLY the middle bookmark [40..50)
+        let changed = editor.unfold_bookmark_at(45);
+        assert!(changed);
+
+        // Now: [10..20) and [70..80) must remain folded!
+        // [40..50) must be unfolded (visible)!
+        assert!(editor.is_folded(10));
+        assert!(!editor.is_folded(40));
+        assert!(!editor.is_folded(45));
+        assert!(editor.is_folded(70));
+
+        let hidden_ids = editor.hidden_bookmark_ids.read().unwrap();
+        assert!(hidden_ids.contains(&id1));
+        assert!(!hidden_ids.contains(&id2));
+        assert!(hidden_ids.contains(&id3));
+        drop(hidden_ids);
+
+        // Click/unfold first bookmark [10..20)
+        editor.unfold_bookmark_at(10);
+        assert!(!editor.is_folded(10));
+        assert!(!editor.is_folded(40));
+        assert!(editor.is_folded(70));
+    }
+
+    #[test]
+    fn test_adjacent_consecutive_bookmarks_do_not_merge() {
+        use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+        let content = vec![0u8; 100];
+        let mut editor = create_editor_with_content(&content);
+
+        // Add 3 consecutive bookmarks without gaps:
+        // BM1: Red   [10..20)
+        // BM2: Green [20..30)
+        // BM3: Red   [30..40)
+        editor.bookmarks.write().unwrap().extend(vec![
+            BookmarkItem::new(10, 10, BookmarkColor::Red, "Red1"),
+            BookmarkItem::new(20, 10, BookmarkColor::Green, "Green"),
+            BookmarkItem::new(30, 10, BookmarkColor::Red, "Red2"),
+        ]);
+
+        // Scenario A: Hide only Red bookmarks (Green is visible)
+        editor.hide_bookmark_color(BookmarkColor::Red);
+        let folds_red = editor.computed_folded_regions();
+        assert_eq!(folds_red.len(), 2);
+        assert_eq!(folds_red.get(&10), Some(&20));
+        assert_eq!(folds_red.get(&30), Some(&40));
+        assert!(!editor.is_folded(25)); // Green is visible between them
+
+        // Scenario B: Hide BOTH Red and Green bookmarks
+        editor.hide_bookmark_color(BookmarkColor::Green);
+        let folds_all = editor.computed_folded_regions();
+        // Each adjacent bookmark must remain its own distinct fold row!
+        assert_eq!(folds_all.len(), 3);
+        assert_eq!(folds_all.get(&10), Some(&20));
+        assert_eq!(folds_all.get(&20), Some(&30));
+        assert_eq!(folds_all.get(&30), Some(&40));
+
+        let sum1 = editor.fold_bookmark_summary_at(10).unwrap();
+        assert_eq!(sum1.color, BookmarkColor::Red);
+        assert_eq!(sum1.comment, "Red1");
+
+        let sum2 = editor.fold_bookmark_summary_at(20).unwrap();
+        assert_eq!(sum2.color, BookmarkColor::Green);
+        assert_eq!(sum2.comment, "Green");
+
+        let sum3 = editor.fold_bookmark_summary_at(30).unwrap();
+        assert_eq!(sum3.color, BookmarkColor::Red);
+        assert_eq!(sum3.comment, "Red2");
     }
 }

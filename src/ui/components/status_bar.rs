@@ -124,7 +124,7 @@ impl Render for StatusBar {
             false
         };
         let file_mode_label = if is_read_only { "Read-only" } else { "Writable" };
-        let file_mode_icon = if is_read_only { IconName::Eye } else { IconName::File };
+        let file_mode_icon = if is_read_only { IconName::PenOff } else { IconName::File };
         let insert_mode = InsertModeState::is_enabled(cx);
         let edit_mode_label = if insert_mode { "Insert" } else { "Overwrite" };
 
@@ -167,7 +167,7 @@ impl Render for StatusBar {
             .px_3()
             .context_menu(move |menu, window, cx| {
                 menu.menu_with_icon("Find...", IconName::Search, Box::new(ToggleSearch))
-                    .menu_with_icon("Toggle Read-only", IconName::Eye, Box::new(ToggleReadOnly))
+                    .menu_with_icon("Toggle Read-only", IconName::PenOff, Box::new(ToggleReadOnly))
                     .separator()
                     .submenu("Radix", window, cx, move |menu, _window, _cx| {
                         menu.menu("Hexadecimal (16)", Box::new(SetRadixHex))

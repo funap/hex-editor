@@ -993,6 +993,38 @@ impl Workspace {
         }
     }
 
+    fn on_action_show_all_bookmarks(&mut self, action: &ShowAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.show_all_bookmarks(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_hide_all_bookmarks(&mut self, action: &HideAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.hide_all_bookmarks(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_toggle_hide_unbookmarked(&mut self, action: &ToggleHideUnbookmarked, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.toggle_hide_unbookmarked(action, window, cx);
+            });
+        }
+    }
+
+    fn on_action_unfold_bookmark_at_cursor(&mut self, action: &UnfoldBookmarkAtCursor, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_editor_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.unfold_bookmark_at_cursor(action, window, cx);
+            });
+        }
+    }
+
     fn on_action_set_encoding(&mut self, action: &SetEncoding, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor(cx) {
             editor.update(cx, |editor, cx| {
@@ -2395,6 +2427,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_remove_custom_break_forward))
             .on_action(cx.listener(Self::on_action_join_line))
             .on_action(cx.listener(Self::on_action_clear_all_custom_breaks))
+            .on_action(cx.listener(Self::on_action_show_all_bookmarks))
+            .on_action(cx.listener(Self::on_action_hide_all_bookmarks))
+            .on_action(cx.listener(Self::on_action_toggle_hide_unbookmarked))
+            .on_action(cx.listener(Self::on_action_unfold_bookmark_at_cursor))
             .on_action(cx.listener(Self::on_action_set_encoding))
             .on_action(cx.listener(Self::on_action_set_encoding_ascii))
             .on_action(cx.listener(Self::on_action_set_encoding_utf8))

@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use crate::core::bookmark::BookmarkItem;
+use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::buffer::Buffer;
 use crate::core::hex_import::AddressMap;
 use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -23,6 +23,9 @@ pub struct Document {
     pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
     pub custom_joins: Arc<RwLock<BTreeSet<usize>>>,
     pub empty_lines: Arc<RwLock<BTreeMap<usize, usize>>>,
+    pub hidden_bookmark_colors: Arc<RwLock<HashSet<BookmarkColor>>>,
+    pub hidden_bookmark_ids: Arc<RwLock<HashSet<String>>>,
+    pub hide_unbookmarked: Arc<RwLock<bool>>,
 }
 
 impl Document {
@@ -40,6 +43,9 @@ impl Document {
             custom_breaks: Arc::new(RwLock::new(BTreeSet::new())),
             custom_joins: Arc::new(RwLock::new(BTreeSet::new())),
             empty_lines: Arc::new(RwLock::new(BTreeMap::new())),
+            hidden_bookmark_colors: Arc::new(RwLock::new(HashSet::new())),
+            hidden_bookmark_ids: Arc::new(RwLock::new(HashSet::new())),
+            hide_unbookmarked: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -105,6 +111,143 @@ impl Document {
     pub fn mark_as_saved(&mut self) {
         self.last_saved_version = self.history.state_id();
     }
+
+    /// Computes the active folded regions (as a start -> end map).
+    ///
+    /// Hidden bookmarks and unbookmarked gaps (when `hide_unbookmarked` is enabled)
+    /// are calculated as separate, non-overlapping folded intervals.
+    pub fn computed_folded_regions(&self) -> BTreeMap<usize, usize> {
+        let total_size = self.buffer.len();
+        if total_size == 0 {
+            return BTreeMap::new();
+        }
+
+        let is_hide_unbookmarked = *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock");
+        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
+        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+
+        let mut bookmarked_ranges = Vec::new();
+        let mut hidden_ranges = Vec::new();
+
+        for item in bookmarks.iter() {
+            if item.size > 0 {
+                let start = item.offset.min(total_size);
+                let end = item.offset.saturating_add(item.size).min(total_size);
+                if start < end {
+                    bookmarked_ranges.push((start, end));
+                    if hidden_colors.contains(&item.color) || hidden_ids.contains(&item.id) {
+                        hidden_ranges.push((start, end));
+                    }
+                }
+            }
+        }
+        drop(bookmarks);
+        drop(hidden_colors);
+        drop(hidden_ids);
+
+        let mut folds = BTreeMap::new();
+
+        // 1. Hidden bookmark ranges become folds
+        if !hidden_ranges.is_empty() {
+            hidden_ranges.sort_unstable_by_key(|&(s, e)| (s, e));
+            let mut cur_start = hidden_ranges[0].0;
+            let mut cur_end = hidden_ranges[0].1;
+            for &(s, e) in &hidden_ranges[1..] {
+                if s < cur_end {
+                    cur_end = cur_end.max(e);
+                } else {
+                    folds.insert(cur_start, cur_end);
+                    cur_start = s;
+                    cur_end = e;
+                }
+            }
+            folds.insert(cur_start, cur_end);
+        }
+
+        // 2. If hide_unbookmarked is enabled, unbookmarked gaps also become folds (separate from bookmarks)
+        if is_hide_unbookmarked {
+            if bookmarked_ranges.is_empty() {
+                folds.insert(0, total_size);
+            } else {
+                bookmarked_ranges.sort_unstable_by_key(|&(s, e)| (s, e));
+                let mut merged_bm = Vec::new();
+                let mut cur_start = bookmarked_ranges[0].0;
+                let mut cur_end = bookmarked_ranges[0].1;
+                for &(s, e) in &bookmarked_ranges[1..] {
+                    if s <= cur_end {
+                        cur_end = cur_end.max(e);
+                    } else {
+                        merged_bm.push((cur_start, cur_end));
+                        cur_start = s;
+                        cur_end = e;
+                    }
+                }
+                merged_bm.push((cur_start, cur_end));
+
+                let mut cursor = 0;
+                for (bm_s, bm_e) in merged_bm {
+                    if bm_s > cursor {
+                        folds.insert(cursor, bm_s);
+                    }
+                    cursor = bm_e;
+                }
+                if cursor < total_size {
+                    folds.insert(cursor, total_size);
+                }
+            }
+        }
+
+        folds
+    }
+
+    /// Returns summary details for a folded region starting at `offset`.
+    pub fn fold_bookmark_summary_at(&self, offset: usize) -> Option<FoldedBookmarkSummary> {
+        let folded = self.computed_folded_regions();
+        let fold_end = folded.get(&offset).copied()?;
+        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
+        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
+        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+
+        let mut matched_items = Vec::new();
+        for item in bookmarks.iter() {
+            if (hidden_colors.contains(&item.color) || hidden_ids.contains(&item.id))
+                && item.offset < fold_end
+                && item.offset.saturating_add(item.size) > offset
+            {
+                matched_items.push(item);
+            }
+        }
+
+        let is_unbookmarked = matched_items.is_empty();
+        let primary = matched_items.first().copied();
+        let color = primary.map(|it| it.color).unwrap_or_default();
+        let comment = primary
+            .map(|it| it.comment.clone())
+            .unwrap_or_else(|| if is_unbookmarked { "Unbookmarked".to_string() } else { String::new() });
+        let bookmark_ids = matched_items.iter().map(|it| it.id.clone()).collect();
+
+        Some(FoldedBookmarkSummary {
+            start_offset: offset,
+            end_offset: fold_end,
+            size: fold_end.saturating_sub(offset),
+            color,
+            comment,
+            bookmark_ids,
+            is_unbookmarked,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoldedBookmarkSummary {
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub size: usize,
+    pub color: BookmarkColor,
+    pub comment: String,
+    pub bookmark_ids: Vec<String>,
+    pub is_unbookmarked: bool,
 }
 
 impl Drop for Document {

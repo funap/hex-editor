@@ -192,14 +192,7 @@ impl Editor {
 
     pub fn read_bytes_at_cursor(&self, count: usize) -> Vec<u8> {
         let binding = self.document.read().expect("document read lock");
-        let buffer = &binding.buffer;
-        let data = buffer.data();
-        if self.cursor_offset < data.len() {
-            let end = std::cmp::min(self.cursor_offset + count, data.len());
-            data[self.cursor_offset..end].to_vec()
-        } else {
-            Vec::new()
-        }
+        binding.read_contiguous_bytes(self.cursor_offset, count).to_vec()
     }
 
     pub fn set_encoding(&mut self, encoding: Encoding) {

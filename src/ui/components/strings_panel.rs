@@ -1,7 +1,7 @@
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
-use crate::core::strings::{DEFAULT_MIN_STRING_LENGTH, StringMatch, find_strings_limited};
+use crate::core::strings::{DEFAULT_MIN_STRING_LENGTH, StringMatch, find_strings_segmented_limited};
 use crate::ui::components::data_table::{self as table, TableColumn, TableSortDirection, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
@@ -255,17 +255,17 @@ impl StringsPanel {
         };
         self.scan_min_length = Some(min_length);
 
-        let (encoding, buffer_data) = {
+        let (encoding, buffer_data, segment_ranges) = {
             let editor = editor_entity.read(cx);
             let document = editor.document.read().expect("document read lock");
-            (editor.encoding, document.buffer.clone())
+            (editor.encoding, document.buffer.clone(), document.address_map.segment_ranges())
         };
 
         self.is_scanning = true;
         let task = cx.spawn(async move |this, cx| {
             let (results, is_truncated) = cx
                 .background_executor()
-                .spawn(async move { find_strings_limited(buffer_data.data(), encoding, min_length, MAX_STRING_RESULTS) })
+                .spawn(async move { find_strings_segmented_limited(buffer_data.data(), &segment_ranges, encoding, min_length, MAX_STRING_RESULTS) })
                 .await;
 
             if let Some(this) = this.upgrade() {

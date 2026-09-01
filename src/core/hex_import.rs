@@ -135,6 +135,22 @@ impl AddressMap {
         false
     }
 
+    /// Finds the memory segment containing the given linear buffer offset.
+    pub fn segment_at_offset(&self, offset: usize) -> Option<&MemorySegment> {
+        self.segments
+            .binary_search_by(|seg| {
+                if offset < seg.buffer_offset {
+                    std::cmp::Ordering::Greater
+                } else if offset >= seg.end_buffer_offset() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .map(|idx| &self.segments[idx])
+    }
+
     /// Converts a linear buffer offset to its physical memory address.
     pub fn offset_to_address(&self, offset: usize) -> usize {
         if self.segments.is_empty() {
@@ -220,6 +236,11 @@ impl AddressMap {
                 *empty_lines.entry(window[1].buffer_offset).or_default() += 1;
             }
         }
+    }
+
+    /// Returns the buffer offset ranges for all memory segments.
+    pub fn segment_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        self.segments.iter().map(|seg| seg.buffer_offset..seg.end_buffer_offset()).collect()
     }
 
     /// Returns the recommended default file extension ("mot", "hex", or "bin") based on the current path and address map structure.
@@ -1178,6 +1199,10 @@ mod tests {
 
         assert_eq!(res.address_map.address_to_offset(0x0001_0002), Some(2));
         assert_eq!(res.address_map.address_to_offset(0x0002_0001), Some(5));
+        assert_eq!(res.address_map.segment_ranges(), vec![0..4, 4..8]);
+        assert_eq!(res.address_map.segment_at_offset(2).map(|s| s.address), Some(0x0001_0000));
+        assert_eq!(res.address_map.segment_at_offset(5).map(|s| s.address), Some(0x0002_0000));
+        assert_eq!(res.address_map.segment_at_offset(8), None);
     }
 
     #[test]

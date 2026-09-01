@@ -258,6 +258,91 @@ pub fn find_occurrences(data: &[u8], pattern: &[PatternByte], limit: SearchLimit
     results
 }
 
+/// Finds occurrences of a pattern across multiple memory segments.
+///
+/// If `segments` is empty, searches the entire buffer (optionally restricted by `range_filter`).
+/// When `segments` are provided, searches each segment independently, ensuring that matches
+/// never straddle across segment boundaries or unmapped address gaps.
+pub fn find_occurrences_segmented(
+    data: &[u8],
+    pattern: &[PatternByte],
+    limit: SearchLimit,
+    segments: &[std::ops::Range<usize>],
+    range_filter: Option<std::ops::Range<usize>>,
+) -> Vec<usize> {
+    if segments.is_empty() {
+        return find_occurrences(data, pattern, limit, range_filter);
+    }
+
+    if pattern.is_empty() || data.is_empty() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    let mut first_match = None;
+
+    for seg in segments {
+        let seg_start = seg.start.min(data.len());
+        let seg_end = seg.end.min(data.len());
+        if seg_start >= seg_end || pattern.len() > seg_end - seg_start {
+            continue;
+        }
+
+        let effective_range = match &range_filter {
+            Some(filter) => {
+                let start = seg_start.max(filter.start.min(data.len()));
+                let end = seg_end.min(filter.end.min(data.len()));
+                if start >= end || pattern.len() > end - start {
+                    continue;
+                }
+                start..end
+            }
+            None => seg_start..seg_end,
+        };
+
+        // Determine remaining limit
+        let seg_limit = match limit {
+            SearchLimit::Count(max) => {
+                let rem = max.saturating_sub(results.len());
+                if rem == 0 {
+                    break;
+                }
+                SearchLimit::Count(rem)
+            }
+            SearchLimit::Range(range_bytes) => {
+                if let Some(first) = first_match
+                    && effective_range.start >= first + range_bytes
+                {
+                    break;
+                }
+                SearchLimit::Range(range_bytes)
+            }
+            SearchLimit::Unlimited => SearchLimit::Unlimited,
+        };
+
+        let seg_matches = find_occurrences(data, pattern, seg_limit, Some(effective_range));
+        if !seg_matches.is_empty() && first_match.is_none() {
+            first_match = seg_matches.first().copied();
+        }
+        results.extend(seg_matches);
+
+        match limit {
+            SearchLimit::Count(max) if results.len() >= max => break,
+            SearchLimit::Range(range_bytes) => {
+                if let Some(first) = first_match
+                    && let Some(&last) = results.last()
+                    && last >= first + range_bytes
+                {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    results
+}
+
 /// Helper to find a single occurrence scanning forward in range `start..end`.
 fn find_single_forward(data: &[u8], pattern: &[PatternByte], start: usize, end: usize) -> Option<usize> {
     if pattern.is_empty() || pattern.len() > data.len() {
@@ -406,6 +491,7 @@ pub fn find_prev_occurrence(data: &[u8], pattern: &[PatternByte], before_offset:
 }
 
 /// Finds all occurrences of `pattern` within the specified `range` of `data`.
+#[allow(dead_code)]
 pub fn find_occurrences_in_range(data: &[u8], pattern: &[PatternByte], range: std::ops::Range<usize>) -> Vec<usize> {
     find_occurrences(data, pattern, SearchLimit::Unlimited, Some(range))
 }
@@ -599,5 +685,38 @@ mod tests {
         let pattern = parse_text_pattern("こん", Encoding::ShiftJis).unwrap();
         let results = find_occurrences(&data, &pattern, SearchLimit::Unlimited, None);
         assert_eq!(results, vec![2, 13]);
+    }
+
+    #[test]
+    fn test_find_occurrences_segmented_prevents_gap_crossing() {
+        use crate::core::encoding::Encoding;
+
+        // Data representing two separate memory segments packed contiguously
+        let data = b"Hello 0Hello 1";
+        let segments = vec![0..7, 7..14];
+
+        // Pattern "0Hello" straddles the boundary (last byte of seg 0, first 5 bytes of seg 1)
+        let straddle_pattern = parse_text_pattern("0Hello", Encoding::Ascii).unwrap();
+
+        // Without segment awareness, it matches at offset 6 across the gap
+        let unsegmented = find_occurrences(data, &straddle_pattern, SearchLimit::Unlimited, None);
+        assert_eq!(unsegmented, vec![6]);
+
+        // With segment awareness, matches across boundaries are forbidden
+        let segmented = find_occurrences_segmented(data, &straddle_pattern, SearchLimit::Unlimited, &segments, None);
+        assert!(segmented.is_empty());
+
+        // Normal pattern "Hello" matches inside each segment independently
+        let hello_pattern = parse_text_pattern("Hello", Encoding::Ascii).unwrap();
+        let segmented_hello = find_occurrences_segmented(data, &hello_pattern, SearchLimit::Unlimited, &segments, None);
+        assert_eq!(segmented_hello, vec![0, 7]);
+
+        // Count limit respects max across segments
+        let limited = find_occurrences_segmented(data, &hello_pattern, SearchLimit::Count(1), &segments, None);
+        assert_eq!(limited, vec![0]);
+
+        // Range filter restriction (e.g. viewport)
+        let filtered = find_occurrences_segmented(data, &hello_pattern, SearchLimit::Unlimited, &segments, Some(5..14));
+        assert_eq!(filtered, vec![7]);
     }
 }

@@ -191,6 +191,18 @@ impl EditorService {
     /// Searches for a query in the given buffer based on the search options.
     /// Returns a Task that executes the search in the background.
     pub fn search(&self, buffer: Arc<Buffer>, query: String, options: crate::core::search::SearchOptions, cx: &gpui::App) -> gpui::Task<Vec<usize>> {
+        self.search_with_segments(buffer, query, options, Vec::new(), cx)
+    }
+
+    /// Searches for a query in the given buffer respecting memory segment boundaries.
+    pub fn search_with_segments(
+        &self,
+        buffer: Arc<Buffer>,
+        query: String,
+        options: crate::core::search::SearchOptions,
+        segments: Vec<std::ops::Range<usize>>,
+        cx: &gpui::App,
+    ) -> gpui::Task<Vec<usize>> {
         cx.background_executor().spawn(async move {
             if query.is_empty() {
                 return Vec::new();
@@ -199,14 +211,14 @@ impl EditorService {
             match options.mode {
                 crate::core::search::SearchMode::Text => {
                     if let Some(pattern) = crate::core::search::parse_text_pattern(&query, options.encoding) {
-                        search::find_occurrences(buffer.data(), &pattern, options.limit, options.range.clone())
+                        search::find_occurrences_segmented(buffer.data(), &pattern, options.limit, &segments, options.range)
                     } else {
                         Vec::new()
                     }
                 }
                 crate::core::search::SearchMode::Hex => {
                     if let Some(pattern) = crate::core::search::parse_hex_pattern(&query) {
-                        search::find_occurrences(buffer.data(), &pattern, options.limit, options.range.clone())
+                        search::find_occurrences_segmented(buffer.data(), &pattern, options.limit, &segments, options.range)
                     } else {
                         Vec::new()
                     }
@@ -225,16 +237,13 @@ impl EditorService {
         is_full: bool,
         cx: &gpui::App,
     ) -> gpui::Task<()> {
-        let buffer_data = {
+        let (buffer_data, segments) = {
             let editor_read = editor.read(cx);
             let document = editor_read.document.read().expect("document read lock");
-            // Since `Buffer` cloning is O(1) (internally uses Arc<Vec<u8>> or Arc<Mmap>),
-            // cloning the buffer here is extremely cheap and creates a consistent snapshot
-            // for the background search thread.
-            Arc::new(document.buffer.clone())
+            (Arc::new(document.buffer.clone()), document.address_map.segment_ranges())
         };
 
-        let search_task = self.search(buffer_data, query, options, cx);
+        let search_task = self.search_with_segments(buffer_data, query, options, segments, cx);
         let editor_weak = editor.downgrade();
 
         cx.spawn(move |cx: &mut gpui::AsyncApp| {

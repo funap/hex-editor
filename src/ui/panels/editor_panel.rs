@@ -382,7 +382,14 @@ impl EditorPanel {
 
                 if let Ok(doc) = editor.document.read() {
                     let data = doc.buffer.data();
-                    let matches = crate::core::search::find_occurrences_in_range(data, &pattern, scan_start..scan_end);
+                    let segments = doc.address_map.segment_ranges();
+                    let matches = crate::core::search::find_occurrences_segmented(
+                        data,
+                        &pattern,
+                        crate::core::search::SearchLimit::Unlimited,
+                        &segments,
+                        Some(scan_start..scan_end),
+                    );
                     let is_dark = cx.theme().mode.is_dark();
                     let (search_color, current_result_color) = if is_dark {
                         (

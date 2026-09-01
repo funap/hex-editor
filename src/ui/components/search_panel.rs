@@ -1,7 +1,7 @@
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
-use crate::core::search::{SearchLimit, SearchMode, find_occurrences, parse_hex_pattern, parse_text_pattern};
+use crate::core::search::{SearchLimit, SearchMode, find_occurrences_segmented, parse_hex_pattern, parse_text_pattern};
 use crate::ui::components::data_table::{self as table, TableColumn, VirtualTable, VirtualTableState};
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
@@ -207,10 +207,10 @@ impl SearchPanel {
             cx.notify();
         });
 
-        let buffer_data = {
+        let (buffer_data, segment_ranges) = {
             let editor = editor_entity.read(cx);
             let doc = editor.document.read().expect("document read lock");
-            doc.buffer.clone()
+            (doc.buffer.clone(), doc.address_map.segment_ranges())
         };
 
         let task = cx.spawn(async move |this, cx| {
@@ -234,7 +234,13 @@ impl SearchPanel {
                             }
                         }
                     };
-                    let raw_offsets = find_occurrences(buffer_for_search.data(), &pattern, SearchLimit::Count(MAX_SEARCH_RESULTS + 1), None);
+                    let raw_offsets = find_occurrences_segmented(
+                        buffer_for_search.data(),
+                        &pattern,
+                        SearchLimit::Count(MAX_SEARCH_RESULTS + 1),
+                        &segment_ranges,
+                        None,
+                    );
                     let truncated = raw_offsets.len() > MAX_SEARCH_RESULTS;
                     let capped_offsets = if truncated {
                         raw_offsets.into_iter().take(MAX_SEARCH_RESULTS).collect()

@@ -77,6 +77,29 @@ impl Document {
         self.address_map.address_to_offset(address)
     }
 
+    /// Returns the maximum contiguous slice of bytes starting at `offset` up to `count` bytes.
+    ///
+    /// If `address_map` defines memory segments, the returned slice will not exceed the current
+    /// segment's boundary, ensuring that unmapped address gaps are not bridged.
+    pub fn read_contiguous_bytes(&self, offset: usize, count: usize) -> &[u8] {
+        let data = self.buffer.data();
+        if offset >= data.len() || count == 0 {
+            return &[];
+        }
+
+        let max_end = if self.address_map.segments.is_empty() {
+            data.len()
+        } else {
+            match self.address_map.segment_at_offset(offset) {
+                Some(seg) => seg.end_buffer_offset(),
+                None => return &[],
+            }
+        };
+
+        let end = offset.saturating_add(count).min(max_end).min(data.len());
+        if offset < end { &data[offset..end] } else { &[] }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -309,5 +332,36 @@ mod tests {
         assert!(!doc.is_read_only());
         assert!(doc.toggle_read_only());
         assert!(doc.is_read_only());
+    }
+
+    #[test]
+    fn test_read_contiguous_bytes_with_segments() {
+        use crate::core::hex_import::{AddressMap, MemorySegment};
+
+        let data = b"Hello 0Hello 1".to_vec();
+        let map = AddressMap::from_segments(vec![
+            MemorySegment {
+                buffer_offset: 0,
+                address: 0x0000,
+                length: 7,
+            },
+            MemorySegment {
+                buffer_offset: 7,
+                address: 0x1000,
+                length: 7,
+            },
+        ]);
+        let doc = Document::new(PathBuf::from("test.mot"), Buffer::new(data)).with_address_map(map);
+
+        // Near end of segment 0 (offset 5, reading 8 bytes): must clamp to segment 0 boundary (offset 7)
+        let bytes = doc.read_contiguous_bytes(5, 8);
+        assert_eq!(bytes, b" 0");
+
+        // Within segment 1: reading 4 bytes
+        let bytes = doc.read_contiguous_bytes(7, 4);
+        assert_eq!(bytes, b"Hell");
+
+        // Out of bounds
+        assert!(doc.read_contiguous_bytes(14, 8).is_empty());
     }
 }

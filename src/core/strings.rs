@@ -41,6 +41,69 @@ pub fn find_strings_limited(data: &[u8], encoding: Encoding, min_chars: usize, m
     (matches, is_truncated)
 }
 
+/// Finds printable strings across multiple buffer segments while limiting the total results.
+///
+/// If `ranges` is empty, the entire `data` slice is scanned as a single contiguous range.
+/// When `ranges` are provided, each range is scanned independently, preventing strings
+/// from falsely joining across segment boundaries or address gaps.
+pub fn find_strings_segmented_limited(
+    data: &[u8],
+    ranges: &[std::ops::Range<usize>],
+    encoding: Encoding,
+    min_chars: usize,
+    max_results: usize,
+) -> (Vec<StringMatch>, bool) {
+    if ranges.is_empty() {
+        return find_strings_limited(data, encoding, min_chars, max_results);
+    }
+
+    if max_results == 0 || min_chars == 0 || data.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let mut all_matches = Vec::new();
+    let mut is_truncated = false;
+
+    for range in ranges {
+        let start = range.start.min(data.len());
+        let end = range.end.min(data.len());
+        if start >= end {
+            continue;
+        }
+
+        let slice = &data[start..end];
+        let remaining = if max_results == usize::MAX {
+            usize::MAX
+        } else {
+            let rem = max_results.saturating_sub(all_matches.len());
+            if rem == 0 {
+                is_truncated = true;
+                break;
+            }
+            rem
+        };
+
+        let (mut seg_matches, seg_truncated) = find_strings_limited(slice, encoding, min_chars, remaining);
+        for m in &mut seg_matches {
+            m.offset += start;
+        }
+        all_matches.extend(seg_matches);
+
+        if seg_truncated || (max_results != usize::MAX && all_matches.len() >= max_results) {
+            is_truncated = true;
+            break;
+        }
+    }
+
+    (all_matches, is_truncated)
+}
+
+/// Finds all printable strings across multiple buffer segments.
+#[allow(dead_code)]
+pub fn find_strings_segmented(data: &[u8], ranges: &[std::ops::Range<usize>], encoding: Encoding, min_chars: usize) -> Vec<StringMatch> {
+    find_strings_segmented_limited(data, ranges, encoding, min_chars, usize::MAX).0
+}
+
 fn find_strings_impl(data: &[u8], encoding: Encoding, min_chars: usize, max_results: Option<usize>) -> Vec<StringMatch> {
     if data.is_empty() || min_chars == 0 {
         return Vec::new();
@@ -182,5 +245,51 @@ mod tests {
     #[test]
     fn zero_minimum_length_does_not_match() {
         assert!(find_strings(b"printable", Encoding::Ascii, 0).is_empty());
+    }
+
+    #[test]
+    fn prevents_merging_strings_across_segments() {
+        // Without segment ranges, "Hello 0Hello 1Hello 2" is merged into one string.
+        let data = b"Hello 0Hello 1Hello 2";
+        let unsegmented = find_strings(data, Encoding::Ascii, 4);
+        assert_eq!(unsegmented.len(), 1);
+        assert_eq!(unsegmented[0].text, "Hello 0Hello 1Hello 2");
+
+        // With segment ranges representing address gaps, each string is kept separate.
+        let ranges = vec![0..7, 7..14, 14..21];
+        let segmented = find_strings_segmented(data, &ranges, Encoding::Ascii, 4);
+        assert_eq!(segmented.len(), 3);
+        assert_eq!(segmented[0].offset, 0);
+        assert_eq!(segmented[0].byte_len, 7);
+        assert_eq!(segmented[0].text, "Hello 0");
+
+        assert_eq!(segmented[1].offset, 7);
+        assert_eq!(segmented[1].byte_len, 7);
+        assert_eq!(segmented[1].text, "Hello 1");
+
+        assert_eq!(segmented[2].offset, 14);
+        assert_eq!(segmented[2].byte_len, 7);
+        assert_eq!(segmented[2].text, "Hello 2");
+    }
+
+    #[test]
+    fn segmented_scan_handles_truncation() {
+        let data = b"Hello 0Hello 1Hello 2";
+        let ranges = vec![0..7, 7..14, 14..21];
+        let (matches, is_truncated) = find_strings_segmented_limited(data, &ranges, Encoding::Ascii, 4, 2);
+        assert_eq!(matches.len(), 2);
+        assert!(is_truncated);
+        assert_eq!(matches[0].text, "Hello 0");
+        assert_eq!(matches[1].text, "Hello 1");
+    }
+
+    #[test]
+    fn segmented_scan_empty_ranges_falls_back_to_full() {
+        let data = b"Hello 0\0Hello 1";
+        let (matches, is_truncated) = find_strings_segmented_limited(data, &[], Encoding::Ascii, 4, 10);
+        assert_eq!(matches.len(), 2);
+        assert!(!is_truncated);
+        assert_eq!(matches[0].text, "Hello 0");
+        assert_eq!(matches[1].text, "Hello 1");
     }
 }

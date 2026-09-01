@@ -23,6 +23,7 @@ pub enum ColorMode {
     Grayscale,
     DataCategory,
     Rainbow,
+    Entropy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +67,7 @@ impl ByteCategory {
     }
 }
 
-pub type CachedImageKey = (usize, usize, usize, ColorMode, usize, usize, f32, f32, u32);
+pub type CachedImageKey = (usize, usize, usize, ColorMode, usize, usize, usize, f32, f32, u32);
 pub type CachedImage = (Arc<RenderImage>, CachedImageKey);
 
 pub struct VisualMapPanel {
@@ -78,6 +79,7 @@ pub struct VisualMapPanel {
     scroll_remainder: f32,
     scroll_handle: ScrollHandle,
     color_mode: ColorMode,
+    entropy_window: usize,
     hovered_info: Option<(usize, u8)>,
     last_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     cached_image: RefCell<Option<CachedImage>>,
@@ -105,6 +107,7 @@ impl VisualMapPanel {
             scroll_remainder: 0.0,
             scroll_handle: ScrollHandle::new(),
             color_mode: ColorMode::DataCategory,
+            entropy_window: 256,
             hovered_info: None,
             last_bounds: std::cell::Cell::new(None),
             cached_image: RefCell::new(None),
@@ -525,76 +528,177 @@ impl VisualMapPanel {
             )
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap_1()
                     .child(color_button(ColorMode::Grayscale, "Gray", "c_gray", cx))
                     .child(color_button(ColorMode::DataCategory, "Type", "c_type", cx))
-                    .child(color_button(ColorMode::Rainbow, "Rainbow", "c_rainbow", cx)),
+                    .child(color_button(ColorMode::Rainbow, "Rainbow", "c_rainbow", cx))
+                    .child(color_button(ColorMode::Entropy, "Entropy", "c_entropy", cx)),
+            )
+    }
+
+    fn render_entropy_window_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted_color = theme.muted_foreground;
+        let window_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
+            let is_selected = self.entropy_window == preset;
+            let mut btn = Button::new(("w_preset", preset)).label(label).with_size(Size::XSmall);
+            if is_selected {
+                btn = btn.primary();
+            } else {
+                btn = btn.ghost();
+            }
+            btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.entropy_window = preset;
+                this.cached_image.borrow_mut().take();
+                cx.notify();
+            }))
+        };
+
+        h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::SlidersHorizontal).size(px(13.0)).text_color(muted_color))
+                    .child(div().text_xs().font_medium().text_color(muted_color).child("Window")),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(window_button(64, "64B", cx))
+                    .child(window_button(128, "128B", cx))
+                    .child(window_button(256, "256B", cx))
+                    .child(window_button(512, "512B", cx))
+                    .child(window_button(1024, "1K", cx)),
             )
     }
 
     fn render_toolbar(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        v_flex()
+        let mut toolbar = v_flex()
             .p_2()
             .gap_2()
             .border_b_1()
             .border_color(theme.border)
             .child(self.render_width_section(theme, cx))
             .child(self.render_scale_section(theme, cx))
-            .child(self.render_palette_section(theme, cx))
+            .child(self.render_palette_section(theme, cx));
+
+        if self.color_mode == ColorMode::Entropy {
+            toolbar = toolbar.child(self.render_entropy_window_section(theme, cx));
+        }
+
+        toolbar
     }
 
     fn render_legend(&self, theme: &gpui_component::Theme) -> Option<impl IntoElement + use<>> {
-        if self.color_mode != ColorMode::DataCategory {
-            return None;
-        }
         let muted_color = theme.muted_foreground;
-        Some(
-            h_flex()
-                .flex_wrap()
-                .gap_2()
-                .px_3()
-                .py_1()
-                .border_t_1()
-                .border_color(theme.border)
-                .bg(theme.muted.opacity(0.15))
-                .text_xs()
-                .items_center()
-                .child(
+        match self.color_mode {
+            ColorMode::DataCategory => Some(
+                h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .bg(theme.muted.opacity(0.15))
+                    .text_xs()
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Null.color(theme)))
+                            .child(div().text_color(muted_color).child("Null")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Control.color(theme)))
+                            .child(div().text_color(muted_color).child("Control")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Space.color(theme)))
+                            .child(div().text_color(muted_color).child("Space")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Ascii.color(theme)))
+                            .child(div().text_color(muted_color).child("ASCII")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Extended.color(theme)))
+                            .child(div().text_color(muted_color).child("Extended")),
+                    ),
+            ),
+            ColorMode::Entropy => {
+                let color_chip = |norm: f32| {
+                    let idx = crate::core::entropy::normalized_to_lut_index(norm);
+                    let [r, g, b, _] = crate::core::entropy::entropy_lut()[idx];
+                    div().w_2().h_2().rounded_sm().bg(gpui::rgb(u32::from_be_bytes([0, r, g, b])))
+                };
+                Some(
                     h_flex()
-                        .gap_1()
+                        .flex_wrap()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .bg(theme.muted.opacity(0.15))
+                        .text_xs()
                         .items_center()
-                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Null.color(theme)))
-                        .child(div().text_color(muted_color).child("Null")),
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(color_chip(0.0))
+                                .child(div().text_color(muted_color).child("0.0 Uniform")),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(color_chip(0.35))
+                                .child(div().text_color(muted_color).child("Low")),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(color_chip(0.60))
+                                .child(div().text_color(muted_color).child("4.8 Text/Code")),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(color_chip(0.80))
+                                .child(div().text_color(muted_color).child("High")),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(color_chip(1.0))
+                                .child(div().text_color(muted_color).child("8.0 Packed")),
+                        ),
                 )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Control.color(theme)))
-                        .child(div().text_color(muted_color).child("Control")),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Space.color(theme)))
-                        .child(div().text_color(muted_color).child("Space")),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Ascii.color(theme)))
-                        .child(div().text_color(muted_color).child("ASCII")),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().w_2().h_2().rounded_sm().bg(ByteCategory::Extended.color(theme)))
-                        .child(div().text_color(muted_color).child("Extended")),
-                ),
-        )
+            }
+            _ => None,
+        }
     }
 
     fn render_footer(&self, buffer_len: usize, total_rows: usize, theme: &gpui_component::Theme, cx: &App) -> impl IntoElement + use<> {
@@ -613,6 +717,16 @@ impl VisualMapPanel {
             };
 
             let display_addr = self.editor.as_ref().map(|ed| ed.read(cx).offset_to_address(offset)).unwrap_or(offset);
+
+            let entropy_info = self.editor.as_ref().and_then(|ed| {
+                let doc = ed.read(cx).document.read().ok()?;
+                let h = crate::core::entropy::shannon_entropy_at(doc.buffer.data(), offset, self.entropy_window);
+                let norm = (h / 8.0) as f32;
+                let idx = crate::core::entropy::normalized_to_lut_index(norm);
+                let [r, g, b, _] = crate::core::entropy::entropy_lut()[idx];
+                let color: Hsla = gpui::rgb(u32::from_be_bytes([0, r, g, b])).into();
+                Some((h, norm, color))
+            });
 
             h_flex()
                 .w_full()
@@ -651,20 +765,42 @@ impl VisualMapPanel {
                         ),
                 )
                 .child(
-                    div()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(cat.color(theme).opacity(0.2))
-                        .text_color(cat.color(theme))
-                        .font_medium()
-                        .child(cat.label()),
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .children(entropy_info.map(|(h, norm, color)| {
+                            let label = crate::core::entropy::entropy_level_label(h);
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(color.opacity(0.2))
+                                .text_color(color)
+                                .font_medium()
+                                .child(format!("H: {:.2} ({:.0}%) {}", h, norm * 100.0, label))
+                        }))
+                        .child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(cat.color(theme).opacity(0.2))
+                                .text_color(cat.color(theme))
+                                .font_medium()
+                                .child(cat.label()),
+                        ),
                 )
         } else {
             let cursor_str = self.editor.as_ref().map(|ed| {
                 let cur = ed.read(cx).cursor_address();
                 format!("Cursor: 0x{:08X}", cur)
             });
+
+            let window_spec = if self.color_mode == ColorMode::Entropy {
+                format!(" | Win: {}B", self.entropy_window)
+            } else {
+                String::new()
+            };
 
             h_flex()
                 .w_full()
@@ -690,7 +826,7 @@ impl VisualMapPanel {
                                 .child(div().font_family(font_family.clone()).child(c))
                         })),
                 )
-                .child(div().child(format!("{} cols @ x{}", self.cols, self.pixel_size)))
+                .child(div().child(format!("{} cols @ x{}{}", self.cols, self.pixel_size, window_spec)))
         }
     }
 }
@@ -766,10 +902,15 @@ impl Panel for VisualMapPanel {
             cols: self.cols,
             pixel_size: self.pixel_size,
             color_mode: self.color_mode,
+            entropy_window: self.entropy_window,
         };
         state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(map_state).expect("serialize VisualMapPanelState"));
         state
     }
+}
+
+fn default_entropy_window() -> usize {
+    256
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -778,6 +919,8 @@ pub struct VisualMapPanelState {
     pub cols: usize,
     pub pixel_size: usize,
     pub color_mode: ColorMode,
+    #[serde(default = "default_entropy_window")]
+    pub entropy_window: usize,
 }
 
 impl Render for VisualMapPanel {
@@ -860,6 +1003,7 @@ impl Render for VisualMapPanel {
                 pixel_size: self.pixel_size,
                 scroll_offset: self.scroll_offset,
                 color_mode: self.color_mode,
+                entropy_window: self.entropy_window,
                 state_id,
                 cursor_offset,
                 selection_range,
@@ -899,6 +1043,7 @@ struct VisualMapElement {
     pixel_size: usize,
     scroll_offset: usize,
     color_mode: ColorMode,
+    entropy_window: usize,
     state_id: usize,
     cursor_offset: Option<usize>,
     selection_range: Option<Range<usize>>,
@@ -990,6 +1135,7 @@ impl Element for VisualMapElement {
                 self.pixel_size,
                 self.scroll_offset,
                 self.color_mode,
+                self.entropy_window,
                 buffer_len,
                 self.state_id,
                 bounds.size.width.as_f32(),
@@ -1004,47 +1150,15 @@ impl Element for VisualMapElement {
                 cached_image = Some(img.clone());
             }
 
-            if cached_image.is_none() {
-                let mut rgba_lut = [[0u8; 4]; 256];
-                for byte in 0..=255 {
-                    let color = match self.color_mode {
-                        ColorMode::Grayscale => {
-                            let val = byte as f32 / 255.0;
-                            Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: val * 0.8 + 0.1,
-                                a: 1.0,
-                            }
-                        }
-                        ColorMode::DataCategory => match byte {
-                            0 => theme.muted_foreground.opacity(0.18),
-                            1..=31 | 127 => theme.red.opacity(0.75),
-                            32 => theme.blue.opacity(0.55),
-                            33..=126 => theme.green.opacity(0.85),
-                            _ => theme.accent.opacity(0.8),
-                        },
-                        ColorMode::Rainbow => {
-                            let val = byte as f32 / 255.0;
-                            Hsla {
-                                h: val * 360.0,
-                                s: 0.8,
-                                l: 0.5,
-                                a: 1.0,
-                            }
-                        }
-                    };
-                    let rgb = color.to_rgb();
-                    rgba_lut[byte as usize] = [
-                        (rgb.r * 255.0).clamp(0.0, 255.0) as u8,
-                        (rgb.g * 255.0).clamp(0.0, 255.0) as u8,
-                        (rgb.b * 255.0).clamp(0.0, 255.0) as u8,
-                        (rgb.a * 255.0).clamp(0.0, 255.0) as u8,
-                    ];
-                }
+            if cached_image.is_none() && physical_width > 0 && physical_height > 0 {
+                let mut pixels = vec![0u8; physical_width * physical_height * 4];
 
-                if physical_width > 0 && physical_height > 0 {
-                    let mut pixels = vec![0u8; physical_width * physical_height * 4];
+                if self.color_mode == ColorMode::Entropy {
+                    let visible_start_offset = start_row * cols;
+                    let visible_end_offset = cmp::min(buffer_len, end_row * cols);
+
+                    let entropies = crate::core::entropy::compute_sliding_entropy(buffer.data(), visible_start_offset, visible_end_offset, self.entropy_window);
+                    let lut = crate::core::entropy::entropy_bgra_lut();
 
                     for r in start_row..end_row {
                         let row_y = r - start_row;
@@ -1055,9 +1169,16 @@ impl Element for VisualMapElement {
                             break;
                         }
 
-                        let chunk = buffer.get_range(row_offset, chunk_len);
-                        for (c, &byte) in chunk.iter().take(chunk_len).enumerate() {
-                            let [r_val, g_val, b_val, a_val] = rgba_lut[byte as usize];
+                        for c in 0..chunk_len {
+                            let byte_idx = row_offset + c;
+                            let [b_val, g_val, r_val, a_val] =
+                                if byte_idx >= visible_start_offset && byte_idx < visible_end_offset && (byte_idx - visible_start_offset) < entropies.len() {
+                                    let norm = entropies[byte_idx - visible_start_offset];
+                                    let lut_idx = crate::core::entropy::normalized_to_lut_index(norm);
+                                    lut[lut_idx]
+                                } else {
+                                    [0, 0, 0, 255]
+                                };
 
                             for dy in 0..cell_height {
                                 let py = row_y * cell_height + dy;
@@ -1070,21 +1191,93 @@ impl Element for VisualMapElement {
                                         continue;
                                     }
                                     let pixel_offset = (py * physical_width + px_idx) * 4;
-                                    pixels[pixel_offset] = r_val;
+                                    pixels[pixel_offset] = b_val;
                                     pixels[pixel_offset + 1] = g_val;
-                                    pixels[pixel_offset + 2] = b_val;
+                                    pixels[pixel_offset + 2] = r_val;
                                     pixels[pixel_offset + 3] = a_val;
                                 }
                             }
                         }
                     }
-
-                    if let Some(rgba_img) = image::RgbaImage::from_raw(physical_width as u32, physical_height as u32, pixels) {
-                        let frame = image::Frame::new(rgba_img);
-                        let render_img = Arc::new(RenderImage::new(vec![frame]));
-                        *cache = Some((render_img.clone(), cache_key));
-                        cached_image = Some(render_img);
+                } else {
+                    let mut bgra_lut = [[0u8; 4]; 256];
+                    for byte in 0..=255 {
+                        let color = match self.color_mode {
+                            ColorMode::Grayscale => {
+                                let val = byte as f32 / 255.0;
+                                Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: val * 0.8 + 0.1,
+                                    a: 1.0,
+                                }
+                            }
+                            ColorMode::DataCategory => match byte {
+                                0 => theme.muted_foreground.opacity(0.18),
+                                1..=31 | 127 => theme.red.opacity(0.75),
+                                32 => theme.blue.opacity(0.55),
+                                33..=126 => theme.green.opacity(0.85),
+                                _ => theme.accent.opacity(0.8),
+                            },
+                            ColorMode::Rainbow => {
+                                let val = byte as f32 / 255.0;
+                                Hsla {
+                                    h: val * 360.0,
+                                    s: 0.8,
+                                    l: 0.5,
+                                    a: 1.0,
+                                }
+                            }
+                            ColorMode::Entropy => unreachable!(),
+                        };
+                        let rgb = color.to_rgb();
+                        bgra_lut[byte as usize] = [
+                            (rgb.b * 255.0).clamp(0.0, 255.0) as u8,
+                            (rgb.g * 255.0).clamp(0.0, 255.0) as u8,
+                            (rgb.r * 255.0).clamp(0.0, 255.0) as u8,
+                            (rgb.a * 255.0).clamp(0.0, 255.0) as u8,
+                        ];
                     }
+
+                    for r in start_row..end_row {
+                        let row_y = r - start_row;
+                        let row_offset = r * self.cols;
+                        let chunk_len = cmp::min(self.cols, buffer_len.saturating_sub(row_offset));
+                        let chunk_len = cmp::min(chunk_len, max_visible_cols);
+                        if chunk_len == 0 {
+                            break;
+                        }
+
+                        let chunk = buffer.get_range(row_offset, chunk_len);
+                        for (c, &byte) in chunk.iter().take(chunk_len).enumerate() {
+                            let [b_val, g_val, r_val, a_val] = bgra_lut[byte as usize];
+
+                            for dy in 0..cell_height {
+                                let py = row_y * cell_height + dy;
+                                if py >= physical_height {
+                                    continue;
+                                }
+                                for dx in 0..cell_width {
+                                    let px_idx = c * cell_width + dx;
+                                    if px_idx >= physical_width {
+                                        continue;
+                                    }
+                                    let pixel_offset = (py * physical_width + px_idx) * 4;
+                                    pixels[pixel_offset] = b_val;
+                                    pixels[pixel_offset + 1] = g_val;
+                                    pixels[pixel_offset + 2] = r_val;
+                                    pixels[pixel_offset + 3] = a_val;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(rgba_img) = image::RgbaImage::from_raw(physical_width as u32, physical_height as u32, pixels) {
+                    let frame = image::Frame::new(rgba_img);
+                    let render_img = Arc::new(RenderImage::new(vec![frame]));
+                    *cache = Some((render_img.clone(), cache_key));
+                    cached_image = Some(render_img);
                 }
             }
         }

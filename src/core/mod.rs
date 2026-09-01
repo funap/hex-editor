@@ -8,6 +8,7 @@ pub mod diff;
 pub mod document;
 pub mod editor;
 pub mod encoding;
+pub mod entropy;
 pub mod format;
 pub mod goto;
 pub mod hex_import;

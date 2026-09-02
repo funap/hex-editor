@@ -44,7 +44,7 @@ impl LeftPanel {
         let search_panel = cx.new(|cx| SearchPanel::new(None, window, cx));
         let strings_panel = cx.new(|cx| StringsPanel::new(None, window, cx));
         let struct_tree = cx.new(|cx| StructTreeView::new(None, None, cx));
-        let data_inspector = cx.new(|cx| DataInspector::new(None, cx));
+        let data_inspector = cx.new(|cx| DataInspector::new(None, window, cx));
         let visual_map = cx.new(|cx| VisualMapPanel::new(None, cx));
         let checksum_panel = cx.new(|cx| ChecksumPanel::new(None, cx));
         let bookmark_panel = cx.new(|cx| BookmarkPanel::new(None, window, cx));

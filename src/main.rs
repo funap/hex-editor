@@ -134,6 +134,7 @@ fn init_app_state(cx: &mut App) {
     ui::components::strings_panel::init(cx);
     ui::components::struct_tree_view::init(cx);
     ui::components::bookmark_panel::init(cx);
+    ui::components::data_inspector::init(cx);
     ui::components::title_bar::init(cx);
     ui::panels::editor_panel::init(cx);
     ui::panels::diff_panel::init(cx);

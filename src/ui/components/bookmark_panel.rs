@@ -180,13 +180,7 @@ impl BookmarkPanel {
             .as_ref()
             .and_then(|ed| {
                 let editor = ed.read(cx);
-                editor
-                    .bookmarks
-                    .read()
-                    .expect("bookmarks read lock")
-                    .iter()
-                    .find(|h| h.id == id)
-                    .map(|h| h.comment.clone())
+                editor.bookmark_by_id(&id).map(|h| h.comment)
             })
             .unwrap_or_default();
 

@@ -8,7 +8,7 @@ use crate::core::encoding::Encoding;
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::selection::Selection;
 use crate::core::structure::{ParseResult, ParsedField};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -32,23 +32,15 @@ pub use crate::core::document::FoldedBookmarkSummary;
 
 /// Represents the editor.
 pub struct Editor {
-    // Shared document containing buffer and history
+    // Shared document containing buffer, history, and metadata
     pub document: Arc<RwLock<Document>>,
     pub cursor_offset: usize,
     selection: Selection,
     pub search_state: SearchState,
-    pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
-    /// 16バイト自然境界のうち、改行を抑制すべき位置を記録する。
-    /// join_line() で追加され、行を16バイト超に結合するために使用。
-    pub custom_joins: Arc<RwLock<BTreeSet<usize>>>,
-    /// 特定のオフセットに挿入された空行の数を記録する。
-    pub empty_lines: Arc<RwLock<std::collections::BTreeMap<usize, usize>>>,
     pub encoding: Encoding,
     pub radix: DisplayRadix,
     pub group_size: ByteGroupSize,
     pub is_big_endian: bool,
-    pub ksy_definition: Arc<RwLock<Option<Arc<crate::core::structure::KsyDefinition>>>>,
-    pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
     pub is_parsing_structure: bool,
     /// True after byte parsing reaches the end and display indexes are being finalized.
     pub is_finalizing_structure: bool,
@@ -66,47 +58,23 @@ pub struct Editor {
     pub structure_reparse_requested: bool,
     pub collapsed_struct_ids: std::collections::HashSet<String>,
     pub show_inline_structure_view: bool,
-    pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
-    pub hidden_bookmark_colors: Arc<RwLock<std::collections::HashSet<crate::core::bookmark::BookmarkColor>>>,
-    pub hidden_bookmark_ids: Arc<RwLock<std::collections::HashSet<String>>>,
-    pub hide_unbookmarked: Arc<RwLock<bool>>,
     cached_line_map: RefCell<Option<LineMap>>,
+    cached_layout_version: Cell<usize>,
 }
 
 impl Editor {
     pub fn new(document: Arc<RwLock<Document>>) -> Self {
-        let (bookmarks, ksy_definition, parse_result, custom_breaks, custom_joins, empty_lines, hidden_bookmark_colors, hidden_bookmark_ids, hide_unbookmarked) = {
-            let doc = document.read().expect("document read lock");
-            (
-                doc.bookmarks.clone(),
-                doc.ksy_definition.clone(),
-                doc.parse_result.clone(),
-                doc.custom_breaks.clone(),
-                doc.custom_joins.clone(),
-                doc.empty_lines.clone(),
-                doc.hidden_bookmark_colors.clone(),
-                doc.hidden_bookmark_ids.clone(),
-                doc.hide_unbookmarked.clone(),
-            )
-        };
+        let cached_layout_version = document.read().expect("document read lock").layout_version();
 
         Self {
             document,
             cursor_offset: 0,
             selection: Selection::collapsed(0),
             search_state: SearchState::default(),
-            custom_breaks,
-            custom_joins,
-            empty_lines,
-            hidden_bookmark_colors,
-            hidden_bookmark_ids,
-            hide_unbookmarked,
             encoding: Encoding::default(),
             radix: DisplayRadix::default(),
             group_size: ByteGroupSize::default(),
             is_big_endian: false,
-            ksy_definition,
-            parse_result,
             is_parsing_structure: false,
             is_finalizing_structure: false,
             parse_progress_offset: 0,
@@ -117,8 +85,8 @@ impl Editor {
             structure_reparse_requested: false,
             collapsed_struct_ids: std::collections::HashSet::new(),
             show_inline_structure_view: true,
-            bookmarks,
             cached_line_map: RefCell::new(None),
+            cached_layout_version: Cell::new(cached_layout_version),
         }
     }
 
@@ -335,15 +303,26 @@ impl Editor {
     }
 
     pub fn bookmarks_snapshot(&self) -> Vec<BookmarkItem> {
-        self.bookmarks.read().expect("bookmarks read lock").clone()
+        self.document.read().expect("document read lock").metadata.bookmarks.clone()
+    }
+
+    pub fn bookmark_by_id(&self, id: &str) -> Option<BookmarkItem> {
+        self.document
+            .read()
+            .expect("document read lock")
+            .metadata
+            .bookmarks
+            .iter()
+            .find(|b| b.id == id)
+            .cloned()
     }
 
     pub fn parse_result(&self) -> Option<Arc<ParseResult>> {
-        self.parse_result.read().expect("parse_result read lock").clone()
+        self.document.read().expect("document read lock").metadata.parse_result.clone()
     }
 
     pub fn ksy_definition(&self) -> Option<Arc<crate::core::structure::KsyDefinition>> {
-        self.ksy_definition.read().expect("ksy_definition read lock").clone()
+        self.document.read().expect("document read lock").metadata.ksy_definition.clone()
     }
 
     pub fn add_bookmark(&mut self, item: BookmarkItem) -> String {
@@ -361,7 +340,9 @@ impl Editor {
         item.offset = clamped_offset;
         item.size = clamped_size;
 
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
 
         // If an existing bookmark has the exact same range, update its color and/or comment
         if let Some(existing) = bookmarks.iter_mut().find(|h| h.offset == item.offset && h.size == item.size) {
@@ -396,7 +377,9 @@ impl Editor {
         let new_range = clamped_start..clamped_end;
         let hl_color = BookmarkColor::from_rgba(color);
 
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
         let mut updated = Vec::new();
         for h in bookmarks.drain(..) {
             let h_range = h.range();
@@ -424,8 +407,8 @@ impl Editor {
     }
 
     pub fn update_bookmark_comment(&mut self, id: &str, comment: impl Into<String>) -> bool {
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
-        if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
+        let mut doc = self.document.write().expect("document write lock");
+        if let Some(item) = doc.metadata.bookmarks.iter_mut().find(|h| h.id == id) {
             item.comment = comment.into();
             true
         } else {
@@ -434,8 +417,8 @@ impl Editor {
     }
 
     pub fn update_bookmark_color(&mut self, id: &str, color: BookmarkColor) -> bool {
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
-        if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
+        let mut doc = self.document.write().expect("document write lock");
+        if let Some(item) = doc.metadata.bookmarks.iter_mut().find(|h| h.id == id) {
             item.color = color;
             true
         } else {
@@ -454,7 +437,9 @@ impl Editor {
             return false;
         }
 
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
         if let Some(item) = bookmarks.iter_mut().find(|h| h.id == id) {
             item.offset = clamped_offset;
             item.size = clamped_size;
@@ -466,14 +451,18 @@ impl Editor {
     }
 
     pub fn remove_bookmark_by_id(&mut self, id: &str) -> bool {
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
         let initial_len = bookmarks.len();
         bookmarks.retain(|h| h.id != id);
         bookmarks.len() < initial_len
     }
 
     pub fn remove_bookmark_by_index(&mut self, index: usize) -> Option<BookmarkItem> {
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
         if index < bookmarks.len() { Some(bookmarks.remove(index)) } else { None }
     }
 
@@ -481,7 +470,9 @@ impl Editor {
         if range.is_empty() {
             return;
         }
-        let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let bookmarks = &mut doc.metadata.bookmarks;
         let mut updated = Vec::new();
         for h in bookmarks.drain(..) {
             let h_range = h.range();
@@ -508,21 +499,26 @@ impl Editor {
     }
 
     pub fn clear_all_custom_bookmarks(&mut self) {
-        self.bookmarks.write().expect("bookmarks write lock").clear();
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.bookmarks.clear();
     }
 
     pub fn custom_bookmarks_for_rendering(&self) -> Vec<(Range<usize>, RgbaColor)> {
-        self.bookmarks
+        self.document
             .read()
-            .expect("bookmarks read lock")
+            .expect("document read lock")
+            .metadata
+            .bookmarks
             .iter()
             .map(|h| (h.range(), h.rgba_color()))
             .collect()
     }
 
     pub fn export_bookmarks_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let doc_path = self.document.read().ok().map(|d| d.path().to_path_buf());
-        BookmarkFile::save_to_path(path, &self.bookmarks.read().expect("bookmarks read lock"), doc_path.as_deref())
+        let doc = self.document.read().expect("document read lock");
+        let doc_path = doc.path().to_path_buf();
+        BookmarkFile::save_to_path(path, &doc.metadata.bookmarks, Some(&doc_path))
     }
 
     pub fn import_bookmarks_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
@@ -586,46 +582,45 @@ impl Editor {
             }
         };
 
-        for breaks in [&self.custom_breaks, &self.custom_joins] {
-            let mut values = breaks.write().expect("custom layout write lock");
-            let shifted = values.iter().copied().map(shift).collect::<BTreeSet<_>>();
-            *values = shifted;
-        }
-        {
-            let mut lines = self.empty_lines.write().expect("empty_lines write lock");
-            let shifted = lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
-            *lines = shifted;
-        }
-        {
-            let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
-            for item in bookmarks.iter_mut() {
-                let item_start = item.offset;
-                let item_end = item.offset.saturating_add(item.size);
-                if old_len == 0 {
-                    if item_start >= start {
-                        item.offset = item_start.saturating_add(new_len);
-                    } else if item_end > start {
-                        item.size = item.size.saturating_add(new_len);
-                    }
-                    continue;
-                }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
 
-                if item_end <= start {
-                    continue;
-                }
-                if item_start >= old_end {
-                    item.offset = shift(item_start);
-                    continue;
-                }
+        for breaks in [&mut meta.custom_breaks, &mut meta.custom_joins] {
+            let shifted = breaks.iter().copied().map(shift).collect::<BTreeSet<_>>();
+            *breaks = shifted;
+        }
+        let shifted_lines = meta.empty_lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
+        meta.empty_lines = shifted_lines;
 
-                let prefix = item_end.min(start).saturating_sub(item_start);
-                let suffix = item_end.saturating_sub(old_end.max(item_start));
-                item.offset = item_start.min(start);
-                item.size = prefix.saturating_add(new_len).saturating_add(suffix);
+        let bookmarks = &mut meta.bookmarks;
+        for item in bookmarks.iter_mut() {
+            let item_start = item.offset;
+            let item_end = item.offset.saturating_add(item.size);
+            if old_len == 0 {
+                if item_start >= start {
+                    item.offset = item_start.saturating_add(new_len);
+                } else if item_end > start {
+                    item.size = item.size.saturating_add(new_len);
+                }
+                continue;
             }
-            bookmarks.retain(|item| item.size > 0);
-            bookmarks.sort_by_key(|item| (item.offset, item.size));
+
+            if item_end <= start {
+                continue;
+            }
+            if item_start >= old_end {
+                item.offset = shift(item_start);
+                continue;
+            }
+
+            let prefix = item_end.min(start).saturating_sub(item_start);
+            let suffix = item_end.saturating_sub(old_end.max(item_start));
+            item.offset = item_start.min(start);
+            item.size = prefix.saturating_add(new_len).saturating_add(suffix);
         }
+        bookmarks.retain(|item| item.size > 0);
+        bookmarks.sort_by_key(|item| (item.offset, item.size));
     }
 
     /// Replaces `range` with `replacement` and places the cursor at the next
@@ -1319,9 +1314,18 @@ impl Editor {
     }
 
     pub fn line_starts(&self) -> LineMap {
+        let current_layout_version = self.document.read().expect("document read lock").layout_version();
+        if self.cached_layout_version.get() != current_layout_version {
+            self.cached_line_map.replace(None);
+            self.cached_layout_version.set(current_layout_version);
+        }
+
         if let Some(cached) = self.cached_line_map.borrow().as_ref() {
             return cached.clone();
         }
+
+        let doc_guard = self.document.read().expect("document read lock");
+        let meta = &doc_guard.metadata;
 
         // The parser prepares the default expanded structure layout before it
         // publishes the 100% result. Reuse it directly on the UI thread; the
@@ -1330,13 +1334,13 @@ impl Editor {
         if self.show_inline_structure_view
             && !self.is_parsing_structure
             && self.collapsed_struct_ids.is_empty()
-            && self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
-            && self.custom_joins.read().expect("custom_joins read lock").is_empty()
-            && self.empty_lines.read().expect("empty_lines read lock").is_empty()
-            && self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock").is_empty()
-            && self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").is_empty()
+            && meta.custom_breaks.is_empty()
+            && meta.custom_joins.is_empty()
+            && meta.empty_lines.is_empty()
+            && meta.hidden_bookmark_colors.is_empty()
+            && meta.hidden_bookmark_ids.is_empty()
             && !self.has_address_gaps()
-            && let Some(parse_res) = self.parse_result()
+            && let Some(parse_res) = &meta.parse_result
             && let Some(line_map) = &parse_res.structure_line_map
         {
             let map = (**line_map).clone();
@@ -1344,11 +1348,11 @@ impl Editor {
             return map;
         }
 
-        let map = if !self.has_custom_layout() {
-            LineMap::Standard { total_size: self.total_size() }
+        let total_size = doc_guard.buffer.len();
+        let map = if !self.has_custom_layout_doc(&doc_guard) {
+            LineMap::Standard { total_size }
         } else {
-            let total_size = self.total_size();
-            let folded_regions_guard = self.computed_folded_regions();
+            let folded_regions_guard = doc_guard.computed_folded_regions();
             let mut segments = Vec::new();
 
             if total_size == 0 {
@@ -1363,20 +1367,17 @@ impl Editor {
                 let mut current = 0;
                 let mut current_line = 0;
 
-                let custom_breaks_guard = self.custom_breaks.read().expect("custom_breaks read lock");
-                let custom_joins_guard = self.custom_joins.read().expect("custom_joins read lock");
-                let empty_lines_guard = self.empty_lines.read().expect("empty_lines read lock");
-                let mut empty_line_counts = empty_lines_guard.clone();
+                let custom_breaks = &meta.custom_breaks;
+                let custom_joins = &meta.custom_joins;
+                let mut empty_line_counts = meta.empty_lines.clone();
 
-                let doc_guard = self.document.read().expect("document read lock");
                 let mut segment_breaks = std::collections::BTreeSet::new();
                 doc_guard.address_map.collect_segment_breaks(&mut segment_breaks);
                 doc_guard.address_map.collect_gap_lines(&mut empty_line_counts);
-                drop(doc_guard);
 
                 let mut layout_events: Vec<usize> = Vec::new();
-                layout_events.extend(custom_breaks_guard.iter().copied());
-                layout_events.extend(custom_joins_guard.iter().copied());
+                layout_events.extend(custom_breaks.iter().copied());
+                layout_events.extend(custom_joins.iter().copied());
                 layout_events.extend(segment_breaks.iter().copied());
                 layout_events.extend(empty_line_counts.keys().copied());
                 for (&s, &e) in folded_regions_guard.iter() {
@@ -1385,7 +1386,7 @@ impl Editor {
                 }
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
-                    && let Some(parse_res) = self.parse_result()
+                    && let Some(parse_res) = &meta.parse_result
                 {
                     parse_res.collect_field_breaks(&mut layout_events, &self.collapsed_struct_ids);
                     parse_res.collect_structure_header_lines(&mut empty_line_counts, &self.collapsed_struct_ids);
@@ -1395,7 +1396,7 @@ impl Editor {
                 layout_events.dedup();
 
                 let mut break_events: Vec<usize> = Vec::new();
-                break_events.extend(custom_breaks_guard.iter().copied());
+                break_events.extend(custom_breaks.iter().copied());
                 break_events.extend(segment_breaks.iter().copied());
                 break_events.extend(empty_line_counts.keys().copied());
                 for (&s, &e) in folded_regions_guard.iter() {
@@ -1404,7 +1405,7 @@ impl Editor {
                 }
                 if self.show_inline_structure_view
                     && !self.is_parsing_structure
-                    && let Some(parse_res) = self.parse_result()
+                    && let Some(parse_res) = &meta.parse_result
                 {
                     parse_res.collect_field_breaks(&mut break_events, &self.collapsed_struct_ids);
                 }
@@ -1533,7 +1534,7 @@ impl Editor {
 
                         // Advance in BYTES_PER_ROW increments, skipping joined boundaries
                         let mut next_pos = current + BYTES_PER_ROW;
-                        while custom_joins_guard.contains(&next_pos) && next_pos < total_size {
+                        while custom_joins.contains(&next_pos) && next_pos < total_size {
                             next_pos += BYTES_PER_ROW;
                         }
 
@@ -1602,7 +1603,8 @@ impl Editor {
     }
 
     pub fn add_custom_break(&mut self, offset: usize) {
-        if offset < self.total_size() {
+        let total_size = self.total_size();
+        if offset < total_size {
             // カスタム改行を追加する前に、現在の行レイアウトを取得する。
             // 追加後は同じオフセットを含む「結合済みメガ行」が分割されるため、
             // その行に属していた custom_joins は到達不能になり無効化される。
@@ -1610,15 +1612,18 @@ impl Editor {
             let current_line_idx = Self::find_line_index(offset, &line_starts);
             let line_start = line_starts.get(current_line_idx).unwrap_or(0);
             let line_end = if current_line_idx + 1 < line_starts.len() {
-                line_starts.get(current_line_idx + 1).unwrap_or(self.total_size())
+                line_starts.get(current_line_idx + 1).unwrap_or(total_size)
             } else {
-                self.total_size()
+                total_size
             };
             let line_length = line_end.saturating_sub(line_start);
 
             {
-                let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
-                let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
+                let mut doc = self.document.write().expect("document write lock");
+                doc.bump_layout_version();
+                let meta = &mut doc.metadata;
+                let custom_breaks = &mut meta.custom_breaks;
+                let custom_joins = &mut meta.custom_joins;
 
                 // offset より後ろの custom_joins を削除する。
                 // offset より前の join（例: オフセット18で分割する際の join@16）は
@@ -1647,7 +1652,7 @@ impl Editor {
                     }
                     // line_end が offset から BYTES_PER_ROW の倍数で到達できない場合、
                     // アルゴリズムが line_end をまたいでしまうため、明示的に break を追加する
-                    if line_end < self.total_size() && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !custom_breaks.contains(&line_end) {
+                    if line_end < total_size && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !custom_breaks.contains(&line_end) {
                         custom_breaks.insert(line_end);
                     }
                 }
@@ -1658,13 +1663,42 @@ impl Editor {
     }
 
     pub fn remove_custom_break(&mut self, offset: usize) {
-        if self.custom_breaks.write().expect("custom_breaks write lock").remove(&offset) {
+        let mut doc = self.document.write().expect("document write lock");
+        if doc.metadata.custom_breaks.remove(&offset) {
+            doc.bump_layout_version();
             self.cached_line_map.replace(None);
         }
     }
 
+    pub fn has_custom_break(&self, offset: usize) -> bool {
+        self.document.read().expect("document read lock").metadata.custom_breaks.contains(&offset)
+    }
+
+    pub fn custom_breaks_count(&self) -> usize {
+        self.document.read().expect("document read lock").metadata.custom_breaks.len()
+    }
+
+    pub fn custom_breaks_snapshot(&self) -> BTreeSet<usize> {
+        self.document.read().expect("document read lock").metadata.custom_breaks.clone()
+    }
+
+    pub fn has_custom_join(&self, offset: usize) -> bool {
+        self.document.read().expect("document read lock").metadata.custom_joins.contains(&offset)
+    }
+
+    pub fn empty_lines_at(&self, offset: usize) -> usize {
+        self.document
+            .read()
+            .expect("document read lock")
+            .metadata
+            .empty_lines
+            .get(&offset)
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn toggle_custom_break(&mut self, offset: usize) {
-        let contains = self.custom_breaks.read().expect("custom_breaks read lock").contains(&offset);
+        let contains = self.has_custom_break(offset);
         if contains {
             self.remove_custom_break(offset);
         } else {
@@ -1674,20 +1708,23 @@ impl Editor {
 
     pub fn add_empty_line(&mut self, offset: usize) {
         if offset <= self.total_size() {
-            *self.empty_lines.write().expect("empty_lines write lock").entry(offset).or_insert(0) += 1;
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            *doc.metadata.empty_lines.entry(offset).or_insert(0) += 1;
             self.cached_line_map.replace(None);
         }
     }
 
     pub fn remove_empty_line(&mut self, offset: usize) -> bool {
-        let mut empty_lines = self.empty_lines.write().expect("empty_lines write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        let empty_lines = &mut doc.metadata.empty_lines;
         if let Some(count) = empty_lines.get_mut(&offset) {
             if *count > 1 {
                 *count -= 1;
             } else {
                 empty_lines.remove(&offset);
             }
-            drop(empty_lines);
+            doc.bump_layout_version();
             self.cached_line_map.replace(None);
             true
         } else {
@@ -1714,21 +1751,20 @@ impl Editor {
 
         let next_line_start = line_starts.get(current_line_idx + 1).expect("valid next line start");
 
-        let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
-        let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        let custom_breaks = &mut meta.custom_breaks;
+        let custom_joins = &mut meta.custom_joins;
 
         if custom_breaks.contains(&next_line_start) {
             // Custom Break による改行なら、その break を削除
             custom_breaks.remove(&next_line_start);
-            drop(custom_breaks);
-            drop(custom_joins);
             self.cached_line_map.replace(None);
         } else if next_line_start != line_starts.get(current_line_idx).unwrap_or(0) {
             // 自然境界（16バイト境界 or カスタム改行後の次行など）を join として記録
             // next_line_start が現在行と同オフセット（空行の重複）でない場合のみ
             custom_joins.insert(next_line_start);
-            drop(custom_breaks);
-            drop(custom_joins);
             self.cached_line_map.replace(None);
         }
     }
@@ -1747,9 +1783,12 @@ impl Editor {
         let current_line_idx = Self::find_line_index(s, &line_starts);
         let line_start_of_s = line_starts.get(current_line_idx).unwrap_or(0);
 
-        let mut custom_breaks = self.custom_breaks.write().expect("custom_breaks write lock");
-        let mut custom_joins = self.custom_joins.write().expect("custom_joins write lock");
-        let mut empty_lines = self.empty_lines.write().expect("empty_lines write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        let custom_breaks = &mut meta.custom_breaks;
+        let custom_joins = &mut meta.custom_joins;
+        let empty_lines = &mut meta.empty_lines;
 
         // 1. s が行の先頭でなければ、s に custom_break を追加して s から始まるようにする
         if s > 0 && s != line_start_of_s {
@@ -1784,29 +1823,34 @@ impl Editor {
             step += BYTES_PER_ROW;
         }
 
-        drop(custom_breaks);
-        drop(custom_joins);
-        drop(empty_lines);
         self.cached_line_map.replace(None);
     }
 
     /// 全ての Custom Break と Join をクリアし、デフォルトの16バイト表示に戻す。
     pub fn clear_all_custom_breaks(&mut self) {
-        self.custom_breaks.write().expect("custom_breaks write lock").clear();
-        self.custom_joins.write().expect("custom_joins write lock").clear();
-        self.empty_lines.write().expect("empty_lines write lock").clear();
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.custom_breaks.clear();
+        doc.metadata.custom_joins.clear();
+        doc.metadata.empty_lines.clear();
         self.cached_line_map.replace(None);
     }
 
     pub fn has_custom_layout(&self) -> bool {
-        !self.custom_breaks.read().expect("custom_breaks read lock").is_empty()
-            || !self.custom_joins.read().expect("custom_joins read lock").is_empty()
-            || !self.empty_lines.read().expect("empty_lines read lock").is_empty()
-            || !self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock").is_empty()
-            || !self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").is_empty()
-            || *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock")
-            || (self.show_inline_structure_view && !self.is_parsing_structure && self.parse_result.read().expect("parse_result read lock").is_some())
-            || self.has_address_gaps()
+        let doc = self.document.read().expect("document read lock");
+        self.has_custom_layout_doc(&doc)
+    }
+
+    fn has_custom_layout_doc(&self, doc: &Document) -> bool {
+        let meta = &doc.metadata;
+        !meta.custom_breaks.is_empty()
+            || !meta.custom_joins.is_empty()
+            || !meta.empty_lines.is_empty()
+            || !meta.hidden_bookmark_colors.is_empty()
+            || !meta.hidden_bookmark_ids.is_empty()
+            || meta.hide_unbookmarked
+            || (self.show_inline_structure_view && !self.is_parsing_structure && meta.parse_result.is_some())
+            || doc.address_map.has_gaps()
     }
 
     /// Returns the active folded intervals [start, end) computed from hidden bookmarks or unbookmarked gaps.
@@ -1825,21 +1869,20 @@ impl Editor {
     }
 
     pub fn is_bookmark_color_hidden(&self, color: BookmarkColor) -> bool {
-        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
-        if hidden_colors.contains(&color) {
+        let doc = self.document.read().expect("document read lock");
+        let meta = &doc.metadata;
+        if meta.hidden_bookmark_colors.contains(&color) {
             return true;
         }
-        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
-        if hidden_ids.is_empty() {
+        if meta.hidden_bookmark_ids.is_empty() {
             return false;
         }
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
         let mut count_total = 0;
         let mut count_hidden = 0;
-        for b in bookmarks.iter() {
+        for b in meta.bookmarks.iter() {
             if b.color == color {
                 count_total += 1;
-                if hidden_ids.contains(&b.id) {
+                if meta.hidden_bookmark_ids.contains(&b.id) {
                     count_hidden += 1;
                 }
             }
@@ -1848,16 +1891,13 @@ impl Editor {
     }
 
     pub fn is_bookmark_id_hidden(&self, id: &str) -> bool {
-        self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock").contains(id)
+        self.document.read().expect("document read lock").metadata.hidden_bookmark_ids.contains(id)
     }
 
     pub fn is_bookmark_item_hidden(&self, item: &BookmarkItem) -> bool {
-        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
-        if hidden_colors.contains(&item.color) {
-            return true;
-        }
-        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
-        hidden_ids.contains(&item.id)
+        let doc = self.document.read().expect("document read lock");
+        let meta = &doc.metadata;
+        meta.hidden_bookmark_colors.contains(&item.color) || meta.hidden_bookmark_ids.contains(&item.id)
     }
 
     pub fn toggle_bookmark_color(&mut self, color: BookmarkColor) {
@@ -1869,108 +1909,91 @@ impl Editor {
     }
 
     pub fn show_bookmark_color(&mut self, color: BookmarkColor) {
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
-        {
-            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-            colors.remove(&color);
-            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-            for b in &bookmarks {
-                if b.color == color {
-                    ids.remove(&b.id);
-                }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        meta.hidden_bookmark_colors.remove(&color);
+        for b in &meta.bookmarks {
+            if b.color == color {
+                meta.hidden_bookmark_ids.remove(&b.id);
             }
         }
         self.cached_line_map.replace(None);
     }
 
     pub fn hide_bookmark_color(&mut self, color: BookmarkColor) {
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
-        {
-            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-            colors.insert(color);
-            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-            for b in &bookmarks {
-                if b.color == color {
-                    ids.remove(&b.id);
-                }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        meta.hidden_bookmark_colors.insert(color);
+        for b in &meta.bookmarks {
+            if b.color == color {
+                meta.hidden_bookmark_ids.remove(&b.id);
             }
         }
         self.cached_line_map.replace(None);
     }
 
     pub fn show_only_bookmark_color(&mut self, target_color: BookmarkColor) {
-        let all_colors: Vec<BookmarkColor> = {
-            let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
-            bookmarks.iter().map(|b| b.color).collect()
-        };
-        {
-            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-            colors.clear();
-            for c in all_colors {
-                if c != target_color {
-                    colors.insert(c);
-                }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        let all_colors: Vec<BookmarkColor> = meta.bookmarks.iter().map(|b| b.color).collect();
+        meta.hidden_bookmark_colors.clear();
+        for c in all_colors {
+            if c != target_color {
+                meta.hidden_bookmark_colors.insert(c);
             }
-            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-            ids.clear();
         }
+        meta.hidden_bookmark_ids.clear();
         self.cached_line_map.replace(None);
     }
 
     pub fn show_all_bookmarks(&mut self) {
-        {
-            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-            colors.clear();
-            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-            ids.clear();
-        }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.hidden_bookmark_colors.clear();
+        doc.metadata.hidden_bookmark_ids.clear();
         self.cached_line_map.replace(None);
     }
 
     pub fn hide_all_bookmarks(&mut self) {
-        let all_colors: Vec<BookmarkColor> = {
-            let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
-            bookmarks.iter().map(|b| b.color).collect()
-        };
-        {
-            let mut colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-            for c in all_colors {
-                colors.insert(c);
-            }
-            let mut ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-            ids.clear();
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        let all_colors: Vec<BookmarkColor> = meta.bookmarks.iter().map(|b| b.color).collect();
+        for c in all_colors {
+            meta.hidden_bookmark_colors.insert(c);
         }
+        meta.hidden_bookmark_ids.clear();
         self.cached_line_map.replace(None);
     }
 
     pub fn toggle_bookmark_item_visibility(&mut self, id: &str) {
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
-        let target_item = bookmarks.iter().find(|b| b.id == id).cloned();
-
-        let mut hidden_colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-        let mut hidden_ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        let meta = &mut doc.metadata;
+        let target_item = meta.bookmarks.iter().find(|b| b.id == id).cloned();
 
         if let Some(target) = target_item {
-            if hidden_colors.contains(&target.color) {
-                hidden_colors.remove(&target.color);
-                for other_bm in &bookmarks {
+            if meta.hidden_bookmark_colors.contains(&target.color) {
+                meta.hidden_bookmark_colors.remove(&target.color);
+                for other_bm in &meta.bookmarks {
                     if other_bm.color == target.color && other_bm.id != id {
-                        hidden_ids.insert(other_bm.id.clone());
+                        meta.hidden_bookmark_ids.insert(other_bm.id.clone());
                     }
                 }
-                hidden_ids.remove(id);
-            } else if hidden_ids.contains(id) {
-                hidden_ids.remove(id);
+                meta.hidden_bookmark_ids.remove(id);
+            } else if meta.hidden_bookmark_ids.contains(id) {
+                meta.hidden_bookmark_ids.remove(id);
             } else {
-                hidden_ids.insert(id.to_string());
+                meta.hidden_bookmark_ids.insert(id.to_string());
             }
-        } else if hidden_ids.contains(id) {
-            hidden_ids.remove(id);
+        } else if meta.hidden_bookmark_ids.contains(id) {
+            meta.hidden_bookmark_ids.remove(id);
         } else {
-            hidden_ids.insert(id.to_string());
+            meta.hidden_bookmark_ids.insert(id.to_string());
         }
-        drop(hidden_colors);
-        drop(hidden_ids);
         self.cached_line_map.replace(None);
     }
 
@@ -1978,11 +2001,12 @@ impl Editor {
         let folded = self.computed_folded_regions();
         let found = folded.iter().find(|&(&start, &end)| offset >= start && offset < end);
         if let Some((&start, &end)) = found {
-            let bookmarks = self.bookmarks.read().expect("bookmarks read lock").clone();
+            let mut doc = self.document.write().expect("document write lock");
+            let meta = &mut doc.metadata;
             let mut colors_to_decompose = std::collections::HashSet::new();
             let mut ids_to_unhide = Vec::new();
 
-            for it in &bookmarks {
+            for it in &meta.bookmarks {
                 if it.offset < end && it.offset.saturating_add(it.size) > start {
                     colors_to_decompose.insert(it.color);
                     ids_to_unhide.push(it.id.clone());
@@ -1990,39 +2014,35 @@ impl Editor {
             }
 
             let mut changed = false;
-            {
-                let mut hidden_colors = self.hidden_bookmark_colors.write().expect("hidden_bookmark_colors write lock");
-                let mut hidden_ids = self.hidden_bookmark_ids.write().expect("hidden_bookmark_ids write lock");
-
-                for &color in &colors_to_decompose {
-                    if hidden_colors.contains(&color) {
-                        hidden_colors.remove(&color);
-                        for other_bm in &bookmarks {
-                            if other_bm.color == color {
-                                let other_start = other_bm.offset;
-                                let other_end = other_bm.offset.saturating_add(other_bm.size);
-                                if !(other_start < end && other_end > start) {
-                                    hidden_ids.insert(other_bm.id.clone());
-                                }
+            for &color in &colors_to_decompose {
+                if meta.hidden_bookmark_colors.contains(&color) {
+                    meta.hidden_bookmark_colors.remove(&color);
+                    for other_bm in &meta.bookmarks {
+                        if other_bm.color == color {
+                            let other_start = other_bm.offset;
+                            let other_end = other_bm.offset.saturating_add(other_bm.size);
+                            if !(other_start < end && other_end > start) {
+                                meta.hidden_bookmark_ids.insert(other_bm.id.clone());
                             }
                         }
-                        changed = true;
                     }
-                }
-
-                for id in ids_to_unhide {
-                    if hidden_ids.remove(&id) {
-                        changed = true;
-                    }
+                    changed = true;
                 }
             }
 
-            if *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock") && colors_to_decompose.is_empty() {
-                *self.hide_unbookmarked.write().expect("hide_unbookmarked write lock") = false;
+            for id in ids_to_unhide {
+                if meta.hidden_bookmark_ids.remove(&id) {
+                    changed = true;
+                }
+            }
+
+            if meta.hide_unbookmarked && colors_to_decompose.is_empty() {
+                meta.hide_unbookmarked = false;
                 changed = true;
             }
 
             if changed {
+                doc.bump_layout_version();
                 self.cached_line_map.replace(None);
                 return true;
             }
@@ -2033,22 +2053,20 @@ impl Editor {
     }
 
     pub fn is_hide_unbookmarked(&self) -> bool {
-        *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock")
+        self.document.read().expect("document read lock").metadata.hide_unbookmarked
     }
 
     pub fn toggle_hide_unbookmarked(&mut self) {
-        {
-            let mut val = self.hide_unbookmarked.write().expect("hide_unbookmarked write lock");
-            *val = !*val;
-        }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.hide_unbookmarked = !doc.metadata.hide_unbookmarked;
         self.cached_line_map.replace(None);
     }
 
     pub fn set_hide_unbookmarked(&mut self, hide: bool) {
-        {
-            let mut val = self.hide_unbookmarked.write().expect("hide_unbookmarked write lock");
-            *val = hide;
-        }
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.hide_unbookmarked = hide;
         self.cached_line_map.replace(None);
     }
 
@@ -2121,10 +2139,9 @@ impl Editor {
     }
 
     pub fn custom_layout_count(&self) -> usize {
-        self.custom_breaks.read().expect("custom_breaks read lock").len()
-            + self.custom_joins.read().expect("custom_joins read lock").len()
-            + self.empty_lines.read().expect("empty_lines read lock").values().sum::<usize>()
-            + self.computed_folded_regions().len()
+        let doc = self.document.read().expect("document read lock");
+        let meta = &doc.metadata;
+        meta.custom_breaks.len() + meta.custom_joins.len() + meta.empty_lines.values().sum::<usize>() + doc.computed_folded_regions().len()
     }
 
     pub fn prev_search_result(&mut self) -> Option<usize> {
@@ -2234,24 +2251,38 @@ impl Editor {
         self.cancel_structure_parsing();
         self.structure_parse_async = false;
         self.structure_reparse_requested = false;
-        *self.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy);
+        {
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            doc.metadata.ksy_definition = Some(ksy);
+        }
         self.reparse_structure();
+    }
+
+    pub fn set_ksy_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.ksy_definition = Some(ksy);
     }
 
     pub fn set_parse_result(&mut self, result: ParseResult) {
         self.parse_progress_offset = result.total_parsed_bytes;
         self.is_finalizing_structure = false;
-        *self.parse_result.write().expect("parse_result write lock") = Some(Arc::new(result));
+        {
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            doc.metadata.parse_result = Some(Arc::new(result));
+        }
         self.cached_line_map.replace(None);
     }
 
     /// Starts a new partial structure result that can receive parse batches.
     pub fn begin_partial_parse_result(&mut self, definition_id: String) {
-        let old = self
-            .parse_result
-            .write()
-            .expect("parse_result write lock")
-            .replace(Arc::new(ParseResult::empty(definition_id)));
+        let old = {
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            doc.metadata.parse_result.replace(Arc::new(ParseResult::empty(definition_id)))
+        };
         if let Some(old_res) = old {
             std::thread::spawn(move || drop(old_res));
         }
@@ -2278,13 +2309,19 @@ impl Editor {
         } else {
             Arc::new(ParseResult::empty(definition_id).append_shared_chunks_without_index(&chunks, offset))
         };
-        *self.parse_result.write().expect("parse_result write lock") = Some(next);
+        let mut doc = self.document.write().expect("document write lock");
+        doc.bump_layout_version();
+        doc.metadata.parse_result = Some(next);
     }
 
     pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
         self.parse_progress_offset = result.total_parsed_bytes;
         self.is_finalizing_structure = false;
-        let old = self.parse_result.write().expect("parse_result write lock").replace(result);
+        let old = {
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            doc.metadata.parse_result.replace(result)
+        };
         if let Some(old_res) = old {
             std::thread::spawn(move || drop(old_res));
         }
@@ -2295,7 +2332,9 @@ impl Editor {
         self.parse_progress_offset = offset;
         self.parse_total_size = total_size;
         if let Some(res) = intermediate_result {
-            *self.parse_result.write().expect("parse_result write lock") = Some(Arc::new(res));
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            doc.metadata.parse_result = Some(Arc::new(res));
             self.cached_line_map.replace(None);
         }
     }
@@ -2377,8 +2416,11 @@ impl Editor {
         self.cancel_structure_parsing();
         self.structure_parse_async = false;
         self.structure_reparse_requested = false;
-        let old_definition = self.ksy_definition.write().expect("ksy_definition write lock").take();
-        let old = self.parse_result.write().expect("parse_result write lock").take();
+        let (old_definition, old) = {
+            let mut doc = self.document.write().expect("document write lock");
+            doc.bump_layout_version();
+            (doc.metadata.ksy_definition.take(), doc.metadata.parse_result.take())
+        };
         if old_definition.is_some() || old.is_some() {
             std::thread::spawn(move || {
                 drop((old_definition, old));
@@ -3189,27 +3231,23 @@ mod tests {
         let mut editor = create_editor_with_content(&[0; 32]);
         editor.add_custom_break(8);
         editor.add_custom_bookmark(4..12, RgbaColor::from_hsla_f32(0.0, 1.0, 0.5, 0.5));
-        let bookmark_id = editor.bookmarks.read().unwrap()[0].id.clone();
+        let bookmark_id = editor.bookmarks_snapshot()[0].id.clone();
 
         assert!(editor.insert_bytes(4, vec![1, 2]));
-        assert!(editor.custom_breaks.read().unwrap().contains(&10));
+        assert!(editor.has_custom_break(10));
         let bookmark_range = editor
-            .bookmarks
-            .read()
-            .unwrap()
-            .iter()
+            .bookmarks_snapshot()
+            .into_iter()
             .find(|item| item.id == bookmark_id)
             .map(|item| item.range())
             .expect("bookmark remains after insertion");
         assert_eq!(bookmark_range, 6..14);
 
         assert!(editor.undo());
-        assert!(editor.custom_breaks.read().unwrap().contains(&8));
+        assert!(editor.has_custom_break(8));
         let (bookmark_range, bookmark_color) = editor
-            .bookmarks
-            .read()
-            .unwrap()
-            .iter()
+            .bookmarks_snapshot()
+            .into_iter()
             .find(|item| item.id == bookmark_id)
             .map(|item| (item.range(), item.color))
             .expect("bookmark remains after undo");
@@ -3503,22 +3541,22 @@ mod tests {
         let mut editor = Editor::new(doc);
 
         editor.add_empty_line(10);
-        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&1));
+        assert_eq!(editor.empty_lines_at(10), 1);
 
         editor.add_empty_line(10);
-        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&2));
+        assert_eq!(editor.empty_lines_at(10), 2);
 
         assert!(editor.remove_empty_line(10));
-        assert_eq!(editor.empty_lines.read().unwrap().get(&10), Some(&1));
+        assert_eq!(editor.empty_lines_at(10), 1);
 
         assert!(editor.remove_empty_line(10));
-        assert_eq!(editor.empty_lines.read().unwrap().get(&10), None);
+        assert_eq!(editor.empty_lines_at(10), 0);
 
         editor.toggle_custom_break(20);
-        assert!(editor.custom_breaks.read().unwrap().contains(&20));
+        assert!(editor.has_custom_break(20));
 
         editor.toggle_custom_break(20);
-        assert!(!editor.custom_breaks.read().unwrap().contains(&20));
+        assert!(!editor.has_custom_break(20));
     }
 
     #[test]
@@ -3529,31 +3567,31 @@ mod tests {
 
         // Add red bookmark on 0..10
         editor.add_custom_bookmark(0..10, red);
-        assert_eq!(editor.bookmarks.read().unwrap().len(), 1);
-        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..10);
-        assert_eq!(editor.bookmarks.read().unwrap()[0].color, BookmarkColor::Red);
+        assert_eq!(editor.bookmarks_snapshot().len(), 1);
+        assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..10);
+        assert_eq!(editor.bookmarks_snapshot()[0].color, BookmarkColor::Red);
 
         // Update comment
-        let id = editor.bookmarks.read().unwrap()[0].id.clone();
+        let id = editor.bookmarks_snapshot()[0].id.clone();
         assert!(editor.update_bookmark_comment(&id, "Header block"));
-        assert_eq!(editor.bookmarks.read().unwrap()[0].comment, "Header block");
+        assert_eq!(editor.bookmarks_snapshot()[0].comment, "Header block");
 
         // Add blue bookmark on 5..15
         editor.add_custom_bookmark(5..15, blue);
-        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
-        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..5);
-        assert_eq!(editor.bookmarks.read().unwrap()[1].range(), 5..15);
-        assert_eq!(editor.bookmarks.read().unwrap()[1].color, BookmarkColor::Blue);
+        assert_eq!(editor.bookmarks_snapshot().len(), 2);
+        assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..5);
+        assert_eq!(editor.bookmarks_snapshot()[1].range(), 5..15);
+        assert_eq!(editor.bookmarks_snapshot()[1].color, BookmarkColor::Blue);
 
         // Clear sub-range 3..7
         editor.clear_custom_bookmark(3..7);
-        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
-        assert_eq!(editor.bookmarks.read().unwrap()[0].range(), 0..3);
-        assert_eq!(editor.bookmarks.read().unwrap()[1].range(), 7..15);
+        assert_eq!(editor.bookmarks_snapshot().len(), 2);
+        assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..3);
+        assert_eq!(editor.bookmarks_snapshot()[1].range(), 7..15);
 
         // Clear all
         editor.clear_all_custom_bookmarks();
-        assert!(editor.bookmarks.read().unwrap().is_empty());
+        assert!(editor.bookmarks_snapshot().is_empty());
     }
 
     #[test]
@@ -3569,20 +3607,20 @@ mod tests {
         let id2 = item2.id.clone();
         editor.add_bookmark(item2);
 
-        assert_eq!(editor.bookmarks.read().unwrap().len(), 2);
+        assert_eq!(editor.bookmarks_snapshot().len(), 2);
 
         // Update comment
         assert!(editor.update_bookmark_comment(&id1, "ELF Magic"));
-        assert_eq!(editor.bookmarks.read().unwrap()[0].comment, "ELF Magic");
+        assert_eq!(editor.bookmarks_snapshot()[0].comment, "ELF Magic");
 
         // Update color
         assert!(editor.update_bookmark_color(&id1, BookmarkColor::Cyan));
-        assert_eq!(editor.bookmarks.read().unwrap()[0].color, BookmarkColor::Cyan);
+        assert_eq!(editor.bookmarks_snapshot()[0].color, BookmarkColor::Cyan);
 
         // Update range
         assert!(editor.update_bookmark_range(&id2, 12, 10));
-        assert_eq!(editor.bookmarks.read().unwrap()[1].offset, 12);
-        assert_eq!(editor.bookmarks.read().unwrap()[1].size, 10);
+        assert_eq!(editor.bookmarks_snapshot()[1].offset, 12);
+        assert_eq!(editor.bookmarks_snapshot()[1].size, 10);
 
         // Test export and import
         let temp_file = std::env::temp_dir().join("editor_bookmarks_test.bookmark.yaml");
@@ -3593,21 +3631,21 @@ mod tests {
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
         let count = editor2.import_bookmarks_from_file(&temp_file).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(editor2.bookmarks.read().unwrap().len(), 2);
-        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "ELF Magic");
-        assert_eq!(editor2.bookmarks.read().unwrap()[0].color, BookmarkColor::Cyan);
-        assert_eq!(editor2.bookmarks.read().unwrap()[1].offset, 12);
-        assert_eq!(editor2.bookmarks.read().unwrap()[1].size, 10);
+        assert_eq!(editor2.bookmarks_snapshot().len(), 2);
+        assert_eq!(editor2.bookmarks_snapshot()[0].comment, "ELF Magic");
+        assert_eq!(editor2.bookmarks_snapshot()[0].color, BookmarkColor::Cyan);
+        assert_eq!(editor2.bookmarks_snapshot()[1].offset, 12);
+        assert_eq!(editor2.bookmarks_snapshot()[1].size, 10);
 
         // Remove by id
         assert!(editor.remove_bookmark_by_id(&id1));
-        assert_eq!(editor.bookmarks.read().unwrap().len(), 1);
-        assert_eq!(editor.bookmarks.read().unwrap()[0].id, id2);
+        assert_eq!(editor.bookmarks_snapshot().len(), 1);
+        assert_eq!(editor.bookmarks_snapshot()[0].id, id2);
 
         // Remove by index
         let removed = editor.remove_bookmark_by_index(0);
         assert!(removed.is_some());
-        assert!(editor.bookmarks.read().unwrap().is_empty());
+        assert!(editor.bookmarks_snapshot().is_empty());
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -3623,26 +3661,26 @@ mod tests {
 
         let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
         editor2.import_bookmarks_from_file(&temp_file).unwrap();
-        assert_eq!(editor2.bookmarks.read().unwrap().len(), 1);
+        assert_eq!(editor2.bookmarks_snapshot().len(), 1);
 
         // Now add a new bookmark
         let new_item = BookmarkItem::new(10, 4, BookmarkColor::Yellow, "New bookmark");
         let added_id = editor2.add_bookmark(new_item);
 
         // Must have 2 distinct IDs
-        assert_eq!(editor2.bookmarks.read().unwrap().len(), 2);
-        assert_ne!(editor2.bookmarks.read().unwrap()[0].id, editor2.bookmarks.read().unwrap()[1].id);
-        assert_eq!(editor2.bookmarks.read().unwrap()[1].id, added_id);
+        assert_eq!(editor2.bookmarks_snapshot().len(), 2);
+        assert_ne!(editor2.bookmarks_snapshot()[0].id, editor2.bookmarks_snapshot()[1].id);
+        assert_eq!(editor2.bookmarks_snapshot()[1].id, added_id);
 
         // Editing one must not affect the other
         assert!(editor2.update_bookmark_comment(&added_id, "Updated new comment"));
-        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "Magic bytes");
-        assert_eq!(editor2.bookmarks.read().unwrap()[1].comment, "Updated new comment");
+        assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Magic bytes");
+        assert_eq!(editor2.bookmarks_snapshot()[1].comment, "Updated new comment");
 
         // Deleting the new one must leave the first intact
         assert!(editor2.remove_bookmark_by_id(&added_id));
-        assert_eq!(editor2.bookmarks.read().unwrap().len(), 1);
-        assert_eq!(editor2.bookmarks.read().unwrap()[0].comment, "Magic bytes");
+        assert_eq!(editor2.bookmarks_snapshot().len(), 1);
+        assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Magic bytes");
 
         let _ = std::fs::remove_file(temp_file);
     }
@@ -3686,10 +3724,10 @@ mod tests {
         let editor2 = Editor::new(doc.clone());
 
         editor1.add_custom_break(20);
-        assert!(editor2.custom_breaks.read().unwrap().contains(&20));
+        assert!(editor2.has_custom_break(20));
 
         editor1.remove_custom_break(20);
-        assert!(!editor2.custom_breaks.read().unwrap().contains(&20));
+        assert!(!editor2.has_custom_break(20));
     }
 
     #[test]
@@ -3888,7 +3926,7 @@ mod tests {
         assert_eq!(editor.line_starts().len(), 7); // 100 / 16 ceil = 7
 
         let bm = BookmarkItem::new(16, 48, BookmarkColor::Red, "Header");
-        editor.bookmarks.write().unwrap().push(bm);
+        editor.add_bookmark(bm);
 
         // Initially visible
         assert_eq!(editor.line_starts().len(), 7);
@@ -3934,11 +3972,13 @@ mod tests {
         let content = vec![0u8; 100];
         let mut editor = create_editor_with_content(&content);
 
-        editor.bookmarks.write().unwrap().extend(vec![
+        for bm in [
             BookmarkItem::new(20, 20, BookmarkColor::Red, "Part 1"),    // [20, 40)
             BookmarkItem::new(35, 25, BookmarkColor::Orange, "Part 2"), // [35, 60)
             BookmarkItem::new(70, 10, BookmarkColor::Blue, "Part 3"),   // [70, 80)
-        ]);
+        ] {
+            editor.add_bookmark(bm);
+        }
 
         // Hide Red: [20, 40)
         editor.hide_bookmark_color(BookmarkColor::Red);
@@ -3963,11 +4003,13 @@ mod tests {
         let content = vec![0u8; 100];
         let mut editor = create_editor_with_content(&content);
 
-        editor.bookmarks.write().unwrap().extend(vec![
+        for bm in [
             BookmarkItem::new(10, 20, BookmarkColor::Red, "RedSec"),
             BookmarkItem::new(40, 20, BookmarkColor::Blue, "BlueSec"),
             BookmarkItem::new(70, 20, BookmarkColor::Green, "GreenSec"),
-        ]);
+        ] {
+            editor.add_bookmark(bm);
+        }
 
         // Show only Blue: Red and Green are hidden, Blue remains visible
         editor.show_only_bookmark_color(BookmarkColor::Blue);
@@ -4000,9 +4042,8 @@ mod tests {
 
         let bm1 = BookmarkItem::new(10, 20, BookmarkColor::Yellow, "BM 1");
         let bm2 = BookmarkItem::new(50, 20, BookmarkColor::Yellow, "BM 2");
-        let id1 = bm1.id.clone();
-        let id2 = bm2.id.clone();
-        editor.bookmarks.write().unwrap().extend(vec![bm1, bm2]);
+        let id1 = editor.add_bookmark(bm1);
+        let id2 = editor.add_bookmark(bm2);
 
         // Toggle individual bookmark 1
         editor.toggle_bookmark_item_visibility(&id1);
@@ -4024,7 +4065,7 @@ mod tests {
         let mut editor = create_editor_with_content(&content);
 
         let bm = BookmarkItem::new(16, 32, BookmarkColor::Cyan, "Middle");
-        editor.bookmarks.write().unwrap().push(bm);
+        editor.add_bookmark(bm);
         editor.hide_bookmark_color(BookmarkColor::Cyan);
 
         // Initial cursor at 0
@@ -4047,7 +4088,7 @@ mod tests {
         let mut editor = create_editor_with_content(&data);
 
         let bm = BookmarkItem::new(20, 30, BookmarkColor::Purple, "Section");
-        editor.bookmarks.write().unwrap().push(bm);
+        editor.add_bookmark(bm);
         editor.hide_bookmark_color(BookmarkColor::Purple);
         assert!(editor.is_folded(30));
 
@@ -4075,7 +4116,7 @@ mod tests {
         let mut editor = create_editor_with_content(&content);
 
         let bm = BookmarkItem::new(40, 20, BookmarkColor::Pink, "Payload");
-        editor.bookmarks.write().unwrap().push(bm);
+        editor.add_bookmark(bm);
         editor.hide_bookmark_color(BookmarkColor::Pink);
         assert_eq!(editor.fold_containing(50), Some((40, 60)));
 
@@ -4095,10 +4136,12 @@ mod tests {
         let mut editor = create_editor_with_content(&content);
 
         // Add 2 bookmarks: [20..36) (Red), [60..80) (Blue)
-        editor.bookmarks.write().unwrap().extend(vec![
+        for bm in [
             BookmarkItem::new(20, 16, BookmarkColor::Red, "Header"),
             BookmarkItem::new(60, 20, BookmarkColor::Blue, "Data"),
-        ]);
+        ] {
+            editor.add_bookmark(bm);
+        }
 
         // Enable hide_unbookmarked
         editor.toggle_hide_unbookmarked();
@@ -4166,10 +4209,12 @@ mod tests {
         let content = vec![0u8; 100];
         let mut editor = create_editor_with_content(&content);
 
-        editor.bookmarks.write().unwrap().extend(vec![
+        for bm in [
             BookmarkItem::new(16, 16, BookmarkColor::Green, "Green1"),
             BookmarkItem::new(64, 16, BookmarkColor::Green, "Green2"),
-        ]);
+        ] {
+            editor.add_bookmark(bm);
+        }
 
         editor.set_hide_unbookmarked(true);
 
@@ -4196,11 +4241,9 @@ mod tests {
         let bm1 = BookmarkItem::new(10, 10, BookmarkColor::Red, "Red 1");
         let bm2 = BookmarkItem::new(40, 10, BookmarkColor::Red, "Red 2");
         let bm3 = BookmarkItem::new(70, 10, BookmarkColor::Red, "Red 3");
-        let id1 = bm1.id.clone();
-        let id2 = bm2.id.clone();
-        let id3 = bm3.id.clone();
-
-        editor.bookmarks.write().unwrap().extend(vec![bm1, bm2, bm3]);
+        let id1 = editor.add_bookmark(bm1);
+        let id2 = editor.add_bookmark(bm2);
+        let id3 = editor.add_bookmark(bm3);
 
         // Hide all Red bookmarks
         editor.hide_bookmark_color(BookmarkColor::Red);
@@ -4219,11 +4262,9 @@ mod tests {
         assert!(!editor.is_folded(45));
         assert!(editor.is_folded(70));
 
-        let hidden_ids = editor.hidden_bookmark_ids.read().unwrap();
-        assert!(hidden_ids.contains(&id1));
-        assert!(!hidden_ids.contains(&id2));
-        assert!(hidden_ids.contains(&id3));
-        drop(hidden_ids);
+        assert!(editor.is_bookmark_id_hidden(&id1));
+        assert!(!editor.is_bookmark_id_hidden(&id2));
+        assert!(editor.is_bookmark_id_hidden(&id3));
 
         // Click/unfold first bookmark [10..20)
         editor.unfold_bookmark_at(10);
@@ -4242,11 +4283,13 @@ mod tests {
         // BM1: Red   [10..20)
         // BM2: Green [20..30)
         // BM3: Red   [30..40)
-        editor.bookmarks.write().unwrap().extend(vec![
+        for bm in [
             BookmarkItem::new(10, 10, BookmarkColor::Red, "Red1"),
             BookmarkItem::new(20, 10, BookmarkColor::Green, "Green"),
             BookmarkItem::new(30, 10, BookmarkColor::Red, "Red2"),
-        ]);
+        ] {
+            editor.add_bookmark(bm);
+        }
 
         // Scenario A: Hide only Red bookmarks (Green is visible)
         editor.hide_bookmark_color(BookmarkColor::Red);

@@ -2575,7 +2575,7 @@ pub fn set_kaitai_definition_async(editor_entity: &Entity<Editor>, ksy: Arc<crat
         editor.parse_cancel_token = Some(cancel_token.clone());
         editor.structure_parse_async = true;
         editor.structure_reparse_requested = false;
-        *editor.ksy_definition.write().expect("ksy_definition write lock") = Some(ksy.clone());
+        editor.set_ksy_definition(ksy.clone());
         editor.is_parsing_structure = true;
         editor.parse_progress_offset = 0;
         let total = editor.document.read().expect("document read lock").buffer.len();

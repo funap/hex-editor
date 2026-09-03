@@ -544,8 +544,7 @@ impl HexView {
         }
 
         let line_starts = editor.line_starts();
-        let bookmarks_guard = editor.bookmarks.read().expect("bookmarks read lock");
-        let bookmarks = &*bookmarks_guard;
+        let bookmarks = editor.bookmarks_snapshot();
         let mut start_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.start);
         start_idx = start_idx.saturating_sub(1);
         let end_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.end);
@@ -1943,7 +1942,7 @@ impl HexView {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
-            if offset > 0 && editor.custom_breaks.read().expect("custom_breaks read lock").contains(&(offset - 1)) {
+            if offset > 0 && editor.has_custom_break(offset - 1) {
                 editor.remove_custom_break(offset - 1);
             }
             cx.notify();
@@ -1955,7 +1954,7 @@ impl HexView {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor_offset;
-            if editor.custom_breaks.read().expect("custom_breaks read lock").contains(&offset) {
+            if editor.has_custom_break(offset) {
                 editor.remove_custom_break(offset);
             }
             cx.notify();

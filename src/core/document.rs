@@ -7,9 +7,38 @@ use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-/// Represents a document processing unit that bundles a file buffer and its edit history.
+/// Encapsulates metadata, annotations, structural analysis results,
+/// and formatting configuration associated with a [`Document`].
+#[derive(Debug, Clone, Default)]
+pub struct DocumentMetadata {
+    pub bookmarks: Vec<BookmarkItem>,
+    pub ksy_definition: Option<Arc<KsyDefinition>>,
+    pub parse_result: Option<Arc<ParseResult>>,
+    pub custom_breaks: BTreeSet<usize>,
+    pub custom_joins: BTreeSet<usize>,
+    pub empty_lines: BTreeMap<usize, usize>,
+    pub hidden_bookmark_colors: HashSet<BookmarkColor>,
+    pub hidden_bookmark_ids: HashSet<String>,
+    pub hide_unbookmarked: bool,
+    /// Monotonically increasing version counter used to invalidate derived layout caches.
+    pub layout_version: usize,
+}
+
+impl DocumentMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Increments the layout version counter.
+    #[inline]
+    pub fn bump_layout_version(&mut self) {
+        self.layout_version = self.layout_version.wrapping_add(1);
+    }
+}
+
+/// Represents a document processing unit that bundles a file buffer, edit history, and metadata.
 pub struct Document {
     pub path: PathBuf,
     pub buffer: Buffer,
@@ -17,15 +46,7 @@ pub struct Document {
     pub last_saved_version: usize,
     read_only: bool,
     pub address_map: AddressMap,
-    pub bookmarks: Arc<RwLock<Vec<BookmarkItem>>>,
-    pub ksy_definition: Arc<RwLock<Option<Arc<KsyDefinition>>>>,
-    pub parse_result: Arc<RwLock<Option<Arc<ParseResult>>>>,
-    pub custom_breaks: Arc<RwLock<BTreeSet<usize>>>,
-    pub custom_joins: Arc<RwLock<BTreeSet<usize>>>,
-    pub empty_lines: Arc<RwLock<BTreeMap<usize, usize>>>,
-    pub hidden_bookmark_colors: Arc<RwLock<HashSet<BookmarkColor>>>,
-    pub hidden_bookmark_ids: Arc<RwLock<HashSet<String>>>,
-    pub hide_unbookmarked: Arc<RwLock<bool>>,
+    pub metadata: DocumentMetadata,
 }
 
 impl Document {
@@ -37,15 +58,7 @@ impl Document {
             last_saved_version: 0,
             read_only: false,
             address_map: AddressMap::default(),
-            bookmarks: Arc::new(RwLock::new(Vec::new())),
-            ksy_definition: Arc::new(RwLock::new(None)),
-            parse_result: Arc::new(RwLock::new(None)),
-            custom_breaks: Arc::new(RwLock::new(BTreeSet::new())),
-            custom_joins: Arc::new(RwLock::new(BTreeSet::new())),
-            empty_lines: Arc::new(RwLock::new(BTreeMap::new())),
-            hidden_bookmark_colors: Arc::new(RwLock::new(HashSet::new())),
-            hidden_bookmark_ids: Arc::new(RwLock::new(HashSet::new())),
-            hide_unbookmarked: Arc::new(RwLock::new(false)),
+            metadata: DocumentMetadata::default(),
         }
     }
 
@@ -135,6 +148,16 @@ impl Document {
         self.last_saved_version = self.history.state_id();
     }
 
+    /// Returns the current layout version of the document.
+    pub fn layout_version(&self) -> usize {
+        self.metadata.layout_version
+    }
+
+    /// Increments the layout version, invalidating any cached line maps.
+    pub fn bump_layout_version(&mut self) {
+        self.metadata.bump_layout_version();
+    }
+
     /// Computes the active folded regions (as a start -> end map).
     ///
     /// Hidden bookmarks and unbookmarked gaps (when `hide_unbookmarked` is enabled)
@@ -145,10 +168,10 @@ impl Document {
             return BTreeMap::new();
         }
 
-        let is_hide_unbookmarked = *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock");
-        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
-        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+        let is_hide_unbookmarked = self.metadata.hide_unbookmarked;
+        let hidden_colors = &self.metadata.hidden_bookmark_colors;
+        let hidden_ids = &self.metadata.hidden_bookmark_ids;
+        let bookmarks = &self.metadata.bookmarks;
 
         let mut bookmarked_ranges = Vec::new();
         let mut hidden_ranges = Vec::new();
@@ -165,9 +188,6 @@ impl Document {
                 }
             }
         }
-        drop(bookmarks);
-        drop(hidden_colors);
-        drop(hidden_ids);
 
         let mut folds = BTreeMap::new();
 
@@ -228,9 +248,9 @@ impl Document {
     pub fn fold_bookmark_summary_at(&self, offset: usize) -> Option<FoldedBookmarkSummary> {
         let folded = self.computed_folded_regions();
         let fold_end = folded.get(&offset).copied()?;
-        let hidden_colors = self.hidden_bookmark_colors.read().expect("hidden_bookmark_colors read lock");
-        let hidden_ids = self.hidden_bookmark_ids.read().expect("hidden_bookmark_ids read lock");
-        let bookmarks = self.bookmarks.read().expect("bookmarks read lock");
+        let hidden_colors = &self.metadata.hidden_bookmark_colors;
+        let hidden_ids = &self.metadata.hidden_bookmark_ids;
+        let bookmarks = &self.metadata.bookmarks;
 
         let mut matched_items = Vec::new();
         for item in bookmarks.iter() {
@@ -275,8 +295,8 @@ pub struct FoldedBookmarkSummary {
 
 impl Drop for Document {
     fn drop(&mut self) {
-        let old_definition = self.ksy_definition.write().ok().and_then(|mut definition| definition.take());
-        let old_parse_result = self.parse_result.write().ok().and_then(|mut result| result.take());
+        let old_definition = self.metadata.ksy_definition.take();
+        let old_parse_result = self.metadata.parse_result.take();
         if old_definition.is_some() || old_parse_result.is_some() {
             std::thread::spawn(move || {
                 drop((old_definition, old_parse_result));

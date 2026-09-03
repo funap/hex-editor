@@ -334,41 +334,8 @@ impl EditorGroup {
             return;
         };
 
-        match active_content {
-            TabContent::Editor(editor_panel) => {
-                let editor_panel = editor_panel.clone();
-                let new_editor_panel = editor_panel.update(cx, |ep, cx| ep.create_split_clone(window, cx));
-                cx.emit(EditorGroupEvent::Split {
-                    direction,
-                    new_content: TabContent::Editor(new_editor_panel),
-                });
-            }
-            TabContent::Diff(diff_panel) => {
-                let (left_doc, right_doc) = {
-                    let dp = diff_panel.read(cx);
-                    (dp.left_document.clone(), dp.right_document.clone())
-                };
-                let new_diff = cx.new(|cx| crate::ui::panels::diff_panel::DiffPanel::new(left_doc, right_doc, window, cx));
-                cx.emit(EditorGroupEvent::Split {
-                    direction,
-                    new_content: TabContent::Diff(new_diff),
-                });
-            }
-            TabContent::Settings(_) => {
-                let new_settings = cx.new(|cx| crate::ui::panels::settings_panel::SettingsPanel::new(window, cx));
-                cx.emit(EditorGroupEvent::Split {
-                    direction,
-                    new_content: TabContent::Settings(new_settings),
-                });
-            }
-            TabContent::VisualMap(vm_panel) => {
-                let ed = vm_panel.read(cx).editor.clone();
-                let new_vm = cx.new(|cx| crate::ui::panels::visual_map_panel::VisualMapPanel::new(ed, cx));
-                cx.emit(EditorGroupEvent::Split {
-                    direction,
-                    new_content: TabContent::VisualMap(new_vm),
-                });
-            }
+        if let Some(new_content) = active_content.create_split(window, cx) {
+            cx.emit(EditorGroupEvent::Split { direction, new_content });
         }
     }
 }

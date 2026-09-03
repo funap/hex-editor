@@ -497,7 +497,7 @@ impl Workspace {
         });
 
         let editor_panel = cx.new(|cx| EditorPanel::new(editor, window, cx));
-        let content = TabContent::Editor(editor_panel);
+        let content = TabContent::from_editor(editor_panel);
 
         self.pane_tree.update(cx, |tree, cx| {
             tree.open_tab(content, window, cx);
@@ -1166,7 +1166,7 @@ impl Workspace {
                                         view
                                     });
 
-                                    let content = TabContent::Diff(diff_view);
+                                    let content = TabContent::from_diff(diff_view);
                                     workspace_view.pane_tree.update(cx, |tree, cx| {
                                         tree.open_tab(content, window, cx);
                                     });
@@ -2046,7 +2046,7 @@ impl Workspace {
         // Check if settings is already open in any group
         for group in self.pane_tree.read(cx).all_groups() {
             for (idx, tab) in group.read(cx).tabs.iter().enumerate() {
-                if let TabContent::Settings(_) = &tab.content {
+                if tab.content.is_settings() {
                     group.update(cx, |g, cx| {
                         g.activate_tab(idx, window, cx);
                     });
@@ -2061,7 +2061,7 @@ impl Workspace {
         }
 
         let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
-        let content = TabContent::Settings(settings_panel);
+        let content = TabContent::from_settings(settings_panel);
         self.pane_tree.update(cx, |tree, cx| {
             tree.open_tab(content, window, cx);
         });

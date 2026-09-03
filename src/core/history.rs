@@ -112,8 +112,12 @@ mod tests {
 
     struct DummyCommand;
     impl Command for DummyCommand {
-        fn execute(&mut self, _: &mut crate::core::editor::Editor) {}
-        fn undo(&mut self, _: &mut crate::core::editor::Editor) {}
+        fn execute(&mut self, _: &mut crate::core::document::Document) -> Option<crate::core::command::EditDelta> {
+            None
+        }
+        fn undo(&mut self, _: &mut crate::core::document::Document) -> Option<crate::core::command::EditDelta> {
+            None
+        }
     }
 
     #[test]

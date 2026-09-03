@@ -1,12 +1,24 @@
 #![allow(dead_code)]
 
-use crate::core::editor::Editor;
-use crate::core::selection::Selection;
+use crate::core::document::Document;
 
-/// A trait representing an executable and undoable command.
+/// Description of a byte range change resulting from command execution or undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditDelta {
+    pub offset: usize,
+    pub old_len: usize,
+    pub new_len: usize,
+}
+
+/// A trait representing an executable and undoable command that operates directly on a [`Document`].
 pub trait Command: Send + Sync {
-    fn execute(&mut self, editor: &mut Editor);
-    fn undo(&mut self, editor: &mut Editor);
+    /// Executes the modification on the document buffer, address map, and metadata.
+    /// Returns the affected byte range delta, or `None` if the command was a no-op.
+    fn execute(&mut self, doc: &mut Document) -> Option<EditDelta>;
+
+    /// Reverts the modification on the document buffer, address map, and metadata.
+    /// Returns the affected byte range delta, or `None` if the command was a no-op.
+    fn undo(&mut self, doc: &mut Document) -> Option<EditDelta>;
 
     /// Returns true when executing the command did not change the document.
     fn is_noop(&self) -> bool {
@@ -14,14 +26,7 @@ pub trait Command: Send + Sync {
     }
 }
 
-/// A snapshot of the transient cursor state surrounding an edit.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CursorState {
-    pub cursor_offset: usize,
-    pub selection: Selection,
-}
-
-/// Replaces an arbitrary range of bytes and restores cursor state on undo.
+/// Replaces an arbitrary range of bytes on a [`Document`].
 ///
 /// An empty range is an insertion and an empty replacement is a deletion, so
 /// one command type covers all ordinary buffer edits.
@@ -29,52 +34,47 @@ pub struct ReplaceRangeCommand {
     pub position: usize,
     pub old: Vec<u8>,
     pub new: Vec<u8>,
-    pub before: CursorState,
-    pub after: CursorState,
     noop: bool,
 }
 
 impl ReplaceRangeCommand {
-    pub fn new(position: usize, old: Vec<u8>, new: Vec<u8>, before: CursorState, after: CursorState) -> Self {
+    pub fn new(position: usize, old: Vec<u8>, new: Vec<u8>) -> Self {
         let noop = old == new;
-        Self {
-            position,
-            old,
-            new,
-            before,
-            after,
-            noop,
-        }
+        Self { position, old, new, noop }
     }
 }
 
 impl Command for ReplaceRangeCommand {
-    fn execute(&mut self, editor: &mut Editor) {
+    fn execute(&mut self, doc: &mut Document) -> Option<EditDelta> {
         if self.noop {
-            return;
+            return None;
         }
-        if let Ok(mut document) = editor.document.write() {
-            document
-                .buffer
-                .replace_range(self.position..self.position.saturating_add(self.old.len()), &self.new);
-            document.address_map.adjust_after_edit(self.position, self.old.len(), self.new.len());
-        }
-        editor.adjust_after_edit(self.position, self.old.len(), self.new.len());
-        editor.restore_cursor_state(self.after);
+        let old_len = self.old.len();
+        let new_len = self.new.len();
+        doc.buffer.replace_range(self.position..self.position.saturating_add(old_len), &self.new);
+        doc.address_map.adjust_after_edit(self.position, old_len, new_len);
+        doc.adjust_metadata_after_edit(self.position, old_len, new_len);
+        Some(EditDelta {
+            offset: self.position,
+            old_len,
+            new_len,
+        })
     }
 
-    fn undo(&mut self, editor: &mut Editor) {
+    fn undo(&mut self, doc: &mut Document) -> Option<EditDelta> {
         if self.noop {
-            return;
+            return None;
         }
-        if let Ok(mut document) = editor.document.write() {
-            document
-                .buffer
-                .replace_range(self.position..self.position.saturating_add(self.new.len()), &self.old);
-            document.address_map.adjust_after_edit(self.position, self.new.len(), self.old.len());
-        }
-        editor.adjust_after_edit(self.position, self.new.len(), self.old.len());
-        editor.restore_cursor_state(self.before);
+        let old_len = self.old.len();
+        let new_len = self.new.len();
+        doc.buffer.replace_range(self.position..self.position.saturating_add(new_len), &self.old);
+        doc.address_map.adjust_after_edit(self.position, new_len, old_len);
+        doc.adjust_metadata_after_edit(self.position, new_len, old_len);
+        Some(EditDelta {
+            offset: self.position,
+            old_len: new_len,
+            new_len: old_len,
+        })
     }
 
     fn is_noop(&self) -> bool {
@@ -96,35 +96,38 @@ impl InsertCharCommand {
 }
 
 impl Command for InsertCharCommand {
-    fn execute(&mut self, editor: &mut Editor) {
-        let mut inserted = false;
-        if let Ok(mut document) = editor.document.write()
-            && self.position <= document.buffer.len()
-        {
-            document.buffer.insert(self.position, self.c);
-            document.address_map.adjust_after_edit(self.position, 0, 1);
-            inserted = true;
-        }
-        self.inserted = inserted;
-        if inserted {
-            editor.adjust_after_edit(self.position, 0, 1);
-            editor.set_cursor_offset(self.position + 1);
+    fn execute(&mut self, doc: &mut Document) -> Option<EditDelta> {
+        if self.position <= doc.buffer.len() {
+            doc.buffer.insert(self.position, self.c);
+            doc.address_map.adjust_after_edit(self.position, 0, 1);
+            doc.adjust_metadata_after_edit(self.position, 0, 1);
+            self.inserted = true;
+            Some(EditDelta {
+                offset: self.position,
+                old_len: 0,
+                new_len: 1,
+            })
+        } else {
+            self.inserted = false;
+            None
         }
     }
 
-    fn undo(&mut self, editor: &mut Editor) {
-        let mut removed = false;
-        if let Ok(mut document) = editor.document.write()
-            && self.position < document.buffer.len()
-        {
-            removed = document.buffer.remove(self.position).is_some();
-            if removed {
-                document.address_map.adjust_after_edit(self.position, 1, 0);
+    fn undo(&mut self, doc: &mut Document) -> Option<EditDelta> {
+        if self.inserted && self.position < doc.buffer.len() {
+            if doc.buffer.remove(self.position).is_some() {
+                doc.address_map.adjust_after_edit(self.position, 1, 0);
+                doc.adjust_metadata_after_edit(self.position, 1, 0);
+                Some(EditDelta {
+                    offset: self.position,
+                    old_len: 1,
+                    new_len: 0,
+                })
+            } else {
+                None
             }
-        }
-        if removed {
-            editor.adjust_after_edit(self.position, 1, 0);
-            editor.set_cursor_offset(self.position);
+        } else {
+            None
         }
     }
 
@@ -139,37 +142,49 @@ pub struct DeleteCharCommand {
     pub deleted_char: Option<u8>,
 }
 
+impl DeleteCharCommand {
+    pub fn new(position: usize) -> Self {
+        Self { position, deleted_char: None }
+    }
+}
+
 impl Command for DeleteCharCommand {
-    fn execute(&mut self, editor: &mut Editor) {
-        let mut deleted = false;
-        if let Ok(mut document) = editor.document.write() {
-            if self.deleted_char.is_none() {
-                self.deleted_char = document.buffer.remove(self.position);
-                deleted = self.deleted_char.is_some();
+    fn execute(&mut self, doc: &mut Document) -> Option<EditDelta> {
+        if self.position < doc.buffer.len() {
+            let ch = doc.buffer.remove(self.position);
+            if let Some(c) = ch {
+                self.deleted_char = Some(c);
+                doc.address_map.adjust_after_edit(self.position, 1, 0);
+                doc.adjust_metadata_after_edit(self.position, 1, 0);
+                Some(EditDelta {
+                    offset: self.position,
+                    old_len: 1,
+                    new_len: 0,
+                })
             } else {
-                deleted = document.buffer.remove(self.position).is_some();
+                None
             }
-            if deleted {
-                document.address_map.adjust_after_edit(self.position, 1, 0);
-            }
-        }
-        if deleted {
-            editor.adjust_after_edit(self.position, 1, 0);
+        } else {
+            None
         }
     }
 
-    fn undo(&mut self, editor: &mut Editor) {
-        let mut inserted = false;
-        if let Some(c) = self.deleted_char
-            && let Ok(mut document) = editor.document.write()
-            && self.position <= document.buffer.len()
-        {
-            document.buffer.insert(self.position, c);
-            document.address_map.adjust_after_edit(self.position, 0, 1);
-            inserted = true;
-        }
-        if inserted {
-            editor.adjust_after_edit(self.position, 0, 1);
+    fn undo(&mut self, doc: &mut Document) -> Option<EditDelta> {
+        if let Some(c) = self.deleted_char {
+            if self.position <= doc.buffer.len() {
+                doc.buffer.insert(self.position, c);
+                doc.address_map.adjust_after_edit(self.position, 0, 1);
+                doc.adjust_metadata_after_edit(self.position, 0, 1);
+                Some(EditDelta {
+                    offset: self.position,
+                    old_len: 0,
+                    new_len: 1,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 
@@ -180,80 +195,116 @@ impl Command for DeleteCharCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeleteCharCommand, InsertCharCommand};
+    use super::{DeleteCharCommand, EditDelta, InsertCharCommand, ReplaceRangeCommand};
     use crate::core::buffer::Buffer;
     use crate::core::document::Document;
-    use crate::core::editor::Editor;
     use std::path::PathBuf;
-    use std::sync::{Arc, RwLock};
 
-    fn editor_with_content(content: &[u8]) -> Editor {
-        let document = Document::new(PathBuf::from("command-test.bin"), Buffer::new(content.to_vec()));
-        Editor::new(Arc::new(RwLock::new(document)))
-    }
-
-    fn bytes(editor: &Editor) -> Vec<u8> {
-        editor.document.read().expect("document read lock").buffer.data().to_vec()
+    fn document_with_content(content: &[u8]) -> Document {
+        Document::new(PathBuf::from("command-test.bin"), Buffer::new(content.to_vec()))
     }
 
     #[test]
     fn insert_command_round_trips_through_undo_and_redo() {
-        let mut editor = editor_with_content(b"ac");
+        let mut doc = document_with_content(b"ac");
 
-        editor.execute_command(Box::new(InsertCharCommand::new(1, b'b')));
-        assert_eq!(bytes(&editor), b"abc");
-        assert_eq!(editor.cursor_offset, 2);
-        assert!(editor.document.read().unwrap().is_dirty());
+        let delta = doc.execute_command(Box::new(InsertCharCommand::new(1, b'b')));
+        assert_eq!(
+            delta,
+            Some(EditDelta {
+                offset: 1,
+                old_len: 0,
+                new_len: 1
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"abc");
+        assert!(doc.is_dirty());
 
-        editor.undo();
-        assert_eq!(bytes(&editor), b"ac");
-        assert_eq!(editor.cursor_offset, 1);
+        let undo_delta = doc.undo();
+        assert_eq!(
+            undo_delta,
+            Some(EditDelta {
+                offset: 1,
+                old_len: 1,
+                new_len: 0
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"ac");
 
-        editor.redo();
-        assert_eq!(bytes(&editor), b"abc");
-        assert_eq!(editor.cursor_offset, 2);
+        let redo_delta = doc.redo();
+        assert_eq!(
+            redo_delta,
+            Some(EditDelta {
+                offset: 1,
+                old_len: 0,
+                new_len: 1
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"abc");
     }
 
     #[test]
     fn delete_command_restores_the_deleted_byte() {
-        let mut editor = editor_with_content(b"abc");
+        let mut doc = document_with_content(b"abc");
 
-        editor.execute_command(Box::new(DeleteCharCommand {
-            position: 1,
-            deleted_char: None,
-        }));
-        assert_eq!(bytes(&editor), b"ac");
+        let delta = doc.execute_command(Box::new(DeleteCharCommand::new(1)));
+        assert_eq!(
+            delta,
+            Some(EditDelta {
+                offset: 1,
+                old_len: 1,
+                new_len: 0
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"ac");
 
-        editor.undo();
-        assert_eq!(bytes(&editor), b"abc");
+        doc.undo();
+        assert_eq!(doc.buffer.data(), b"abc");
 
-        editor.redo();
-        assert_eq!(bytes(&editor), b"ac");
+        doc.redo();
+        assert_eq!(doc.buffer.data(), b"ac");
+    }
+
+    #[test]
+    fn replace_range_command_round_trips() {
+        let mut doc = document_with_content(b"hello world");
+
+        let delta = doc.execute_command(Box::new(ReplaceRangeCommand::new(6, b"world".to_vec(), b"rust".to_vec())));
+        assert_eq!(
+            delta,
+            Some(EditDelta {
+                offset: 6,
+                old_len: 5,
+                new_len: 4
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"hello rust");
+
+        doc.undo();
+        assert_eq!(doc.buffer.data(), b"hello world");
+
+        doc.redo();
+        assert_eq!(doc.buffer.data(), b"hello rust");
     }
 
     #[test]
     fn deleting_out_of_bounds_is_a_no_op() {
-        let mut editor = editor_with_content(b"abc");
+        let mut doc = document_with_content(b"abc");
 
-        editor.execute_command(Box::new(DeleteCharCommand {
-            position: 3,
-            deleted_char: None,
-        }));
-
-        assert_eq!(bytes(&editor), b"abc");
-        editor.undo();
-        assert_eq!(bytes(&editor), b"abc");
-        editor.redo();
-        assert_eq!(bytes(&editor), b"abc");
+        let delta = doc.execute_command(Box::new(DeleteCharCommand::new(3)));
+        assert_eq!(delta, None);
+        assert_eq!(doc.buffer.data(), b"abc");
+        assert!(!doc.can_undo());
     }
 
     #[test]
     fn inserting_out_of_bounds_is_a_no_op() {
-        let mut editor = editor_with_content(b"abc");
+        let mut doc = document_with_content(b"abc");
 
-        assert!(!editor.execute_command(Box::new(InsertCharCommand::new(4, b'x'))));
-        assert_eq!(bytes(&editor), b"abc");
-        assert!(!editor.can_undo());
-        assert!(!editor.document.read().unwrap().is_dirty());
+        let delta = doc.execute_command(Box::new(InsertCharCommand::new(4, b'x')));
+        assert_eq!(delta, None);
+        assert_eq!(doc.buffer.data(), b"abc");
+        assert!(!doc.can_undo());
+        assert!(!doc.is_dirty());
     }
 }

@@ -2,6 +2,7 @@
 
 use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::buffer::Buffer;
+use crate::core::command::{Command, EditDelta};
 use crate::core::hex_import::AddressMap;
 use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
@@ -158,6 +159,110 @@ impl Document {
         self.metadata.bump_layout_version();
     }
 
+    /// Adjusts layout breaks, joins, empty lines, and bookmarks after a byte range edit.
+    pub fn adjust_metadata_after_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
+        let old_end = start.saturating_add(old_len);
+        let shift = |offset: usize| {
+            if old_len == 0 {
+                if offset >= start { offset.saturating_add(new_len) } else { offset }
+            } else if offset <= start {
+                offset
+            } else if offset >= old_end {
+                if new_len >= old_len {
+                    offset.saturating_add(new_len - old_len)
+                } else {
+                    offset.saturating_sub(old_len - new_len)
+                }
+            } else {
+                start.saturating_add(new_len)
+            }
+        };
+
+        self.bump_layout_version();
+        let meta = &mut self.metadata;
+
+        for breaks in [&mut meta.custom_breaks, &mut meta.custom_joins] {
+            let shifted = breaks.iter().copied().map(shift).collect::<BTreeSet<_>>();
+            *breaks = shifted;
+        }
+        let shifted_lines = meta.empty_lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
+        meta.empty_lines = shifted_lines;
+
+        let bookmarks = &mut meta.bookmarks;
+        for item in bookmarks.iter_mut() {
+            let item_start = item.offset;
+            let item_end = item.offset.saturating_add(item.size);
+            if old_len == 0 {
+                if item_start >= start {
+                    item.offset = item_start.saturating_add(new_len);
+                } else if item_end > start {
+                    item.size = item.size.saturating_add(new_len);
+                }
+                continue;
+            }
+
+            if item_end <= start {
+                continue;
+            }
+            if item_start >= old_end {
+                item.offset = shift(item_start);
+                continue;
+            }
+
+            let prefix = item_end.min(start).saturating_sub(item_start);
+            let suffix = item_end.saturating_sub(old_end.max(item_start));
+            item.offset = item_start.min(start);
+            item.size = prefix.saturating_add(new_len).saturating_add(suffix);
+        }
+        bookmarks.retain(|item| item.size > 0);
+        bookmarks.sort_by_key(|item| (item.offset, item.size));
+    }
+
+    /// Executes a command on the document, recording it in history if it modified the document.
+    pub fn execute_command(&mut self, mut command: Box<dyn Command>) -> Option<EditDelta> {
+        if self.read_only {
+            return None;
+        }
+        let delta = command.execute(self)?;
+        self.history.push(command);
+        Some(delta)
+    }
+
+    /// Undoes the last command in history, reverting the document modification.
+    pub fn undo(&mut self) -> Option<EditDelta> {
+        if self.read_only {
+            return None;
+        }
+        let mut command = self.history.pop_undo()?;
+        let delta = command.undo(self);
+        self.history.push_redo(command);
+        delta
+    }
+
+    /// Redoes the last undone command in history, re-applying the modification.
+    pub fn redo(&mut self) -> Option<EditDelta> {
+        if self.read_only {
+            return None;
+        }
+        let mut command = self.history.pop_redo()?;
+        let delta = command.execute(self);
+        if delta.is_none() || command.is_noop() {
+            return None;
+        }
+        self.history.push_undo(command);
+        delta
+    }
+
+    /// Returns whether an undo operation is available.
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Returns whether a redo operation is available.
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
     /// Computes the active folded regions (as a start -> end map).
     ///
     /// Hidden bookmarks and unbookmarked gaps (when `hide_unbookmarked` is enabled)
@@ -308,14 +413,25 @@ impl Drop for Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::command::Command;
-    use crate::core::editor::Editor;
+    use crate::core::command::{Command, EditDelta};
 
     struct MockCommand;
 
     impl Command for MockCommand {
-        fn execute(&mut self, _editor: &mut Editor) {}
-        fn undo(&mut self, _editor: &mut Editor) {}
+        fn execute(&mut self, _doc: &mut Document) -> Option<EditDelta> {
+            Some(EditDelta {
+                offset: 0,
+                old_len: 0,
+                new_len: 1,
+            })
+        }
+        fn undo(&mut self, _doc: &mut Document) -> Option<EditDelta> {
+            Some(EditDelta {
+                offset: 0,
+                old_len: 1,
+                new_len: 0,
+            })
+        }
     }
 
     #[test]
@@ -383,5 +499,59 @@ mod tests {
 
         // Out of bounds
         assert!(doc.read_contiguous_bytes(14, 8).is_empty());
+    }
+
+    #[test]
+    fn test_document_execute_command_undo_redo() {
+        use crate::core::command::ReplaceRangeCommand;
+
+        let mut doc = Document::new(PathBuf::from("test.bin"), Buffer::new(b"hello world".to_vec()));
+        assert!(!doc.can_undo());
+        assert!(!doc.can_redo());
+
+        // Replace "world" with "rust"
+        let delta = doc.execute_command(Box::new(ReplaceRangeCommand::new(6, b"world".to_vec(), b"rust".to_vec())));
+        assert_eq!(
+            delta,
+            Some(EditDelta {
+                offset: 6,
+                old_len: 5,
+                new_len: 4,
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"hello rust");
+        assert!(doc.can_undo());
+        assert!(!doc.can_redo());
+        assert!(doc.is_dirty());
+
+        // Undo
+        let undo_delta = doc.undo();
+        assert_eq!(
+            undo_delta,
+            Some(EditDelta {
+                offset: 6,
+                old_len: 4,
+                new_len: 5,
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"hello world");
+        assert!(!doc.can_undo());
+        assert!(doc.can_redo());
+        assert!(!doc.is_dirty());
+
+        // Redo
+        let redo_delta = doc.redo();
+        assert_eq!(
+            redo_delta,
+            Some(EditDelta {
+                offset: 6,
+                old_len: 5,
+                new_len: 4,
+            })
+        );
+        assert_eq!(doc.buffer.data(), b"hello rust");
+        assert!(doc.can_undo());
+        assert!(!doc.can_redo());
+        assert!(doc.is_dirty());
     }
 }

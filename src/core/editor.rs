@@ -2,7 +2,7 @@
 
 use crate::core::bookmark::{BookmarkColor, BookmarkFile, BookmarkItem, generate_bookmark_id};
 use crate::core::color::RgbaColor;
-use crate::core::command::{Command, CursorState, ReplaceRangeCommand};
+use crate::core::command::{Command, ReplaceRangeCommand};
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
@@ -29,6 +29,13 @@ pub struct SearchState {
 }
 
 pub use crate::core::document::FoldedBookmarkSummary;
+
+/// A snapshot of the transient cursor state surrounding an edit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CursorState {
+    pub cursor_offset: usize,
+    pub selection: Selection,
+}
 
 /// Represents the editor.
 pub struct Editor {
@@ -582,45 +589,10 @@ impl Editor {
             }
         };
 
-        let mut doc = self.document.write().expect("document write lock");
-        doc.bump_layout_version();
-        let meta = &mut doc.metadata;
-
-        for breaks in [&mut meta.custom_breaks, &mut meta.custom_joins] {
-            let shifted = breaks.iter().copied().map(shift).collect::<BTreeSet<_>>();
-            *breaks = shifted;
-        }
-        let shifted_lines = meta.empty_lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
-        meta.empty_lines = shifted_lines;
-
-        let bookmarks = &mut meta.bookmarks;
-        for item in bookmarks.iter_mut() {
-            let item_start = item.offset;
-            let item_end = item.offset.saturating_add(item.size);
-            if old_len == 0 {
-                if item_start >= start {
-                    item.offset = item_start.saturating_add(new_len);
-                } else if item_end > start {
-                    item.size = item.size.saturating_add(new_len);
-                }
-                continue;
-            }
-
-            if item_end <= start {
-                continue;
-            }
-            if item_start >= old_end {
-                item.offset = shift(item_start);
-                continue;
-            }
-
-            let prefix = item_end.min(start).saturating_sub(item_start);
-            let suffix = item_end.saturating_sub(old_end.max(item_start));
-            item.offset = item_start.min(start);
-            item.size = prefix.saturating_add(new_len).saturating_add(suffix);
-        }
-        bookmarks.retain(|item| item.size > 0);
-        bookmarks.sort_by_key(|item| (item.offset, item.size));
+        let total = self.total_size();
+        self.cursor_offset = shift(self.cursor_offset).min(total);
+        self.selection = Selection::new(shift(self.selection.anchor()), shift(self.selection.active())).clamped(total);
+        self.cached_line_map.replace(None);
     }
 
     /// Replaces `range` with `replacement` and places the cursor at the next
@@ -650,12 +622,11 @@ impl Editor {
             return false;
         }
 
-        let before = self.cursor_state();
-        let after = CursorState {
-            cursor_offset: cursor_after,
-            selection: Selection::collapsed(cursor_after),
-        };
-        self.execute_command(Box::new(ReplaceRangeCommand::new(start, old, replacement, before, after)))
+        let success = self.execute_command(Box::new(ReplaceRangeCommand::new(start, old, replacement)));
+        if success {
+            self.set_cursor_offset_exact(cursor_after);
+        }
+        success
     }
 
     /// Inserts bytes at `position` and advances the cursor after them.
@@ -2170,40 +2141,28 @@ impl Editor {
         }
     }
 
-    pub fn execute_command(&mut self, mut command: Box<dyn Command>) -> bool {
+    pub fn execute_command(&mut self, command: Box<dyn Command>) -> bool {
         if self.is_read_only() {
             return false;
         }
-        command.execute(self);
-        if command.is_noop() {
-            return false;
+        let delta = self.document.write().expect("document write lock").execute_command(command);
+        if let Some(delta) = delta {
+            self.adjust_after_edit(delta.offset, delta.old_len, delta.new_len);
+            self.document_changed();
+            true
+        } else {
+            false
         }
-        self.document.write().expect("document write lock").history.push(command);
-        self.document_changed();
-        true
     }
 
     pub fn undo(&mut self) -> bool {
         if self.is_read_only() {
             return false;
         }
-
-        // Need to acquire a write lock on the document to access history
-        // And also we need to pop from history, then call command.undo(self)
-        // command.undo might need to access document.buf, which is in the same lock if we are not careful
-        // The current History implementation stores Box<dyn Command>, which is fine.
-        // But if I hold the lock while calling command.undo(self), and command.undo tries to lock document again... deadlock.
-
-        let command = {
-            let mut doc = self.document.write().expect("document write lock");
-            doc.history.pop_undo()
-        };
-
-        if let Some(mut cmd) = command {
-            cmd.undo(self);
-
-            // Re-acquire lock to push redo
-            self.document.write().expect("document write lock").history.push_redo(cmd);
+        let delta = self.document.write().expect("document write lock").undo();
+        if let Some(delta) = delta {
+            self.adjust_after_edit(delta.offset, delta.old_len, delta.new_len);
+            self.set_cursor_offset_exact(delta.offset);
             self.document_changed();
             true
         } else {
@@ -2215,21 +2174,10 @@ impl Editor {
         if self.is_read_only() {
             return false;
         }
-
-        let command = {
-            let mut doc = self.document.write().expect("document write lock");
-            doc.history.pop_redo()
-        };
-
-        if let Some(mut cmd) = command {
-            cmd.execute(self);
-
-            if cmd.is_noop() {
-                return false;
-            }
-
-            // Re-acquire lock to push undo
-            self.document.write().expect("document write lock").history.push_undo(cmd);
+        let delta = self.document.write().expect("document write lock").redo();
+        if let Some(delta) = delta {
+            self.adjust_after_edit(delta.offset, delta.old_len, delta.new_len);
+            self.set_cursor_offset_exact(delta.offset.saturating_add(delta.new_len));
             self.document_changed();
             true
         } else {
@@ -2239,12 +2187,12 @@ impl Editor {
 
     /// Returns whether this editor has an undoable command.
     pub fn can_undo(&self) -> bool {
-        self.document.read().expect("document read lock").history.can_undo()
+        self.document.read().expect("document read lock").can_undo()
     }
 
     /// Returns whether this editor has a redoable command.
     pub fn can_redo(&self) -> bool {
-        self.document.read().expect("document read lock").history.can_redo()
+        self.document.read().expect("document read lock").can_redo()
     }
 
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
@@ -3119,7 +3067,7 @@ mod tests {
         assert!(editor.undo());
         assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcdef");
         assert_eq!(editor.cursor_offset, 1);
-        assert_eq!(editor.selection(), Selection::new(4, 1));
+        assert!(!editor.has_selection());
 
         assert!(editor.redo());
         assert_eq!(editor.document.read().unwrap().buffer.data(), b"aXYZef");

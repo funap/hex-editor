@@ -172,7 +172,7 @@ impl SearchPanel {
         };
 
         let mode = self.mode;
-        let encoding = editor_entity.read(cx).encoding;
+        let encoding = editor_entity.read(cx).options.encoding;
         let pattern_len = match mode {
             SearchMode::Text => parse_text_pattern(&query, encoding).map(|p| p.len()).unwrap_or(0),
             SearchMode::Hex => parse_hex_pattern(&query).map(|p| p.len()).unwrap_or(0),
@@ -419,7 +419,7 @@ impl SearchPanel {
             let doc = ed_ref.document.read().ok();
             let buf = doc.as_ref().map(|d| d.buffer.clone());
             let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
-            (ed_ref.encoding, buf, map)
+            (ed_ref.options.encoding, buf, map)
         } else {
             (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
         };
@@ -450,9 +450,9 @@ impl SearchPanel {
         let match_len = self.match_len.max(1);
 
         let target_offsets = if let Some(range) = editor_ref.selection_range() {
-            vec![range.start, editor_ref.cursor_offset]
+            vec![range.start, editor_ref.cursor.offset]
         } else {
-            vec![editor_ref.cursor_offset]
+            vec![editor_ref.cursor.offset]
         };
 
         let mut found_index = None;
@@ -683,7 +683,7 @@ impl Render for SearchPanel {
                     let doc = ed_ref.document.read().ok();
                     let buf = doc.as_ref().map(|d| d.buffer.clone());
                     let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
-                    (ed_ref.encoding, buf, map)
+                    (ed_ref.options.encoding, buf, map)
                 } else {
                     (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
                 };
@@ -874,7 +874,7 @@ impl Render for SearchPanel {
                                 let doc = ed_ref.document.read().ok();
                                 let buf = doc.as_ref().map(|d| d.buffer.clone());
                                 let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
-                                (ed_ref.encoding, buf, map)
+                                (ed_ref.options.encoding, buf, map)
                             } else {
                                 (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
                             };

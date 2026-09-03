@@ -265,7 +265,7 @@ impl StructTreeView {
                     editor_lock.is_parsing_structure,
                 )
             });
-            (parse_id, editor_lock.cursor_offset)
+            (parse_id, editor_lock.cursor.offset)
         };
 
         if current_parse_id != self.last_parse_id {
@@ -714,7 +714,7 @@ impl StructTreeView {
                     let start = item.offset.min(total.saturating_sub(1));
                     let end = (item.offset + item.size.saturating_sub(1)).min(total.saturating_sub(1));
                     editor.set_selection_range(start..end.saturating_add(1));
-                    editor.cursor_offset = start;
+                    editor.cursor.offset = start;
                     nav_offset = start;
                 } else {
                     let clamped = offset.min(total);

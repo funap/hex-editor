@@ -182,7 +182,7 @@ impl HexView {
     pub fn new(editor: Entity<Editor>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (radix, group_size, is_big_endian, encoding) = {
             let ed = editor.read(cx);
-            (ed.radix, ed.group_size, ed.is_big_endian, ed.encoding)
+            (ed.options.radix, ed.options.group_size, ed.options.is_big_endian, ed.options.encoding)
         };
         let font_size_prop = px(14.0);
         let hex_col_width = 0.0;
@@ -219,14 +219,14 @@ impl HexView {
             if ed.is_read_only() {
                 this.clear_pending_hex_input();
             }
-            let new_encoding = ed.encoding;
-            let new_radix = ed.radix;
-            let new_group_size = ed.group_size;
-            let new_endian = ed.is_big_endian;
+            let new_encoding = ed.options.encoding;
+            let new_radix = ed.options.radix;
+            let new_group_size = ed.options.group_size;
+            let new_endian = ed.options.is_big_endian;
             let cursor_offset = if InsertModeState::is_enabled(cx) {
                 ed.insert_cursor_offset()
             } else {
-                ed.cursor_offset
+                ed.cursor.offset
             };
             let cursor_changed = this.last_cursor_offset != Some(cursor_offset);
             if cursor_changed {
@@ -262,7 +262,7 @@ impl HexView {
             if !insert_mode {
                 let should_clamp_cursor = {
                     let editor = this.editor.read(cx);
-                    editor.cursor_offset >= editor.total_size()
+                    editor.cursor.offset >= editor.total_size()
                 };
                 if should_clamp_cursor {
                     this.editor.update(cx, |editor, editor_cx| {
@@ -915,7 +915,7 @@ impl HexView {
                 (
                     range.as_ref().map(|range| range.start),
                     range.as_ref().map(|range| range.end.saturating_sub(1)),
-                    ed.cursor_offset,
+                    ed.cursor.offset,
                 )
             };
             if start.is_some() {
@@ -1102,7 +1102,7 @@ impl HexView {
     fn ensure_cursor_visible(&mut self, cx: &mut Context<Self>) {
         let insert_mode = InsertModeState::is_enabled(cx);
         let editor = self.editor.read(cx);
-        let cursor_offset = if insert_mode { editor.insert_cursor_offset() } else { editor.cursor_offset };
+        let cursor_offset = if insert_mode { editor.insert_cursor_offset() } else { editor.cursor.offset };
         let line_starts = editor.line_starts();
         let cursor_row = Editor::find_line_index(cursor_offset, &line_starts);
 
@@ -1165,7 +1165,7 @@ impl HexView {
             self.hex_nibble = 0;
         }
 
-        let position = self.editor.read(cx).cursor_offset;
+        let position = self.editor.read(cx).cursor.offset;
         if self.hex_nibble == 0 {
             self.pending_hex_digit = Some((position, digit));
             self.hex_nibble = 1;
@@ -1218,7 +1218,7 @@ impl HexView {
         let changed = self.editor.update(cx, |editor, editor_cx| {
             let has_selection = editor.has_selection();
             let changed = if insert_mode && !has_selection {
-                let position = editor.cursor_offset;
+                let position = editor.cursor.offset;
                 editor.insert_bytes(position, replacement)
             } else if has_selection {
                 let range = editor.edit_range().expect("selection has an edit range");
@@ -1229,7 +1229,7 @@ impl HexView {
                     editor.replace_range(range, replacement)
                 }
             } else {
-                let position = editor.cursor_offset;
+                let position = editor.cursor.offset;
                 let range = position..position.saturating_add(replacement.len()).min(editor.total_size());
                 editor.replace_range(range, replacement)
             };
@@ -1424,10 +1424,10 @@ impl HexView {
                     editor.replace_range(range, bytes)
                 }
             } else if insert_mode {
-                let position = editor.cursor_offset;
+                let position = editor.cursor.offset;
                 editor.insert_bytes(position, bytes)
             } else {
-                let position = editor.cursor_offset;
+                let position = editor.cursor.offset;
                 let range = position..position.saturating_add(bytes.len()).min(editor.total_size());
                 editor.replace_range(range, bytes)
             };
@@ -1536,7 +1536,7 @@ impl HexView {
             f(editor);
             cx.notify();
         });
-        let cursor_offset = self.editor.read(cx).cursor_offset;
+        let cursor_offset = self.editor.read(cx).cursor.offset;
         cx.emit(HexViewEvent::CursorMoved(cursor_offset));
     }
 
@@ -1564,7 +1564,7 @@ impl HexView {
                 let editor = self.editor.read(cx);
                 if let Ok(doc) = editor.document.read() {
                     let buf = doc.buffer.data();
-                    let current = editor.cursor_offset;
+                    let current = editor.cursor.offset;
                     let target = encoding.prev_char_boundary(buf, current);
                     let char_range = encoding.char_range_at(buf, target);
                     Some((target, char_range))
@@ -1581,12 +1581,21 @@ impl HexView {
                     } else {
                         editor.set_cursor_offset_exact(target);
                     }
+                } else if insert_mode {
+                    editor.move_left_for_insert();
                 } else {
                     editor.move_left();
                 }
             });
         } else {
-            self.exec_move(window, cx, |e| e.move_left());
+            let insert_mode = InsertModeState::is_enabled(cx);
+            self.exec_move(window, cx, move |editor| {
+                if insert_mode {
+                    editor.move_left_for_insert();
+                } else {
+                    editor.move_left();
+                }
+            });
         }
     }
 
@@ -1598,7 +1607,7 @@ impl HexView {
                 let editor = self.editor.read(cx);
                 if let Ok(doc) = editor.document.read() {
                     let buf = doc.buffer.data();
-                    let current = editor.cursor_offset;
+                    let current = editor.cursor.offset;
                     let target = encoding.next_char_boundary(buf, current);
                     let char_range = encoding.char_range_at(buf, target);
                     let buf_len = buf.len();
@@ -1649,12 +1658,12 @@ impl HexView {
                     let anchor = if editor.has_selection() {
                         editor.selection().anchor()
                     } else {
-                        editor.cursor_offset
+                        editor.cursor.offset
                     };
                     let active = if editor.has_selection() {
                         editor.selection().active()
                     } else {
-                        editor.cursor_offset
+                        editor.cursor.offset
                     };
                     let target = encoding.prev_char_boundary(buf, active);
                     Some((anchor, target))
@@ -1694,12 +1703,12 @@ impl HexView {
                     let anchor = if editor.has_selection() {
                         editor.selection().anchor()
                     } else {
-                        editor.cursor_offset
+                        editor.cursor.offset
                     };
                     let active = if editor.has_selection() {
                         editor.selection().active()
                     } else {
-                        editor.cursor_offset
+                        editor.cursor.offset
                     };
                     let target = encoding.next_char_boundary(buf, active);
                     Some((anchor, target))
@@ -1929,7 +1938,7 @@ impl HexView {
     pub fn add_custom_break(&mut self, _: &AddCustomBreak, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
-            let offset = editor.cursor_offset;
+            let offset = editor.cursor.offset;
             if offset > 0 {
                 editor.add_custom_break(offset);
             }
@@ -1941,7 +1950,7 @@ impl HexView {
     pub fn remove_custom_break_backward(&mut self, _: &RemoveCustomBreakBackward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
-            let offset = editor.cursor_offset;
+            let offset = editor.cursor.offset;
             if offset > 0 && editor.has_custom_break(offset - 1) {
                 editor.remove_custom_break(offset - 1);
             }
@@ -1953,7 +1962,7 @@ impl HexView {
     pub fn remove_custom_break_forward(&mut self, _: &RemoveCustomBreakForward, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
-            let offset = editor.cursor_offset;
+            let offset = editor.cursor.offset;
             if editor.has_custom_break(offset) {
                 editor.remove_custom_break(offset);
             }
@@ -2035,7 +2044,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            let offset = editor.cursor_offset;
+            let offset = editor.cursor.offset;
             editor.unfold_bookmark_at(offset);
             cx.notify();
         });
@@ -2054,10 +2063,10 @@ impl HexView {
                 let (start_offset, slice) = if let Some(range) = selected_range {
                     (range.start, doc.buffer.get_range(range.start, range.len()))
                 } else {
-                    let off = editor.cursor_offset.min(total.saturating_sub(1));
+                    let off = editor.cursor.offset.min(total.saturating_sub(1));
                     (off, doc.buffer.get_range(off, 1))
                 };
-                (format_bytes(slice, start_offset, format, editor.encoding), slice.to_vec())
+                (format_bytes(slice, start_offset, format, editor.options.encoding), slice.to_vec())
             }
         };
 
@@ -2080,9 +2089,9 @@ impl HexView {
             if total == 0 {
                 (String::new(), Vec::new())
             } else if let Some(range) = selected_range {
-                let radix = editor.radix;
-                let group_size = editor.group_size;
-                let is_big_endian = editor.is_big_endian;
+                let radix = editor.options.radix;
+                let group_size = editor.options.group_size;
+                let is_big_endian = editor.options.is_big_endian;
                 let line_starts = editor.line_starts();
                 let slice = doc.buffer.get_range(range.start, range.len());
                 (
@@ -2644,7 +2653,7 @@ impl Render for HexView {
         // Keep the cursor visible using the same fixed grid as the paint pass.
         let (cursor_offset, insert_cursor_offset) = {
             let editor = self.editor.read(cx);
-            (editor.cursor_offset, editor.insert_cursor_offset())
+            (editor.cursor.offset, editor.insert_cursor_offset())
         };
         let reveal_cursor_offset = if insert_mode { insert_cursor_offset } else { cursor_offset };
         let should_reveal_cursor = self.cursor_reveal_pending || self.last_cursor_offset != Some(reveal_cursor_offset);
@@ -3548,7 +3557,7 @@ impl Render for HexView {
                             let editor = this.editor.read(cx);
                             if let Ok(doc) = editor.document.read() {
                                 let char_range = this.encoding.char_range_at(doc.buffer.data(), target_pos);
-                                let anchor = mouse_selection_anchor.unwrap_or(editor.cursor_offset);
+                                let anchor = mouse_selection_anchor.unwrap_or(editor.cursor.offset);
                                 if target_pos >= anchor { char_range.end } else { char_range.start }
                             } else {
                                 target_pos
@@ -3557,11 +3566,11 @@ impl Render for HexView {
                             target_pos
                         };
                         this.editor.update(cx, |editor, cx| {
-                            let anchor = mouse_selection_anchor.unwrap_or(editor.cursor_offset);
+                            let anchor = mouse_selection_anchor.unwrap_or(editor.cursor.offset);
                             let prev_selection = editor.selection();
-                            let prev_cursor = editor.cursor_offset;
+                            let prev_cursor = editor.cursor.offset;
                             editor.continue_drag(anchor, target_drag_pos);
-                            if editor.selection() != prev_selection || editor.cursor_offset != prev_cursor {
+                            if editor.selection() != prev_selection || editor.cursor.offset != prev_cursor {
                                 cx.notify();
                             }
                         });
@@ -3659,7 +3668,7 @@ impl Render for HexView {
                                 Arc::new(editor.bookmarks_snapshot()),
                                 editor.document.clone(),
                                 editor.line_starts(),
-                                editor.cursor_offset,
+                                editor.cursor.offset,
                                 editor.insert_cursor_offset(),
                                 min_sel,
                                 max_sel,

@@ -151,7 +151,7 @@ impl VisualMapPanel {
 
     pub fn scroll_to_cursor(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = &self.editor else { return };
-        let cursor_offset = editor.read(cx).cursor_offset;
+        let cursor_offset = editor.read(cx).cursor.offset;
         let buffer_len = self.buffer_len(cx);
         if buffer_len == 0 {
             return;
@@ -985,7 +985,7 @@ impl Render for VisualMapPanel {
         let footer = self.render_footer(buffer_len, total_rows, &theme, cx);
 
         let ed_ref = editor.read(cx);
-        let cursor_offset = Some(ed_ref.cursor_offset);
+        let cursor_offset = Some(ed_ref.cursor.offset);
         let selection_range = ed_ref.selection_range();
         let hovered_offset = self.hovered_info.map(|(off, _)| off);
 

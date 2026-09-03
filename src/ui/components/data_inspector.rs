@@ -309,7 +309,7 @@ impl DataInspector {
             cx.observe(ed, |this, ed, cx| {
                 if this.editing_field.is_some() {
                     let ed_read = ed.read(cx);
-                    if ed_read.cursor_offset != this.editing_offset || ed_read.is_read_only() {
+                    if ed_read.cursor.offset != this.editing_offset || ed_read.is_read_only() {
                         this.editing_field = None;
                         this.original_selection = None;
                         this.edit_error = None;
@@ -370,7 +370,7 @@ impl DataInspector {
             self._editor_subscription = Some(cx.observe(ed, |this, ed, cx| {
                 if this.editing_field.is_some() {
                     let ed_read = ed.read(cx);
-                    if ed_read.cursor_offset != this.editing_offset || ed_read.is_read_only() {
+                    if ed_read.cursor.offset != this.editing_offset || ed_read.is_read_only() {
                         this.editing_field = None;
                         this.original_selection = None;
                         this.edit_error = None;
@@ -389,7 +389,7 @@ impl DataInspector {
         }
         let Some(ed) = &self.editor else { return };
         ed.update(cx, |editor, cx| {
-            let cursor_offset = editor.cursor_offset;
+            let cursor_offset = editor.cursor.offset;
             let total = editor.total_size();
             let end = (cursor_offset + byte_len).min(total);
             editor.set_selection(cursor_offset, end);
@@ -408,7 +408,7 @@ impl DataInspector {
             if bytes.len() < field.byte_len() {
                 return;
             }
-            (reader.cursor_offset, reader.is_read_only(), bytes)
+            (reader.cursor.offset, reader.is_read_only(), bytes)
         };
 
         if is_read_only {
@@ -908,7 +908,7 @@ impl Render for DataInspector {
 
         let (current_encoding, current_enc_val) = if let Some(ed) = &self.editor {
             let ed = ed.read(cx);
-            let enc = ed.encoding;
+            let enc = ed.options.encoding;
             if !matches!(enc, Encoding::Ascii | Encoding::Utf8 | Encoding::Utf16Le | Encoding::Utf16Be) {
                 let mut val = ".".to_string();
                 if !bytes_at_cursor.is_empty()

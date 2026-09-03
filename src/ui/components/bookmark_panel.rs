@@ -124,7 +124,7 @@ impl BookmarkPanel {
         }
         let (cursor_offset, bookmarks) = {
             let ed = editor.read(cx);
-            (ed.cursor_offset, ed.bookmarks_snapshot())
+            (ed.cursor.offset, ed.bookmarks_snapshot())
         };
 
         if bookmarks.is_empty() {

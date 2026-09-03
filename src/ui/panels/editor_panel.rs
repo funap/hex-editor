@@ -100,7 +100,7 @@ impl EditorPanel {
                     editor.go_to_offset(target, extend);
                     cx.notify();
                 });
-                let cursor_offset = this.editor.read(cx).cursor_offset;
+                let cursor_offset = this.editor.read(cx).cursor.offset;
                 this.hex_view.update(cx, |view, cx| {
                     view.scroll_to_byte_if_needed(cursor_offset, cx);
                 });
@@ -263,18 +263,14 @@ impl EditorPanel {
 
     #[allow(dead_code)]
     pub fn create_split_clone(&self, window: &mut Window, cx: &mut App) -> Entity<EditorPanel> {
-        let (doc, encoding, radix, group_size, is_big_endian, show_inline_structure_view, collapsed_struct_ids, cursor_offset, selection) = {
+        let (doc, options, show_inline_structure_view, collapsed_struct_ids, cursor_state) = {
             let ed = self.editor.read(cx);
             (
                 ed.document.clone(),
-                ed.encoding,
-                ed.radix,
-                ed.group_size,
-                ed.is_big_endian,
+                ed.options,
                 ed.show_inline_structure_view,
                 ed.collapsed_struct_ids.clone(),
-                ed.cursor_offset,
-                ed.selection(),
+                ed.cursor_state(),
             )
         };
 
@@ -282,14 +278,11 @@ impl EditorPanel {
 
         let new_editor = cx.new(|_| {
             let mut editor = Editor::new(doc);
-            editor.encoding = encoding;
-            editor.radix = radix;
-            editor.group_size = group_size;
-            editor.is_big_endian = is_big_endian;
+            editor.options = options;
+            editor.cursor.group_size = options.group_size;
             editor.show_inline_structure_view = show_inline_structure_view;
             editor.collapsed_struct_ids = collapsed_struct_ids;
-            editor.cursor_offset = cursor_offset;
-            editor.set_selection(selection.anchor(), selection.active());
+            editor.restore_cursor_state(cursor_state);
             editor
         });
 
@@ -319,7 +312,7 @@ impl EditorPanel {
         self.is_goto_visible = !self.is_goto_visible;
         if self.is_goto_visible {
             self.is_search_visible = false;
-            let cursor_offset = self.editor.read(cx).cursor_offset;
+            let cursor_offset = self.editor.read(cx).cursor.offset;
             let total_size = self.editor.read(cx).total_size();
             let address_map = self.editor.read(cx).document.read().expect("doc read").address_map.clone();
             self.goto_bar.update(cx, |bar, cx| {
@@ -368,7 +361,7 @@ impl EditorPanel {
 
         if !query.is_empty() {
             let pattern = match mode {
-                crate::core::search::SearchMode::Text => crate::core::search::parse_text_pattern(&query, editor.encoding),
+                crate::core::search::SearchMode::Text => crate::core::search::parse_text_pattern(&query, editor.options.encoding),
                 crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&query),
             };
 
@@ -406,7 +399,7 @@ impl EditorPanel {
                             gpui::hsla(36.0 / 360.0, 0.95, 0.50, 0.50),
                         )
                     };
-                    let cursor_offset = editor.cursor_offset;
+                    let cursor_offset = editor.cursor.offset;
 
                     for result_offset in matches {
                         let is_current = result_offset == cursor_offset || (cursor_offset >= result_offset && cursor_offset < result_offset + pattern_len);
@@ -480,7 +473,7 @@ impl EditorPanel {
         self.editor.update(cx, |editor: &mut Editor, _| {
             editor.go_to_beginning();
         });
-        let cursor_offset = self.editor.read(cx).cursor_offset;
+        let cursor_offset = self.editor.read(cx).cursor.offset;
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(cursor_offset, cx);
             view.focus_handle(cx).focus(window);
@@ -497,7 +490,7 @@ impl EditorPanel {
                 editor.go_to_end();
             }
         });
-        let cursor_offset = self.editor.read(cx).cursor_offset;
+        let cursor_offset = self.editor.read(cx).cursor.offset;
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(cursor_offset, cx);
             view.focus_handle(cx).focus(window);

@@ -209,7 +209,7 @@ impl StringsPanel {
         let editor = self.editor.as_ref()?.read(cx);
         let document = editor.document.read().expect("document read lock");
         Some(ScanSignature {
-            encoding: editor.encoding,
+            encoding: editor.options.encoding,
             content_state: document.history.state_id(),
             byte_len: document.buffer.len(),
         })
@@ -258,7 +258,7 @@ impl StringsPanel {
         let (encoding, buffer_data, segment_ranges) = {
             let editor = editor_entity.read(cx);
             let document = editor.document.read().expect("document read lock");
-            (editor.encoding, document.buffer.clone(), document.address_map.segment_ranges())
+            (editor.options.encoding, document.buffer.clone(), document.address_map.segment_ranges())
         };
 
         self.is_scanning = true;

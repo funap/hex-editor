@@ -274,7 +274,7 @@ impl EditorService {
         // Read the generation ID and encoding on the main thread from editor
         let (generation, encoding) = {
             let ed = editor.read(cx);
-            (ed.search_state.generation, ed.encoding)
+            (ed.search_state.generation, ed.options.encoding)
         };
 
         // 1. Immediate viewport search

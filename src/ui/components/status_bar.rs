@@ -55,7 +55,7 @@ impl Render for StatusBar {
 
         let (_cursor_offset, total_size, cursor_addr) = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            (editor.cursor_offset, editor.total_size(), editor.cursor_address())
+            (editor.cursor.offset, editor.total_size(), editor.cursor_address())
         } else {
             (0, 0, 0)
         };
@@ -69,17 +69,17 @@ impl Render for StatusBar {
                     let len = range.len();
                     if len <= 8 { Some((range.start, len)) } else { None }
                 } else {
-                    Some((editor.cursor_offset, editor.group_size.byte_count().min(8)))
+                    Some((editor.cursor.offset, editor.options.group_size.byte_count().min(8)))
                 }
             } else {
-                Some((editor.cursor_offset, editor.group_size.byte_count().min(8)))
+                Some((editor.cursor.offset, editor.options.group_size.byte_count().min(8)))
             };
 
             if let (Some(d), Some((offset, len))) = (doc, target) {
                 let slice = d.buffer.get_range(offset, len);
                 if slice.len() == len && len > 0 {
-                    let (uint_val, hex_str) = decode_uint_value(slice, editor.is_big_endian);
-                    let text_repr = format_text_repr(slice, editor.encoding);
+                    let (uint_val, hex_str) = decode_uint_value(slice, editor.options.is_big_endian);
+                    let text_repr = format_text_repr(slice, editor.options.encoding);
                     let bin_repr = format_binary_repr(uint_val, len);
                     let display_str = format!("Val: {} ({}, {}, {})", hex_str, uint_val, text_repr, bin_repr);
                     let copy_str = format!("{} ({})", hex_str, uint_val);
@@ -130,16 +130,16 @@ impl Render for StatusBar {
 
         let radix_badge_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            Some(editor.radix.short_label())
+            Some(editor.options.radix.short_label())
         } else {
             None
         };
 
         let grouping_badge_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            let group_str = editor.group_size.short_label();
-            let endian_str = if editor.group_size.byte_count() > 1 {
-                if editor.is_big_endian { " BE" } else { " LE" }
+            let group_str = editor.options.group_size.short_label();
+            let endian_str = if editor.options.group_size.byte_count() > 1 {
+                if editor.options.is_big_endian { " BE" } else { " LE" }
             } else {
                 ""
             };
@@ -150,7 +150,7 @@ impl Render for StatusBar {
 
         let encoding_info = if let Some(editor) = &active_editor {
             let editor = editor.read(cx);
-            Some(editor.encoding.label())
+            Some(editor.options.encoding.label())
         } else {
             None
         };

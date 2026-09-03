@@ -160,6 +160,150 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Supported checksum and cryptographic hash algorithms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChecksumAlgorithm {
+    Sum8,
+    Sum16,
+    Sum32,
+    Sum64,
+    Adler32,
+    Crc16Ccitt,
+    Crc16Arc,
+    Crc32,
+    Md5,
+    Sha256,
+}
+
+impl ChecksumAlgorithm {
+    /// List of all supported checksum algorithms in presentation order.
+    pub const ALL: &'static [ChecksumAlgorithm] = &[
+        ChecksumAlgorithm::Sum8,
+        ChecksumAlgorithm::Sum16,
+        ChecksumAlgorithm::Sum32,
+        ChecksumAlgorithm::Sum64,
+        ChecksumAlgorithm::Adler32,
+        ChecksumAlgorithm::Crc16Ccitt,
+        ChecksumAlgorithm::Crc16Arc,
+        ChecksumAlgorithm::Crc32,
+        ChecksumAlgorithm::Md5,
+        ChecksumAlgorithm::Sha256,
+    ];
+
+    /// Returns the UI display label for this algorithm.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Sum8 => "Sum 8-bit",
+            Self::Sum16 => "Sum 16-bit",
+            Self::Sum32 => "Sum 32-bit",
+            Self::Sum64 => "Sum 64-bit",
+            Self::Adler32 => "Adler-32",
+            Self::Crc16Ccitt => "CRC-16 (CCITT)",
+            Self::Crc16Arc => "CRC-16 (ARC)",
+            Self::Crc32 => "CRC-32",
+            Self::Md5 => "MD5",
+            Self::Sha256 => "SHA-256",
+        }
+    }
+}
+
+/// Consolidated checksum and hash computation results for a byte range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChecksumResults {
+    pub sum8: u8,
+    pub sum16: u16,
+    pub sum32: u32,
+    pub sum64: u64,
+    pub crc16_ccitt: u16,
+    pub crc16_arc: u16,
+    pub crc32: u32,
+    pub adler32: u32,
+    pub md5: [u8; 16],
+    pub sha256: [u8; 32],
+    pub data_len: usize,
+    pub range_start: usize,
+    pub range_end: usize,
+}
+
+impl ChecksumResults {
+    /// Computes all checksums and hashes for the given slice.
+    pub fn compute(data: &[u8], range_start: usize, range_end: usize) -> Self {
+        Self {
+            sum8: sum8(data),
+            sum16: sum16(data),
+            sum32: sum32(data),
+            sum64: sum64(data),
+            adler32: adler32(data),
+            crc16_ccitt: crc16_ccitt(data),
+            crc16_arc: crc16_arc(data),
+            crc32: crc32(data),
+            md5: md5(data),
+            sha256: sha256(data),
+            data_len: data.len(),
+            range_start,
+            range_end,
+        }
+    }
+
+    /// Formats the result of a specific algorithm for UI display (including decimal representation where applicable).
+    pub fn format_display(&self, algo: ChecksumAlgorithm) -> String {
+        match algo {
+            ChecksumAlgorithm::Sum8 => format!("0x{:02X} ({})", self.sum8, self.sum8),
+            ChecksumAlgorithm::Sum16 => format!("0x{:04X} ({})", self.sum16, self.sum16),
+            ChecksumAlgorithm::Sum32 => format!("0x{:08X} ({})", self.sum32, self.sum32),
+            ChecksumAlgorithm::Sum64 => format!("0x{:016X} ({})", self.sum64, self.sum64),
+            ChecksumAlgorithm::Adler32 => format!("0x{:08X}", self.adler32),
+            ChecksumAlgorithm::Crc16Ccitt => format!("0x{:04X}", self.crc16_ccitt),
+            ChecksumAlgorithm::Crc16Arc => format!("0x{:04X}", self.crc16_arc),
+            ChecksumAlgorithm::Crc32 => format!("0x{:08X}", self.crc32),
+            ChecksumAlgorithm::Md5 => self.format_hex(algo),
+            ChecksumAlgorithm::Sha256 => self.format_hex(algo),
+        }
+    }
+
+    /// Formats the raw hex value of a specific algorithm (typically used for copying to clipboard).
+    pub fn format_hex(&self, algo: ChecksumAlgorithm) -> String {
+        match algo {
+            ChecksumAlgorithm::Sum8 => format!("0x{:02X}", self.sum8),
+            ChecksumAlgorithm::Sum16 => format!("0x{:04X}", self.sum16),
+            ChecksumAlgorithm::Sum32 => format!("0x{:08X}", self.sum32),
+            ChecksumAlgorithm::Sum64 => format!("0x{:016X}", self.sum64),
+            ChecksumAlgorithm::Adler32 => format!("0x{:08X}", self.adler32),
+            ChecksumAlgorithm::Crc16Ccitt => format!("0x{:04X}", self.crc16_ccitt),
+            ChecksumAlgorithm::Crc16Arc => format!("0x{:04X}", self.crc16_arc),
+            ChecksumAlgorithm::Crc32 => format!("0x{:08X}", self.crc32),
+            ChecksumAlgorithm::Md5 => self.md5.iter().map(|b| format!("{:02x}", b)).collect(),
+            ChecksumAlgorithm::Sha256 => self.sha256.iter().map(|b| format!("{:02x}", b)).collect(),
+        }
+    }
+
+    /// Formats all checksum results as a multi-line report.
+    pub fn format_all(&self) -> String {
+        format!(
+            "Sum 8-bit:       {}\n\
+             Sum 16-bit:      {}\n\
+             Sum 32-bit:      {}\n\
+             Sum 64-bit:      {}\n\
+             Adler-32:        {}\n\
+             CRC-16 (CCITT):  {}\n\
+             CRC-16 (ARC):    {}\n\
+             CRC-32:          {}\n\
+             MD5:             {}\n\
+             SHA-256:         {}",
+            self.format_display(ChecksumAlgorithm::Sum8),
+            self.format_display(ChecksumAlgorithm::Sum16),
+            self.format_display(ChecksumAlgorithm::Sum32),
+            self.format_display(ChecksumAlgorithm::Sum64),
+            self.format_display(ChecksumAlgorithm::Adler32),
+            self.format_display(ChecksumAlgorithm::Crc16Ccitt),
+            self.format_display(ChecksumAlgorithm::Crc16Arc),
+            self.format_display(ChecksumAlgorithm::Crc32),
+            self.format_hex(ChecksumAlgorithm::Md5),
+            self.format_hex(ChecksumAlgorithm::Sha256)
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +350,34 @@ mod tests {
         let res = sha256(b"The quick brown fox jumps over the lazy dog");
         let hex_str: String = res.iter().map(|b| format!("{:02x}", b)).collect();
         assert_eq!(hex_str, "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592");
+    }
+
+    #[test]
+    fn test_checksum_results_compute() {
+        let data = b"Hello, world!";
+        let results = ChecksumResults::compute(data, 0, 13);
+        assert_eq!(results.sum8, (1161 % 256) as u8);
+        assert_eq!(results.sum16, 1161);
+        assert_eq!(results.adler32, 0x205E048A);
+        assert_eq!(results.data_len, 13);
+        assert_eq!(results.range_start, 0);
+        assert_eq!(results.range_end, 13);
+    }
+
+    #[test]
+    fn test_checksum_algorithm_and_formatting() {
+        let data = b"Hello, world!";
+        let results = ChecksumResults::compute(data, 0, 13);
+
+        assert_eq!(ChecksumAlgorithm::ALL.len(), 10);
+        for &algo in ChecksumAlgorithm::ALL {
+            assert!(!algo.label().is_empty());
+            assert!(!results.format_display(algo).is_empty());
+            assert!(!results.format_hex(algo).is_empty());
+        }
+
+        let all_str = results.format_all();
+        assert!(all_str.contains("Sum 8-bit:"));
+        assert!(all_str.contains("SHA-256:"));
     }
 }

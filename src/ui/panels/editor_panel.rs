@@ -355,7 +355,7 @@ impl EditorPanel {
 
         // 1. Add user custom bookmarks from editor
         let editor = self.editor.read(cx);
-        highlights.extend(editor.custom_bookmarks_for_rendering());
+        highlights.extend(editor.custom_bookmarks_for_rendering().into_iter().map(|(range, color)| (range, color.into())));
 
         // 2. Add search highlights if search is active (either in search bar or search state)
         let (query, mode) = if self.is_search_visible && !self.search_bar.read(cx).query(cx).is_empty() {

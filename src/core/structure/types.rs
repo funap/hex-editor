@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
+use crate::core::color::RgbaColor;
 use crate::core::layout::{LineMap, build_line_map_from_sorted_events};
 use crate::core::radix::DisplayRadix;
-use gpui::Hsla;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -150,7 +150,7 @@ pub struct ParsedField {
     pub offset: usize,
     pub size: usize,
     pub value: FieldValue,
-    pub color: Hsla,
+    pub color: RgbaColor,
     pub description: Option<String>,
     pub children: Vec<ParsedField>,
     pub enum_label: Option<String>,
@@ -596,7 +596,7 @@ pub struct StructureIndex {
     pub container_structs: Vec<IndexedField>,
     pub leaf_fields: Vec<IndexedField>,
     pub active_ranges: Vec<ActiveStructRange>,
-    pub highlights: Arc<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
+    pub highlights: Arc<Vec<(std::ops::Range<usize>, RgbaColor)>>,
     /// Sorted physical field boundaries used by the inline line layout.
     pub field_breaks: Arc<Vec<usize>>,
     active_range_tree_base: usize,
@@ -612,7 +612,7 @@ pub struct StructureIndex {
 /// stream.
 #[derive(Debug, Default)]
 pub(crate) struct StructureIndexBuilder {
-    highlights: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+    highlights: Vec<(std::ops::Range<usize>, RgbaColor)>,
     container_structs: Vec<IndexedField>,
     leaf_fields: Vec<IndexedField>,
     active_ranges: Vec<ActiveStructRange>,
@@ -965,7 +965,7 @@ impl ParseResult {
         self.live_index = None;
     }
 
-    pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, gpui::Hsla)> {
+    pub fn to_highlights(&self) -> Vec<(std::ops::Range<usize>, RgbaColor)> {
         self.index.highlights.as_ref().clone()
     }
 
@@ -1085,7 +1085,7 @@ mod tests {
             offset,
             size: 1,
             value: FieldValue::U8(offset as u8),
-            color: Hsla::default(),
+            color: RgbaColor::default(),
             description: None,
             children: Vec::new(),
             enum_label: None,
@@ -1173,7 +1173,7 @@ mod tests {
             offset: 0,
             size: 1,
             value: FieldValue::U8(0xAB),
-            color: Hsla::default(),
+            color: RgbaColor::default(),
             description: None,
             children: Vec::new(),
             enum_label: None,
@@ -1194,7 +1194,7 @@ mod tests {
             offset: 0,
             size: 4,
             value: FieldValue::Struct,
-            color: Hsla::default(),
+            color: RgbaColor::default(),
             description: None,
             children: vec![numeric],
             enum_label: None,
@@ -1215,7 +1215,7 @@ mod tests {
                 offset: 0,
                 size: 1,
                 value: FieldValue::Struct,
-                color: Hsla::default(),
+                color: RgbaColor::default(),
                 description: None,
                 children: vec![field],
                 enum_label: None,

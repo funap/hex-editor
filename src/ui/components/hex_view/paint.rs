@@ -6,6 +6,7 @@ use crate::core::editor::LineMap;
 use crate::core::encoding::Encoding;
 use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, is_group_zero};
 use crate::core::structure::{IndexedField, ParseResult};
+use crate::ui::style::BookmarkColorExt;
 use gpui::*;
 use gpui_component::ActiveTheme;
 use std::borrow::Cow;

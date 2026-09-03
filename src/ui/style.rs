@@ -339,6 +339,43 @@ pub fn decode_uint_value(slice: &[u8], is_big_endian: bool) -> (u64, String) {
     }
 }
 
+impl From<crate::core::color::RgbaColor> for gpui::Hsla {
+    fn from(c: crate::core::color::RgbaColor) -> Self {
+        let rf = c.r as f32 / 255.0;
+        let gf = c.g as f32 / 255.0;
+        let bf = c.b as f32 / 255.0;
+        let af = c.a as f32 / 255.0;
+        gpui::Rgba { r: rf, g: gf, b: bf, a: af }.into()
+    }
+}
+
+impl From<gpui::Hsla> for crate::core::color::RgbaColor {
+    fn from(hsla: gpui::Hsla) -> Self {
+        let rgba = hsla.to_rgb();
+        Self {
+            r: (rgba.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            g: (rgba.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            b: (rgba.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            a: (rgba.a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        }
+    }
+}
+
+pub trait BookmarkColorExt {
+    fn to_hsla(self) -> Hsla;
+    fn to_badge_hsla(self) -> Hsla;
+}
+
+impl BookmarkColorExt for crate::core::bookmark::BookmarkColor {
+    fn to_hsla(self) -> Hsla {
+        self.to_rgba().into()
+    }
+
+    fn to_badge_hsla(self) -> Hsla {
+        self.to_badge_rgba().into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,7 @@ use crate::core::appearance::Appearance;
 use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
+use crate::ui::style::BookmarkColorExt;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};

@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
 use crate::core::bookmark::{BookmarkColor, BookmarkFile, BookmarkItem, generate_bookmark_id};
+use crate::core::color::RgbaColor;
 use crate::core::command::{Command, CursorState, ReplaceRangeCommand};
 use crate::core::document::Document;
 use crate::core::encoding::Encoding;
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::selection::Selection;
 use crate::core::structure::{ParseResult, ParsedField};
-use gpui::Hsla;
 use std::cell::RefCell;
 use std::cmp;
 use std::collections::BTreeSet;
@@ -383,7 +383,7 @@ impl Editor {
         id
     }
 
-    pub fn add_custom_bookmark(&mut self, range: Range<usize>, color: Hsla) {
+    pub fn add_custom_bookmark(&mut self, range: Range<usize>, color: RgbaColor) {
         if range.is_empty() {
             return;
         }
@@ -394,7 +394,7 @@ impl Editor {
             return;
         }
         let new_range = clamped_start..clamped_end;
-        let hl_color = BookmarkColor::from_hsla(color);
+        let hl_color = BookmarkColor::from_rgba(color);
 
         let mut bookmarks = self.bookmarks.write().expect("bookmarks write lock");
         let mut updated = Vec::new();
@@ -511,12 +511,12 @@ impl Editor {
         self.bookmarks.write().expect("bookmarks write lock").clear();
     }
 
-    pub fn custom_bookmarks_for_rendering(&self) -> Vec<(Range<usize>, Hsla)> {
+    pub fn custom_bookmarks_for_rendering(&self) -> Vec<(Range<usize>, RgbaColor)> {
         self.bookmarks
             .read()
             .expect("bookmarks read lock")
             .iter()
-            .map(|h| (h.range(), h.hsla_color()))
+            .map(|h| (h.range(), h.rgba_color()))
             .collect()
     }
 
@@ -2017,11 +2017,9 @@ impl Editor {
                 }
             }
 
-            if *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock") {
-                if colors_to_decompose.is_empty() {
-                    *self.hide_unbookmarked.write().expect("hide_unbookmarked write lock") = false;
-                    changed = true;
-                }
+            if *self.hide_unbookmarked.read().expect("hide_unbookmarked read lock") && colors_to_decompose.is_empty() {
+                *self.hide_unbookmarked.write().expect("hide_unbookmarked write lock") = false;
+                changed = true;
             }
 
             if changed {
@@ -3190,7 +3188,7 @@ mod tests {
     fn test_edit_adjusts_layout_and_bookmark_offsets() {
         let mut editor = create_editor_with_content(&[0; 32]);
         editor.add_custom_break(8);
-        editor.add_custom_bookmark(4..12, gpui::hsla(0.0, 1.0, 0.5, 0.5));
+        editor.add_custom_bookmark(4..12, RgbaColor::from_hsla_f32(0.0, 1.0, 0.5, 0.5));
         let bookmark_id = editor.bookmarks.read().unwrap()[0].id.clone();
 
         assert!(editor.insert_bytes(4, vec![1, 2]));
@@ -3525,10 +3523,9 @@ mod tests {
 
     #[test]
     fn test_custom_bookmarks() {
-        use gpui::hsla;
         let mut editor = create_editor_with_content(b"01234567890123456789"); // 20 bytes
-        let red = hsla(0.0, 1.0, 0.5, 0.5);
-        let blue = hsla(0.6, 1.0, 0.5, 0.5);
+        let red = RgbaColor::from_hsla_f32(0.0, 1.0, 0.5, 0.5);
+        let blue = RgbaColor::from_hsla_f32(0.6, 1.0, 0.5, 0.5);
 
         // Add red bookmark on 0..10
         editor.add_custom_bookmark(0..10, red);

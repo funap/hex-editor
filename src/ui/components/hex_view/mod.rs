@@ -2150,7 +2150,7 @@ impl HexView {
         self.editor.update(cx, |editor, cx| {
             if let Some(range) = editor.selected_range_or_cursor() {
                 if let Some(color) = color {
-                    editor.add_custom_bookmark(range, color);
+                    editor.add_custom_bookmark(range, color.into());
                 } else {
                     editor.clear_custom_bookmark(range);
                 }
@@ -3669,7 +3669,7 @@ impl Render for HexView {
                         let doc = doc_arc.read().expect("document read lock");
 
                         // Construct combined highlights from the shared snapshot and search results
-                        let mut effective_highlights: Vec<(Range<usize>, Hsla)> = bookmark_items.iter().map(|h| (h.range(), h.hsla_color())).collect();
+                        let mut effective_highlights: Vec<(Range<usize>, Hsla)> = bookmark_items.iter().map(|h| (h.range(), h.rgba_color().into())).collect();
                         for (search_range, search_color) in highlights.iter() {
                             if !effective_highlights.iter().any(|(r, _)| r == search_range) {
                                 effective_highlights.push((search_range.clone(), *search_color));

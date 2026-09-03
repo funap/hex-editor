@@ -11,7 +11,7 @@ use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::types::{FieldValue, ParseResult, ParsedField};
-use gpui::{Hsla, hsla, px};
+use gpui::{hsla, px};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -212,7 +212,7 @@ fn check_structure_and_highlights() {
         offset: 0,
         size: 4,
         value: FieldValue::U32(0x12345678),
-        color: Hsla::default(),
+        color: crate::core::color::RgbaColor::default(),
         description: None,
         children: vec![],
         enum_label: None,
@@ -224,7 +224,7 @@ fn check_structure_and_highlights() {
         offset: 4,
         size: 4,
         value: FieldValue::U32(0x00000001),
-        color: Hsla::default(),
+        color: crate::core::color::RgbaColor::default(),
         description: None,
         children: vec![],
         enum_label: None,
@@ -236,7 +236,7 @@ fn check_structure_and_highlights() {
         offset: 8,
         size: 4,
         value: FieldValue::U32(2),
-        color: Hsla::default(),
+        color: crate::core::color::RgbaColor::default(),
         description: None,
         children: vec![],
         enum_label: None,
@@ -249,7 +249,7 @@ fn check_structure_and_highlights() {
         offset: 0,
         size: 12,
         value: FieldValue::Struct,
-        color: Hsla::default(),
+        color: crate::core::color::RgbaColor::default(),
         description: None,
         children: vec![field1.clone(), field2.clone(), field3.clone()],
         enum_label: None,

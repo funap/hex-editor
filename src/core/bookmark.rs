@@ -1,4 +1,4 @@
-use gpui::Hsla;
+use crate::core::color::RgbaColor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::ops::Range;
@@ -43,43 +43,33 @@ impl BookmarkColor {
         BookmarkColor::Pink,
     ];
 
-    pub fn to_hsla(self) -> Hsla {
+    /// Returns the RGBA color for this bookmark preset.
+    pub fn to_rgba(self) -> RgbaColor {
         match self {
-            BookmarkColor::Red => gpui::hsla(0.0, 0.75, 0.55, 0.35),
-            BookmarkColor::Orange => gpui::hsla(30.0 / 360.0, 0.85, 0.55, 0.35),
-            BookmarkColor::Yellow => gpui::hsla(50.0 / 360.0, 0.85, 0.50, 0.35),
-            BookmarkColor::Green => gpui::hsla(120.0 / 360.0, 0.65, 0.45, 0.35),
-            BookmarkColor::Cyan => gpui::hsla(180.0 / 360.0, 0.70, 0.45, 0.35),
-            BookmarkColor::Blue => gpui::hsla(215.0 / 360.0, 0.75, 0.55, 0.35),
-            BookmarkColor::Purple => gpui::hsla(280.0 / 360.0, 0.70, 0.55, 0.35),
-            BookmarkColor::Pink => gpui::hsla(330.0 / 360.0, 0.75, 0.55, 0.35),
-            BookmarkColor::Custom { r, g, b, a } => {
-                let rf = r as f32 / 255.0;
-                let gf = g as f32 / 255.0;
-                let bf = b as f32 / 255.0;
-                let af = a as f32 / 255.0;
-                gpui::Rgba { r: rf, g: gf, b: bf, a: af }.into()
-            }
+            BookmarkColor::Red => RgbaColor::from_hsla_f32(0.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Orange => RgbaColor::from_hsla_f32(30.0 / 360.0, 0.85, 0.55, 0.35),
+            BookmarkColor::Yellow => RgbaColor::from_hsla_f32(50.0 / 360.0, 0.85, 0.50, 0.35),
+            BookmarkColor::Green => RgbaColor::from_hsla_f32(120.0 / 360.0, 0.65, 0.45, 0.35),
+            BookmarkColor::Cyan => RgbaColor::from_hsla_f32(180.0 / 360.0, 0.70, 0.45, 0.35),
+            BookmarkColor::Blue => RgbaColor::from_hsla_f32(215.0 / 360.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Purple => RgbaColor::from_hsla_f32(280.0 / 360.0, 0.70, 0.55, 0.35),
+            BookmarkColor::Pink => RgbaColor::from_hsla_f32(330.0 / 360.0, 0.75, 0.55, 0.35),
+            BookmarkColor::Custom { r, g, b, a } => RgbaColor::new(r, g, b, a),
         }
     }
 
-    /// Solid / opaque color for badges, icon swatches, or UI indicator dots.
-    pub fn to_badge_hsla(self) -> Hsla {
+    /// Solid / opaque RGBA color for badges, icon swatches, or UI indicator dots.
+    pub fn to_badge_rgba(self) -> RgbaColor {
         match self {
-            BookmarkColor::Red => gpui::hsla(0.0, 0.85, 0.60, 1.0),
-            BookmarkColor::Orange => gpui::hsla(30.0 / 360.0, 0.90, 0.60, 1.0),
-            BookmarkColor::Yellow => gpui::hsla(50.0 / 360.0, 0.90, 0.55, 1.0),
-            BookmarkColor::Green => gpui::hsla(120.0 / 360.0, 0.75, 0.50, 1.0),
-            BookmarkColor::Cyan => gpui::hsla(180.0 / 360.0, 0.80, 0.50, 1.0),
-            BookmarkColor::Blue => gpui::hsla(215.0 / 360.0, 0.85, 0.60, 1.0),
-            BookmarkColor::Purple => gpui::hsla(280.0 / 360.0, 0.80, 0.60, 1.0),
-            BookmarkColor::Pink => gpui::hsla(330.0 / 360.0, 0.85, 0.60, 1.0),
-            BookmarkColor::Custom { r, g, b, .. } => {
-                let rf = r as f32 / 255.0;
-                let gf = g as f32 / 255.0;
-                let bf = b as f32 / 255.0;
-                gpui::Rgba { r: rf, g: gf, b: bf, a: 1.0 }.into()
-            }
+            BookmarkColor::Red => RgbaColor::from_hsla_f32(0.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Orange => RgbaColor::from_hsla_f32(30.0 / 360.0, 0.90, 0.60, 1.0),
+            BookmarkColor::Yellow => RgbaColor::from_hsla_f32(50.0 / 360.0, 0.90, 0.55, 1.0),
+            BookmarkColor::Green => RgbaColor::from_hsla_f32(120.0 / 360.0, 0.75, 0.50, 1.0),
+            BookmarkColor::Cyan => RgbaColor::from_hsla_f32(180.0 / 360.0, 0.80, 0.50, 1.0),
+            BookmarkColor::Blue => RgbaColor::from_hsla_f32(215.0 / 360.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Purple => RgbaColor::from_hsla_f32(280.0 / 360.0, 0.80, 0.60, 1.0),
+            BookmarkColor::Pink => RgbaColor::from_hsla_f32(330.0 / 360.0, 0.85, 0.60, 1.0),
+            BookmarkColor::Custom { r, g, b, .. } => RgbaColor::rgb(r, g, b),
         }
     }
 
@@ -97,8 +87,8 @@ impl BookmarkColor {
         }
     }
 
-    pub fn from_hsla(hsla: Hsla) -> Self {
-        let h_deg = hsla.h * 360.0;
+    pub fn from_rgba(rgba: RgbaColor) -> Self {
+        let h_deg = rgba.hue();
         if (0.0..15.0).contains(&h_deg) || (345.0..=360.0).contains(&h_deg) {
             BookmarkColor::Red
         } else if (15.0..40.0).contains(&h_deg) {
@@ -311,8 +301,8 @@ impl BookmarkItem {
         self.offset..self.offset.saturating_add(self.size)
     }
 
-    pub fn hsla_color(&self) -> Hsla {
-        self.color.to_hsla()
+    pub fn rgba_color(&self) -> RgbaColor {
+        self.color.to_rgba()
     }
 
     #[allow(dead_code)]
@@ -393,10 +383,10 @@ mod tests {
     #[test]
     fn test_bookmark_color_presets_and_names() {
         for color in BookmarkColor::ALL_PRESETS {
-            let hsla = color.to_hsla();
-            assert!(hsla.a > 0.0);
-            let badge = color.to_badge_hsla();
-            assert_eq!(badge.a, 1.0);
+            let rgba = color.to_rgba();
+            assert!(rgba.a > 0);
+            let badge = color.to_badge_rgba();
+            assert_eq!(badge.a, 255);
             assert!(!color.name().is_empty());
         }
     }

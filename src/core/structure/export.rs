@@ -237,7 +237,6 @@ pub struct YamlParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::Hsla;
 
     fn field(id: &str, field_type: &str, offset: usize, value: FieldValue) -> ParsedField {
         ParsedField {
@@ -246,7 +245,7 @@ mod tests {
             offset,
             size: 1,
             value,
-            color: Hsla::default(),
+            color: crate::core::color::RgbaColor::default(),
             description: None,
             children: Vec::new(),
             enum_label: None,

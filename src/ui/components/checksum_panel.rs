@@ -1,5 +1,5 @@
 use crate::core::appearance::Appearance;
-use crate::core::checksum;
+use crate::core::checksum::{ChecksumAlgorithm, ChecksumResults};
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
@@ -18,26 +18,6 @@ pub enum CalculationRange {
 
 fn selected_range_for_checksum(editor: &Editor) -> Option<Range<usize>> {
     if editor.has_selection() { editor.selected_range_or_cursor() } else { None }
-}
-
-#[derive(Clone, Debug)]
-pub struct ChecksumResults {
-    pub sum8: u8,
-    pub sum16: u16,
-    pub sum32: u32,
-    pub sum64: u64,
-    pub crc16_ccitt: u16,
-    pub crc16_arc: u16,
-    pub crc32: u32,
-    pub adler32: u32,
-    pub md5: [u8; 16],
-    pub sha256: [u8; 32],
-    #[allow(dead_code)]
-    pub data_len: usize,
-    #[allow(dead_code)]
-    pub range_start: usize,
-    #[allow(dead_code)]
-    pub range_end: usize,
 }
 
 const CONTEXT: &str = "ChecksumPanel";
@@ -175,34 +155,7 @@ impl ChecksumPanel {
         let task = cx.spawn(async move |this, cx| {
             let results = cx
                 .background_executor()
-                .spawn(async move {
-                    let sum8 = checksum::sum8(&data);
-                    let sum16 = checksum::sum16(&data);
-                    let sum32 = checksum::sum32(&data);
-                    let sum64 = checksum::sum64(&data);
-                    let adler32 = checksum::adler32(&data);
-                    let crc16_ccitt = checksum::crc16_ccitt(&data);
-                    let crc16_arc = checksum::crc16_arc(&data);
-                    let crc32 = checksum::crc32(&data);
-                    let md5 = checksum::md5(&data);
-                    let sha256 = checksum::sha256(&data);
-
-                    ChecksumResults {
-                        sum8,
-                        sum16,
-                        sum32,
-                        sum64,
-                        crc16_ccitt,
-                        crc16_arc,
-                        crc32,
-                        adler32,
-                        md5,
-                        sha256,
-                        data_len,
-                        range_start: start_offset,
-                        range_end: end_offset,
-                    }
-                })
+                .spawn(async move { ChecksumResults::compute(&data, start_offset, end_offset) })
                 .await;
 
             if let Some(this) = this.upgrade() {
@@ -219,35 +172,7 @@ impl ChecksumPanel {
     }
 
     fn format_all_results(&self) -> Option<String> {
-        let res = self.results.as_ref()?;
-        let md5_str = res.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        let sha256_str = res.sha256.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        Some(format!(
-            "Sum 8-bit:       0x{:02X} ({})\n\
-             Sum 16-bit:      0x{:04X} ({})\n\
-             Sum 32-bit:      0x{:08X} ({})\n\
-             Sum 64-bit:      0x{:016X} ({})\n\
-             Adler-32:        0x{:08X}\n\
-             CRC-16 (CCITT):  0x{:04X}\n\
-             CRC-16 (ARC):    0x{:04X}\n\
-             CRC-32:          0x{:08X}\n\
-             MD5:             {}\n\
-             SHA-256:         {}",
-            res.sum8,
-            res.sum8,
-            res.sum16,
-            res.sum16,
-            res.sum32,
-            res.sum32,
-            res.sum64,
-            res.sum64,
-            res.adler32,
-            res.crc16_ccitt,
-            res.crc16_arc,
-            res.crc32,
-            md5_str,
-            sha256_str
-        ))
+        self.results.as_ref().map(|res| res.format_all())
     }
 
     fn copy_value(&mut self, action: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
@@ -484,125 +409,26 @@ impl Render for ChecksumPanel {
                 .child(div().text_sm().text_color(theme.accent).child("Calculating sums..."))
                 .into_any_element()
         } else if let Some(res) = &self.results {
-            let sum8_str = format!("0x{:02X} ({})", res.sum8, res.sum8);
-            let sum16_str = format!("0x{:04X} ({})", res.sum16, res.sum16);
-            let sum32_str = format!("0x{:08X} ({})", res.sum32, res.sum32);
-            let sum64_str = format!("0x{:016X} ({})", res.sum64, res.sum64);
-            let adler32_str = format!("0x{:08X}", res.adler32);
-            let crc16_ccitt_str = format!("0x{:04X}", res.crc16_ccitt);
-            let crc16_arc_str = format!("0x{:04X}", res.crc16_arc);
-            let crc32_str = format!("0x{:08X}", res.crc32);
-            let md5_str = res.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-            let sha256_str = res.sha256.iter().map(|b| format!("{:02x}", b)).collect::<String>();
             let all_opt = all_formatted.clone();
-
             let view = cx.entity().clone();
 
-            v_flex()
-                .flex_1()
-                .p_2()
-                .child(Self::render_row(
-                    "Sum 8-bit",
-                    sum8_str,
-                    format!("0x{:02X}", res.sum8),
+            let mut rows = v_flex().flex_1().p_2();
+            for &algo in ChecksumAlgorithm::ALL {
+                let display_str = res.format_display(algo);
+                let copy_str = res.format_hex(algo);
+                rows = rows.child(Self::render_row(
+                    algo.label(),
+                    display_str,
+                    copy_str,
                     all_opt.clone(),
                     &font_family,
                     &view,
                     window,
                     theme,
-                ))
-                .child(Self::render_row(
-                    "Sum 16-bit",
-                    sum16_str,
-                    format!("0x{:04X}", res.sum16),
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "Sum 32-bit",
-                    sum32_str,
-                    format!("0x{:08X}", res.sum32),
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "Sum 64-bit",
-                    sum64_str,
-                    format!("0x{:016X}", res.sum64),
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "Adler-32",
-                    adler32_str.clone(),
-                    adler32_str,
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "CRC-16 (CCITT)",
-                    crc16_ccitt_str.clone(),
-                    crc16_ccitt_str,
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "CRC-16 (ARC)",
-                    crc16_arc_str.clone(),
-                    crc16_arc_str,
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "CRC-32",
-                    crc32_str.clone(),
-                    crc32_str,
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "MD5",
-                    md5_str.clone(),
-                    md5_str,
-                    all_opt.clone(),
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .child(Self::render_row(
-                    "SHA-256",
-                    sha256_str.clone(),
-                    sha256_str,
-                    all_opt,
-                    &font_family,
-                    &view,
-                    window,
-                    theme,
-                ))
-                .overflow_y_scrollbar()
-                .into_any_element()
+                ));
+            }
+
+            rows.overflow_y_scrollbar().into_any_element()
         } else {
             let (title, msg) = if self.editor.is_none() {
                 ("No Active File", "Open a binary file to compute checksums")

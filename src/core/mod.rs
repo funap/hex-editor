@@ -3,6 +3,7 @@ pub mod bookmark;
 pub mod buffer;
 pub mod checksum;
 pub mod clipboard;
+pub mod color;
 pub mod command;
 pub mod diff;
 pub mod document;

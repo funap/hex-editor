@@ -1,4 +1,5 @@
 use crate::service::editor_service::EditorService;
+use crate::service::structure_service::StructureService;
 use gpui::{App, BorrowAppContext, Global};
 
 /// Application-wide editing mode shared by every open document view.
@@ -54,6 +55,7 @@ impl PendingCompareState {
 #[derive(Clone)]
 pub struct AppState {
     pub editor_service: EditorService,
+    pub structure_service: StructureService,
 }
 
 impl Global for AppState {}
@@ -62,6 +64,7 @@ impl AppState {
     pub fn init(cx: &mut App) {
         let state = Self {
             editor_service: EditorService::new(),
+            structure_service: StructureService::new(),
         };
         cx.set_global::<AppState>(state);
         cx.set_global(InsertModeState::default());

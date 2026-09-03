@@ -1435,7 +1435,7 @@ impl Editor {
             doc.metadata.parse_result.replace(Arc::new(ParseResult::empty(definition_id)))
         };
         if let Some(old_res) = old {
-            std::thread::spawn(move || drop(old_res));
+            crate::core::dealloc::discard_in_background(old_res);
         }
         self.is_finalizing_structure = false;
         self.layout.invalidate();
@@ -1474,7 +1474,7 @@ impl Editor {
             doc.metadata.parse_result.replace(result)
         };
         if let Some(old_res) = old {
-            std::thread::spawn(move || drop(old_res));
+            crate::core::dealloc::discard_in_background(old_res);
         }
         self.layout.invalidate();
     }
@@ -1573,9 +1573,7 @@ impl Editor {
             (doc.metadata.ksy_definition.take(), doc.metadata.parse_result.take())
         };
         if old_definition.is_some() || old.is_some() {
-            std::thread::spawn(move || {
-                drop((old_definition, old));
-            });
+            crate::core::dealloc::discard_in_background((old_definition, old));
         }
         self.is_parsing_structure = false;
         self.is_finalizing_structure = false;

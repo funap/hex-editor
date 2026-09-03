@@ -5,6 +5,7 @@ pub mod checksum;
 pub mod clipboard;
 pub mod color;
 pub mod command;
+pub mod dealloc;
 pub mod diff;
 pub mod document;
 pub mod editor;

@@ -403,9 +403,7 @@ impl Drop for Document {
         let old_definition = self.metadata.ksy_definition.take();
         let old_parse_result = self.metadata.parse_result.take();
         if old_definition.is_some() || old_parse_result.is_some() {
-            std::thread::spawn(move || {
-                drop((old_definition, old_parse_result));
-            });
+            crate::core::dealloc::discard_in_background((old_definition, old_parse_result));
         }
     }
 }

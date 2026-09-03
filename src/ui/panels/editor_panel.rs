@@ -223,7 +223,8 @@ impl EditorPanel {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |_, cx| {
                     if let Some(ksy) = editor.update(cx, |editor, _| editor.take_structure_reparse_request(generation)) {
-                        crate::ui::workspace::set_kaitai_definition_async(&editor, ksy, cx);
+                        let service = crate::app_state::AppState::global(cx).structure_service.clone();
+                        service.start_parse(&editor, ksy, cx);
                     }
                 })
                 .ok();

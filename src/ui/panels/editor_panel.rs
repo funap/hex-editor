@@ -17,7 +17,7 @@ use crate::app_state::{AppState, InsertModeState};
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::core::search::SearchMode;
-use crate::service::editor_service::EditorService;
+use crate::service::document_service::DocumentService;
 use crate::ui::components::goto_offset_bar::{GotoBarEvent, GotoOffsetBar};
 use crate::ui::components::hex_view::{self, HexView};
 use crate::ui::components::search_bar::{SearchBar, SearchBarEvent};
@@ -28,7 +28,7 @@ use std::path::PathBuf;
 const CONTEXT: &str = "EditorPanel";
 
 struct EditorDocumentLease {
-    service: EditorService,
+    service: DocumentService,
     path: PathBuf,
     editor_id: gpui::EntityId,
 }
@@ -178,7 +178,7 @@ impl EditorPanel {
         // cached document only after the last split/tab for that path is
         // dropped, so closing one duplicate tab keeps the shared state alive.
         let document_lease = editor.read(cx).document.read().ok().map(|document| document.path().to_path_buf()).map(|path| {
-            let service = AppState::global(cx).editor_service.clone();
+            let service = AppState::global(cx).document_service.clone();
             service.register_editor(path.clone(), editor.downgrade());
             EditorDocumentLease {
                 service,

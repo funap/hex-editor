@@ -1,0 +1,512 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+/// Represents a contiguous range of memory from an imported object file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySegment {
+    /// Starting offset within the linear buffer
+    pub buffer_offset: usize,
+    /// Physical memory address in the original source file
+    pub address: usize,
+    /// Byte length of this segment
+    pub length: usize,
+}
+
+impl MemorySegment {
+    #[inline]
+    pub fn end_address(&self) -> usize {
+        self.address.saturating_add(self.length)
+    }
+
+    #[inline]
+    pub fn end_buffer_offset(&self) -> usize {
+        self.buffer_offset.saturating_add(self.length)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn contains_buffer_offset(&self, offset: usize) -> bool {
+        offset >= self.buffer_offset && offset < self.end_buffer_offset()
+    }
+
+    #[inline]
+    pub fn contains_address(&self, addr: usize) -> bool {
+        addr >= self.address && addr < self.end_address()
+    }
+}
+
+/// Formatting options and metadata for exporting Motorola S-Record and Intel HEX files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HexFormatOptions {
+    /// Number of data bytes per record line (default 20 / 0x14 for Motorola S-Record, 16 / 0x10 for Intel HEX)
+    pub record_data_length: usize,
+    /// Explicit address width in bytes (2 = S1, 3 = S2, 4 = S3; 0 = auto-detect)
+    pub address_width: usize,
+    /// Header string for S0 record (None = no S0 record)
+    pub header: Option<String>,
+    /// Optional execution entry point address for termination record
+    pub entry_point: Option<usize>,
+    /// Whether an S5/S6 record count was present
+    pub has_count_record: bool,
+    /// Preferred line ending (CRLF or LF)
+    pub crlf: bool,
+}
+
+impl Default for HexFormatOptions {
+    fn default() -> Self {
+        Self {
+            record_data_length: 20, // standard 0x14 for Motorola S-Record
+            address_width: 0,       // auto-detect
+            header: None,
+            entry_point: None,
+            has_count_record: false,
+            crlf: false,
+        }
+    }
+}
+
+/// Maps buffer offsets to physical memory addresses across one or more segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressMap {
+    pub segments: Vec<MemorySegment>,
+    pub format_options: HexFormatOptions,
+}
+
+impl Default for AddressMap {
+    fn default() -> Self {
+        Self {
+            segments: vec![MemorySegment {
+                buffer_offset: 0,
+                address: 0,
+                length: usize::MAX,
+            }],
+            format_options: HexFormatOptions::default(),
+        }
+    }
+}
+
+impl AddressMap {
+    /// Creates a single contiguous address map with a custom base address.
+    #[allow(dead_code)]
+    pub fn single_segment(base_address: usize, total_size: usize) -> Self {
+        Self {
+            segments: vec![MemorySegment {
+                buffer_offset: 0,
+                address: base_address,
+                length: total_size,
+            }],
+            format_options: HexFormatOptions::default(),
+        }
+    }
+
+    /// Creates an AddressMap from a list of memory segments.
+    #[allow(dead_code)]
+    pub fn from_segments(segments: Vec<MemorySegment>) -> Self {
+        Self::from_segments_with_options(segments, HexFormatOptions::default())
+    }
+
+    /// Creates an AddressMap from memory segments and format options.
+    pub fn from_segments_with_options(segments: Vec<MemorySegment>, format_options: HexFormatOptions) -> Self {
+        if segments.is_empty() {
+            Self {
+                format_options,
+                ..Self::default()
+            }
+        } else {
+            Self { segments, format_options }
+        }
+    }
+
+    /// Returns the lowest base address of the first segment.
+    pub fn base_address(&self) -> usize {
+        self.segments.first().map(|s| s.address).unwrap_or(0)
+    }
+
+    /// Returns true if there are multiple segments with address gaps between them.
+    pub fn has_gaps(&self) -> bool {
+        if self.segments.len() <= 1 {
+            return false;
+        }
+        for window in self.segments.windows(2) {
+            if window[0].end_address() < window[1].address {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Finds the memory segment containing the given linear buffer offset.
+    pub fn segment_at_offset(&self, offset: usize) -> Option<&MemorySegment> {
+        self.segments
+            .binary_search_by(|seg| {
+                if offset < seg.buffer_offset {
+                    std::cmp::Ordering::Greater
+                } else if offset >= seg.end_buffer_offset() {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .map(|idx| &self.segments[idx])
+    }
+
+    /// Converts a linear buffer offset to its physical memory address.
+    pub fn offset_to_address(&self, offset: usize) -> usize {
+        if self.segments.is_empty() {
+            return offset;
+        }
+
+        // Binary search for the segment containing `offset`
+        match self.segments.binary_search_by(|seg| {
+            if offset < seg.buffer_offset {
+                std::cmp::Ordering::Greater
+            } else if offset >= seg.end_buffer_offset() {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        }) {
+            Ok(idx) => {
+                let seg = &self.segments[idx];
+                seg.address + (offset - seg.buffer_offset)
+            }
+            Err(idx) => {
+                if idx == 0 {
+                    self.segments[0].address
+                } else if idx >= self.segments.len() {
+                    let last = &self.segments[self.segments.len() - 1];
+                    last.address + (offset.saturating_sub(last.buffer_offset))
+                } else {
+                    let seg = &self.segments[idx];
+                    seg.address
+                }
+            }
+        }
+    }
+
+    /// Converts a physical memory address to a linear buffer offset.
+    pub fn address_to_offset(&self, address: usize) -> Option<usize> {
+        if self.segments.is_empty() {
+            return Some(address);
+        }
+
+        for seg in &self.segments {
+            if seg.contains_address(address) {
+                return Some(seg.buffer_offset + (address - seg.address));
+            }
+        }
+
+        // If not directly inside a segment, find the closest segment containing or after this address
+        for seg in &self.segments {
+            if address < seg.address {
+                return Some(seg.buffer_offset);
+            }
+        }
+
+        self.segments.last().map(|s| s.end_buffer_offset().saturating_sub(1))
+    }
+
+    /// Checks if a gap immediately precedes the given buffer offset, and if so returns `Some((gap_start_addr, gap_end_addr))`.
+    pub fn gap_before_offset(&self, offset: usize) -> Option<(usize, usize)> {
+        if offset == 0 || self.segments.len() <= 1 {
+            return None;
+        }
+        for window in self.segments.windows(2) {
+            if window[1].buffer_offset == offset && window[0].end_address() < window[1].address {
+                return Some((window[0].end_address(), window[1].address));
+            }
+        }
+        None
+    }
+
+    /// Collects layout break events corresponding to segment boundaries.
+    pub fn collect_segment_breaks(&self, breaks: &mut BTreeSet<usize>) {
+        for seg in &self.segments {
+            if seg.buffer_offset > 0 {
+                breaks.insert(seg.buffer_offset);
+            }
+        }
+    }
+
+    /// Collects empty line counts for address gaps between segments so layout reserves a row for the gap bar.
+    pub fn collect_gap_lines(&self, empty_lines: &mut BTreeMap<usize, usize>) {
+        for window in self.segments.windows(2) {
+            if window[0].end_address() < window[1].address && window[1].buffer_offset > 0 {
+                *empty_lines.entry(window[1].buffer_offset).or_default() += 1;
+            }
+        }
+    }
+
+    /// Returns the buffer offset ranges for all memory segments.
+    pub fn segment_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        self.segments.iter().map(|seg| seg.buffer_offset..seg.end_buffer_offset()).collect()
+    }
+
+    /// Returns the recommended default file extension ("mot", "hex", or "bin") based on the current path and address map structure.
+    pub fn default_extension(&self, current_path: &Path) -> &'static str {
+        let ext = current_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        let is_mot = matches!(ext.as_str(), "mot" | "srec" | "s19" | "s28" | "s37");
+        let is_hex = matches!(ext.as_str(), "hex" | "ihex" | "ihx");
+
+        if is_mot {
+            "mot"
+        } else if is_hex {
+            "hex"
+        } else if self.has_gaps() || self.format_options.record_data_length == 20 {
+            "mot"
+        } else if self.format_options.record_data_length == 16 && self.format_options.header.is_none() && self.base_address() > 0 {
+            "hex"
+        } else {
+            "bin"
+        }
+    }
+
+    /// Adjusts segment buffer offsets, lengths, and addresses after an edit at `[start..start + old_len)` replaced with `new_len` bytes.
+    pub fn adjust_after_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
+        if self.segments.is_empty() {
+            return;
+        }
+
+        // Fast path for single segment starting at 0
+        if self.segments.len() == 1 && self.segments[0].address == 0 && self.segments[0].buffer_offset == 0 {
+            if self.segments[0].length != usize::MAX {
+                if new_len >= old_len {
+                    self.segments[0].length = self.segments[0].length.saturating_add(new_len - old_len);
+                } else {
+                    self.segments[0].length = self.segments[0].length.saturating_sub(old_len - new_len);
+                }
+            }
+            return;
+        }
+
+        let old_end = start.saturating_add(old_len);
+        let mut new_segments: Vec<MemorySegment> = Vec::with_capacity(self.segments.len());
+        let mut current_buffer_offset = 0;
+        let mut inserted_remaining = new_len;
+
+        let num_segs = self.segments.len();
+        for (i, seg) in self.segments.iter().enumerate() {
+            let is_last_seg = i + 1 == num_segs;
+            let seg_start = seg.buffer_offset;
+            let seg_end = seg.end_buffer_offset();
+
+            if old_len == 0 {
+                // Pure insertion at `start`
+                let insert_into_this = if is_last_seg {
+                    start >= seg_start
+                } else if start == 0 && seg_start == 0 {
+                    true
+                } else {
+                    start >= seg_start && start < seg_end
+                };
+
+                let to_insert = if insert_into_this && inserted_remaining > 0 {
+                    let ins = inserted_remaining;
+                    inserted_remaining = 0;
+                    ins
+                } else {
+                    0
+                };
+
+                let new_seg_len = seg.length.saturating_add(to_insert);
+                new_segments.push(MemorySegment {
+                    buffer_offset: current_buffer_offset,
+                    address: seg.address,
+                    length: new_seg_len,
+                });
+                current_buffer_offset += new_seg_len;
+            } else {
+                // Replacement or deletion
+                if old_end <= seg_start {
+                    // Edit was completely before this segment
+                    new_segments.push(MemorySegment {
+                        buffer_offset: current_buffer_offset,
+                        address: seg.address,
+                        length: seg.length,
+                    });
+                    current_buffer_offset += seg.length;
+                } else if start >= seg_end && !is_last_seg {
+                    // Edit is completely after this segment
+                    new_segments.push(MemorySegment {
+                        buffer_offset: current_buffer_offset,
+                        address: seg.address,
+                        length: seg.length,
+                    });
+                    current_buffer_offset += seg.length;
+                } else {
+                    // Overlaps with this segment
+                    let kept_before = start.saturating_sub(seg_start).min(seg.length);
+                    let deleted_prefix = if start <= seg_start {
+                        old_end.saturating_sub(seg_start).min(seg.length)
+                    } else {
+                        0
+                    };
+                    let kept_after = seg_end.saturating_sub(old_end.max(seg_start));
+
+                    let insert_into_this = if is_last_seg {
+                        start >= seg_start || (start <= seg_start && kept_after > 0)
+                    } else {
+                        start >= seg_start && start <= seg_end
+                    };
+
+                    let to_insert = if insert_into_this && inserted_remaining > 0 {
+                        let ins = inserted_remaining;
+                        inserted_remaining = 0;
+                        ins
+                    } else {
+                        0
+                    };
+
+                    let new_seg_len = kept_before + to_insert + kept_after;
+                    if new_seg_len > 0 {
+                        let new_address = seg.address.saturating_add(deleted_prefix);
+                        new_segments.push(MemorySegment {
+                            buffer_offset: current_buffer_offset,
+                            address: new_address,
+                            length: new_seg_len,
+                        });
+                        current_buffer_offset += new_seg_len;
+                    }
+                }
+            }
+        }
+
+        if inserted_remaining > 0 {
+            if let Some(last) = new_segments.last_mut() {
+                last.length += inserted_remaining;
+            } else {
+                let base_addr = self.base_address();
+                new_segments.push(MemorySegment {
+                    buffer_offset: 0,
+                    address: base_addr,
+                    length: inserted_remaining,
+                });
+            }
+        }
+
+        if new_segments.is_empty() {
+            let base_addr = self.base_address();
+            new_segments.push(MemorySegment {
+                buffer_offset: 0,
+                address: base_addr,
+                length: 0,
+            });
+        }
+
+        self.segments = new_segments;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_address_map_single_segment() {
+        let map = AddressMap::single_segment(0x1000, 100);
+        assert_eq!(map.base_address(), 0x1000);
+        assert_eq!(map.offset_to_address(0), 0x1000);
+        assert_eq!(map.offset_to_address(50), 0x1032);
+        assert_eq!(map.address_to_offset(0x1000), Some(0));
+        assert_eq!(map.address_to_offset(0x1032), Some(50));
+        assert!(!map.has_gaps());
+    }
+
+    #[test]
+    fn test_address_map_gaps() {
+        let map = AddressMap::from_segments(vec![
+            MemorySegment {
+                buffer_offset: 0,
+                address: 0x1000,
+                length: 10,
+            },
+            MemorySegment {
+                buffer_offset: 10,
+                address: 0x2000,
+                length: 20,
+            },
+        ]);
+        assert!(map.has_gaps());
+        assert_eq!(map.gap_before_offset(10), Some((0x100A, 0x2000)));
+        assert_eq!(map.gap_before_offset(0), None);
+
+        let mut breaks = BTreeSet::new();
+        map.collect_segment_breaks(&mut breaks);
+        assert_eq!(breaks, BTreeSet::from([10]));
+
+        let mut empty_lines = BTreeMap::new();
+        map.collect_gap_lines(&mut empty_lines);
+        assert_eq!(empty_lines.get(&10), Some(&1));
+    }
+
+    #[test]
+    fn test_address_map_adjust_after_edit_insert_preserves_subsequent_segment_addresses() {
+        let mut map = AddressMap::from_segments(vec![
+            MemorySegment {
+                buffer_offset: 0,
+                address: 0x00FD_0000,
+                length: 10,
+            },
+            MemorySegment {
+                buffer_offset: 10,
+                address: 0x0100_0000,
+                length: 10,
+            },
+        ]);
+
+        // Insert 2 bytes at offset 5 (inside first segment)
+        map.adjust_after_edit(5, 0, 2);
+
+        assert_eq!(map.segments.len(), 2);
+        // Segment 0 length grew by 2
+        assert_eq!(map.segments[0].buffer_offset, 0);
+        assert_eq!(map.segments[0].address, 0x00FD_0000);
+        assert_eq!(map.segments[0].length, 12);
+
+        // Segment 1 buffer_offset shifted by 2, address remains EXACTLY 0x0100_0000!
+        assert_eq!(map.segments[1].buffer_offset, 12);
+        assert_eq!(map.segments[1].address, 0x0100_0000);
+        assert_eq!(map.segments[1].length, 10);
+
+        // Verify offset_to_address mappings
+        assert_eq!(map.offset_to_address(0), 0x00FD_0000);
+        assert_eq!(map.offset_to_address(5), 0x00FD_0005);
+        assert_eq!(map.offset_to_address(6), 0x00FD_0006);
+        assert_eq!(map.offset_to_address(11), 0x00FD_000B);
+        assert_eq!(map.offset_to_address(12), 0x0100_0000);
+        assert_eq!(map.offset_to_address(21), 0x0100_0009);
+    }
+
+    #[test]
+    fn test_address_map_adjust_after_edit_delete_preserves_subsequent_segment_addresses() {
+        let mut map = AddressMap::from_segments(vec![
+            MemorySegment {
+                buffer_offset: 0,
+                address: 0x00FD_0000,
+                length: 10,
+            },
+            MemorySegment {
+                buffer_offset: 10,
+                address: 0x0100_0000,
+                length: 10,
+            },
+        ]);
+
+        // Delete 3 bytes at offset 4 (inside first segment)
+        map.adjust_after_edit(4, 3, 0);
+
+        assert_eq!(map.segments.len(), 2);
+        assert_eq!(map.segments[0].buffer_offset, 0);
+        assert_eq!(map.segments[0].address, 0x00FD_0000);
+        assert_eq!(map.segments[0].length, 7);
+
+        assert_eq!(map.segments[1].buffer_offset, 7);
+        assert_eq!(map.segments[1].address, 0x0100_0000);
+        assert_eq!(map.segments[1].length, 10);
+
+        assert_eq!(map.offset_to_address(6), 0x00FD_0006);
+        assert_eq!(map.offset_to_address(7), 0x0100_0000);
+        assert_eq!(map.offset_to_address(16), 0x0100_0009);
+    }
+}

@@ -1,4 +1,6 @@
-use crate::service::editor_service::EditorService;
+use crate::service::diff_service::DiffService;
+use crate::service::document_service::DocumentService;
+use crate::service::search_service::SearchService;
 use crate::service::structure_service::StructureService;
 use gpui::{App, BorrowAppContext, Global};
 
@@ -54,8 +56,10 @@ impl PendingCompareState {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppState {
-    pub editor_service: EditorService,
+    pub document_service: DocumentService,
     pub structure_service: StructureService,
+    pub search_service: SearchService,
+    pub diff_service: DiffService,
 }
 
 impl Global for AppState {}
@@ -63,8 +67,10 @@ impl Global for AppState {}
 impl AppState {
     pub fn init(cx: &mut App) {
         let state = Self {
-            editor_service: EditorService::new(),
+            document_service: DocumentService::new(),
             structure_service: StructureService::new(),
+            search_service: SearchService::new(),
+            diff_service: DiffService::new(),
         };
         cx.set_global::<AppState>(state);
         cx.set_global(InsertModeState::default());

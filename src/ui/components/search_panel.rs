@@ -423,7 +423,7 @@ impl SearchPanel {
             let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
             (ed_ref.options.encoding, buf, map)
         } else {
-            (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
+            (Encoding::Ascii, None, crate::core::address_map::AddressMap::default())
         };
         let buffer_slice = buffer.as_ref().map(|b| b.data());
 
@@ -687,7 +687,7 @@ impl Render for SearchPanel {
                     let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
                     (ed_ref.options.encoding, buf, map)
                 } else {
-                    (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
+                    (Encoding::Ascii, None, crate::core::address_map::AddressMap::default())
                 };
                 let buffer_data = buffer.as_ref().map(|b| b.data());
 
@@ -878,7 +878,7 @@ impl Render for SearchPanel {
                                 let map = doc.as_ref().map(|d| d.address_map.clone()).unwrap_or_default();
                                 (ed_ref.options.encoding, buf, map)
                             } else {
-                                (Encoding::Ascii, None, crate::core::hex_import::AddressMap::default())
+                                (Encoding::Ascii, None, crate::core::address_map::AddressMap::default())
                             };
                             let offset_value = format!("0x{:08X}", address_map.offset_to_address(offset));
                             let buffer_data = buffer.as_ref().map(|b| b.data());

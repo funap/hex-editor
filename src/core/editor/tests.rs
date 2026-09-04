@@ -1484,9 +1484,9 @@ fn test_go_to_offset_extend_selection() {
 
 #[test]
 fn test_editor_insert_bytes_updates_address_map() {
+    use crate::core::address_map::{AddressMap, MemorySegment};
     use crate::core::buffer::Buffer;
     use crate::core::document::Document;
-    use crate::core::hex_import::{AddressMap, MemorySegment};
     use std::path::PathBuf;
 
     let map = AddressMap::from_segments(vec![

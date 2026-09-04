@@ -1929,7 +1929,7 @@ impl HexView {
     fn notify_document_changed(&self, cx: &mut App) {
         let path = self.editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
         if let Some(path) = path {
-            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            let service = crate::app_state::AppState::global(cx).document_service.clone();
             service.notify_document_changed(&path, cx);
         }
     }
@@ -2232,7 +2232,7 @@ impl HexView {
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
-                            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                            let service = crate::app_state::AppState::global(cx).document_service.clone();
                             service.notify_document_changed(path, cx);
                         }
                     })

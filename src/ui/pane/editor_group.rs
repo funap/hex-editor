@@ -251,7 +251,7 @@ impl EditorGroup {
             cx,
         );
         let group = cx.entity().downgrade();
-        let service = AppState::global(cx).editor_service.clone();
+        let service = AppState::global(cx).document_service.clone();
 
         cx.spawn_in(window, async move |_, window| {
             let Ok(choice) = prompt.await else {

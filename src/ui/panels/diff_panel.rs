@@ -224,7 +224,7 @@ impl DiffPanel {
         let left_doc = self.left_document.clone();
         let right_doc = self.right_document.clone();
         let app = AppState::global(cx).clone();
-        let task = app.editor_service.compute_diff(left_doc, right_doc, cx);
+        let task = app.diff_service.compute_diff(left_doc, right_doc, cx);
         let view = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, window| {
             let result = task.await;

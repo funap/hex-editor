@@ -1,25 +1,24 @@
 use crate::core::buffer::Buffer;
 use crate::core::document::Document;
 use crate::core::editor::Editor;
-use crate::core::search::{self, SearchOptions};
 use gpui::{App, Entity, EntityId, Task, WeakEntity};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-/// A service for managing file buffers and editor workflows.
+/// A service for managing file buffers, documents, and synchronization across open views.
 /// It caches open files to avoid redundant reads and ensures thread-safe access.
 #[allow(dead_code)]
 #[derive(Clone)]
-pub struct EditorService {
+pub struct DocumentService {
     documents: Arc<RwLock<HashMap<PathBuf, Arc<RwLock<Document>>>>>,
     editors: Arc<RwLock<HashMap<PathBuf, Vec<WeakEntity<Editor>>>>>,
 }
 
 #[allow(dead_code)]
-impl EditorService {
-    /// Creates a new, empty EditorService.
+impl DocumentService {
+    /// Creates a new, empty DocumentService.
     pub fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
@@ -96,7 +95,7 @@ impl EditorService {
 
         // If not in the cache, read the file using memory mapping without holding any lock.
         let path_clone = path.clone();
-        let (buffer, address_map) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Buffer, crate::core::hex_import::AddressMap)> {
+        let (buffer, address_map) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Buffer, crate::core::address_map::AddressMap)> {
             let is_likely_hex_mot = path_clone
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -119,7 +118,7 @@ impl EditorService {
             // concurrently truncated or modified outside this process. Buffer encapsulates
             // read-only access to this memory mapping.
             let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
-            Ok((Buffer::from_mmap(mmap), crate::core::hex_import::AddressMap::default()))
+            Ok((Buffer::from_mmap(mmap), crate::core::address_map::AddressMap::default()))
         })
         .await??;
         let mut doc = Document::new_read_only(path.clone(), buffer);
@@ -191,7 +190,7 @@ impl EditorService {
     /// Searches for a query in the given buffer based on the search options.
     /// Returns a Task that executes the search in the background.
     pub fn search(&self, buffer: Arc<Buffer>, query: String, options: crate::core::search::SearchOptions, cx: &gpui::App) -> gpui::Task<Vec<usize>> {
-        self.search_with_segments(buffer, query, options, Vec::new(), cx)
+        crate::service::search_service::SearchService.search(buffer, query, options, cx)
     }
 
     /// Searches for a query in the given buffer respecting memory segment boundaries.
@@ -203,28 +202,7 @@ impl EditorService {
         segments: Vec<std::ops::Range<usize>>,
         cx: &gpui::App,
     ) -> gpui::Task<Vec<usize>> {
-        cx.background_executor().spawn(async move {
-            if query.is_empty() {
-                return Vec::new();
-            }
-
-            match options.mode {
-                crate::core::search::SearchMode::Text => {
-                    if let Some(pattern) = crate::core::search::parse_text_pattern(&query, options.encoding) {
-                        search::find_occurrences_segmented(buffer.data(), &pattern, options.limit, &segments, options.range)
-                    } else {
-                        Vec::new()
-                    }
-                }
-                crate::core::search::SearchMode::Hex => {
-                    if let Some(pattern) = crate::core::search::parse_hex_pattern(&query) {
-                        search::find_occurrences_segmented(buffer.data(), &pattern, options.limit, &segments, options.range)
-                    } else {
-                        Vec::new()
-                    }
-                }
-            }
-        })
+        crate::service::search_service::SearchService.search_with_segments(buffer, query, options, segments, cx)
     }
 
     /// Performs a search and updates the provided Editor entity with the results.
@@ -237,27 +215,7 @@ impl EditorService {
         is_full: bool,
         cx: &gpui::App,
     ) -> gpui::Task<()> {
-        let (buffer_data, segments) = {
-            let editor_read = editor.read(cx);
-            let document = editor_read.document.read().expect("document read lock");
-            (Arc::new(document.buffer.clone()), document.address_map.segment_ranges())
-        };
-
-        let search_task = self.search_with_segments(buffer_data, query, options, segments, cx);
-        let editor_weak = editor.downgrade();
-
-        cx.spawn(move |cx: &mut gpui::AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                let results = search_task.await;
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.update(&mut cx, |editor, cx| {
-                        editor.set_search_results(results, generation, is_full);
-                        cx.notify();
-                    });
-                }
-            }
-        })
+        crate::service::search_service::SearchService.perform_search(editor, query, options, generation, is_full, cx)
     }
 
     /// Performs an incremental search: immediate viewport search followed by background full search.
@@ -269,44 +227,15 @@ impl EditorService {
         viewport_range: Range<usize>,
         cx: &App,
     ) -> (Task<()>, Task<()>) {
-        // Read the generation ID and encoding on the main thread from editor
-        let (generation, encoding) = {
-            let ed = editor.read(cx);
-            (ed.search_state.generation, ed.options.encoding)
-        };
-
-        // 1. Immediate viewport search
-        let viewport_options = SearchOptions {
-            mode,
-            encoding,
-            limit: crate::core::search::SearchLimit::Unlimited,
-            range: Some(viewport_range),
-        };
-        let viewport_task = self.perform_search(editor.clone(), query.clone(), viewport_options, generation, false, cx);
-
-        // 2. Background full search
-        let full_options = SearchOptions {
-            mode,
-            encoding,
-            limit: crate::core::search::SearchLimit::Unlimited,
-            range: None,
-        };
-        let full_task = self.perform_search(editor, query, full_options, generation, true, cx);
-
-        (viewport_task, full_task)
+        crate::service::search_service::SearchService.incremental_search(editor, query, mode, viewport_range, cx)
     }
 
     pub fn compute_diff(&self, left: Arc<RwLock<Document>>, right: Arc<RwLock<Document>>, cx: &gpui::App) -> gpui::Task<crate::core::diff::DiffResult> {
-        cx.background_executor().spawn(async move {
-            let left_doc = left.read().expect("left document read lock");
-            let right_doc = right.read().expect("right document read lock");
-            let left_data = left_doc.buffer.data();
-            let right_data = right_doc.buffer.data();
-            crate::core::diff::compute_simple_diff(left_data, right_data)
-        })
+        crate::service::diff_service::DiffService.compute_diff(left, right, cx)
     }
 }
-impl Default for EditorService {
+
+impl Default for DocumentService {
     fn default() -> Self {
         Self::new()
     }
@@ -342,12 +271,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("xvw-editor-service-{label}-{}-{nonce}.bin", std::process::id()))
+        std::env::temp_dir().join(format!("xvw-document-service-{label}-{}-{nonce}.bin", std::process::id()))
     }
 
     #[test]
-    fn test_editor_service_register_empty() {
-        let service = EditorService::new();
+    fn test_document_service_register_empty() {
+        let service = DocumentService::new();
         let path = PathBuf::from("test_doc.bin");
         assert!(service.editors.read().unwrap().get(&path).is_none());
     }
@@ -356,7 +285,7 @@ mod tests {
     async fn open_file_caches_and_reopens_documents() {
         let file = TestFile::create("cache", &[0x10, 0x20, 0x30]);
 
-        let service = EditorService::new();
+        let service = DocumentService::new();
         let first = service.open_file(file.path().to_path_buf()).await.expect("open test file");
         assert_eq!(first.read().unwrap().buffer.data(), &[0x10, 0x20, 0x30]);
         assert!(first.read().unwrap().is_read_only());
@@ -372,7 +301,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn open_file_returns_an_error_for_missing_path() {
         let path = temporary_path("missing");
-        let service = EditorService::new();
+        let service = DocumentService::new();
 
         let result = service.open_file(path).await;
 
@@ -382,13 +311,13 @@ mod tests {
     #[test]
     fn test_save_document_with_address_map_to_bin_and_mot() {
         let data = vec![0x11, 0x22, 0x33, 0x44];
-        let map = crate::core::hex_import::AddressMap::from_segments(vec![
-            crate::core::hex_import::MemorySegment {
+        let map = crate::core::address_map::AddressMap::from_segments(vec![
+            crate::core::address_map::MemorySegment {
                 buffer_offset: 0,
                 address: 4,
                 length: 2,
             },
-            crate::core::hex_import::MemorySegment {
+            crate::core::address_map::MemorySegment {
                 buffer_offset: 2,
                 address: 8,
                 length: 2,
@@ -400,14 +329,14 @@ mod tests {
         let bin_path = PathBuf::from("output.bin");
         let mot_path = PathBuf::from("output.mot");
 
-        assert!(!crate::core::hex_import::is_mot_extension(&bin_path));
-        assert!(crate::core::hex_import::is_mot_extension(&mot_path));
+        assert!(!crate::core::format::is_mot_extension(&bin_path));
+        assert!(crate::core::format::is_mot_extension(&mot_path));
 
-        let bin_bytes = crate::core::hex_import::export_raw_binary(doc.buffer.data(), &doc.address_map, 0x00);
+        let bin_bytes = crate::core::format::export_raw_binary(doc.buffer.data(), &doc.address_map, 0x00);
         assert_eq!(bin_bytes.len(), 10);
         assert_eq!(bin_bytes, vec![0, 0, 0, 0, 0x11, 0x22, 0, 0, 0x33, 0x44]);
 
-        let mot_string = crate::core::hex_import::export_motorola_srec(doc.buffer.data(), &doc.address_map);
+        let mot_string = crate::core::format::export_motorola_srec(doc.buffer.data(), &doc.address_map);
         assert!(mot_string.contains("S1") || mot_string.contains("S2") || mot_string.contains("S3"));
     }
 }

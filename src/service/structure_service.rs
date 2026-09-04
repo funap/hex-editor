@@ -234,7 +234,7 @@ impl StructureService {
         });
 
         if let Some(ref path) = doc_path {
-            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            let service = crate::app_state::AppState::global(cx).document_service.clone();
             service.notify_document_changed(path, cx);
         }
 

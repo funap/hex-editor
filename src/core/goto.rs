@@ -153,7 +153,7 @@ pub fn parse_goto_offset_with_map(
     current_cursor: usize,
     total_size: usize,
     default_radix: GotoRadix,
-    address_map: &crate::core::hex_import::AddressMap,
+    address_map: &crate::core::address_map::AddressMap,
 ) -> Result<ParsedGotoOffset, GotoParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -330,7 +330,7 @@ pub fn parse_goto_offset(input: &str, current_cursor: usize, total_size: usize, 
         current_cursor,
         total_size,
         default_radix,
-        &crate::core::hex_import::AddressMap::default(),
+        &crate::core::address_map::AddressMap::default(),
     )
 }
 

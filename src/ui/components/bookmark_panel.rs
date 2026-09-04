@@ -201,7 +201,7 @@ impl BookmarkPanel {
             .as_ref()
             .and_then(|ed| ed.read(cx).document.read().ok().map(|d| d.path().to_path_buf()));
         if let Some(path) = path {
-            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            let service = crate::app_state::AppState::global(cx).document_service.clone();
             service.notify_document_changed(&path, cx);
         }
     }
@@ -289,7 +289,7 @@ impl BookmarkPanel {
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
-                            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                            let service = crate::app_state::AppState::global(cx).document_service.clone();
                             service.notify_document_changed(path, cx);
                         }
                         let _ = this.update(cx, |panel, cx| {

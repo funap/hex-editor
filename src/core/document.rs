@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use crate::core::address_map::AddressMap;
 use crate::core::bookmark::{BookmarkColor, BookmarkItem};
 use crate::core::buffer::Buffer;
 use crate::core::command::{Command, EditDelta};
-use crate::core::hex_import::AddressMap;
 use crate::core::history::History;
 use crate::core::structure::{KsyDefinition, ParseResult};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_read_contiguous_bytes_with_segments() {
-        use crate::core::hex_import::{AddressMap, MemorySegment};
+        use crate::core::address_map::{AddressMap, MemorySegment};
 
         let data = b"Hello 0Hello 1".to_vec();
         let map = AddressMap::from_segments(vec![

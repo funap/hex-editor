@@ -1103,10 +1103,10 @@ impl Workspace {
         let view = cx.entity();
         let recent_path = path.clone();
         cx.spawn_in(window, async move |_, window| {
-            let editor_service_opt = window.update(|_, cx| AppState::global(cx).editor_service.clone()).ok();
+            let document_service_opt = window.update(|_, cx| AppState::global(cx).document_service.clone()).ok();
 
-            if let Some(editor_service) = editor_service_opt {
-                match editor_service.open_file(std::path::PathBuf::from(&file_path)).await {
+            if let Some(document_service) = document_service_opt {
+                match document_service.open_file(std::path::PathBuf::from(&file_path)).await {
                     Ok(document) => {
                         window
                             .update(|window, cx| {
@@ -1137,8 +1137,8 @@ impl Workspace {
             let app = this.update(window, |_, cx| AppState::global(cx).clone()).expect("AppState global");
 
             if let Some(workspace) = this.upgrade() {
-                let left_result = app.editor_service.open_file(std::path::PathBuf::from(left_path)).await;
-                let right_result = app.editor_service.open_file(std::path::PathBuf::from(right_path)).await;
+                let left_result = app.document_service.open_file(std::path::PathBuf::from(left_path)).await;
+                let right_result = app.document_service.open_file(std::path::PathBuf::from(right_path)).await;
 
                 match (left_result, right_result) {
                     (Ok(left_document), Ok(right_document)) => {
@@ -1153,7 +1153,7 @@ impl Workspace {
                             }
 
                             let app = AppState::global(cx).clone();
-                            let diff_result_task = app.editor_service.compute_diff(left_document.clone(), right_document.clone(), cx);
+                            let diff_result_task = app.diff_service.compute_diff(left_document.clone(), right_document.clone(), cx);
 
                             cx.spawn_in(window, async move |workspace, window| {
                                 let diff_result = diff_result_task.await;
@@ -1416,7 +1416,7 @@ impl Workspace {
                                     }
                                 });
                                 if let Some(ref p) = doc_path {
-                                    let service = crate::app_state::AppState::global(cx).editor_service.clone();
+                                    let service = crate::app_state::AppState::global(cx).document_service.clone();
                                     service.notify_document_changed(p, cx);
                                 }
                             }
@@ -1651,7 +1651,7 @@ impl Workspace {
         });
 
         if let Some(path) = document_path {
-            let service = crate::app_state::AppState::global(cx).editor_service.clone();
+            let service = crate::app_state::AppState::global(cx).document_service.clone();
             service.notify_document_changed(&path, cx);
         }
 
@@ -1729,7 +1729,7 @@ impl Workspace {
             self.on_action_save_as(&crate::actions::SaveAs, window, cx);
             return;
         }
-        let service = AppState::global(cx).editor_service.clone();
+        let service = AppState::global(cx).document_service.clone();
         let task = service.save_document(document.clone(), cx);
         let workspace = cx.entity().clone();
 
@@ -1796,7 +1796,7 @@ impl Workspace {
             cx,
         );
         let workspace = cx.entity();
-        let service = AppState::global(cx).editor_service.clone();
+        let service = AppState::global(cx).document_service.clone();
 
         cx.spawn_in(window, async move |_, window| {
             let Ok(choice) = prompt.await else {
@@ -1839,7 +1839,7 @@ impl Workspace {
         });
 
         if changed {
-            let service = AppState::global(cx).editor_service.clone();
+            let service = AppState::global(cx).document_service.clone();
             service.notify_document_changed(&path, cx);
             cx.notify();
         }
@@ -1877,7 +1877,7 @@ impl Workspace {
         };
         let prompt = cx.prompt_for_new_path(&parent_dir, Some(&default_name));
         let workspace = cx.entity().clone();
-        let service = AppState::global(cx).editor_service.clone();
+        let service = AppState::global(cx).document_service.clone();
 
         cx.spawn_in(window, async move |_, window| {
             let Some(mut path) = prompt.await.ok().and_then(|result| result.ok()).flatten() else {
@@ -2116,11 +2116,11 @@ impl Workspace {
                         let panel_name = args.panel.clone();
 
                         cx.spawn_in(window, async move |_, window| {
-                            let editor_service_opt = window.update(|_, cx| AppState::global(cx).editor_service.clone()).ok();
-                            if let Some(editor_service) = editor_service_opt {
+                            let document_service_opt = window.update(|_, cx| AppState::global(cx).document_service.clone()).ok();
+                            if let Some(document_service) = document_service_opt {
                                 for file_path in files {
                                     let recent_path = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
-                                    match editor_service.open_file(file_path.clone()).await {
+                                    match document_service.open_file(file_path.clone()).await {
                                         Ok(document) => {
                                             let _ = window.update(|window, cx| {
                                                 view.update(cx, |this, cx| {

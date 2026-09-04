@@ -1,5 +1,5 @@
+use crate::core::address_map::AddressMap;
 use crate::core::goto::{GotoParseError, GotoRadix, ParsedGotoOffset, parse_goto_offset_with_map};
-use crate::core::hex_import::AddressMap;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;

@@ -1,5 +1,5 @@
 use gpui::{AnyElement, App, IntoElement, RenderOnce, SharedString, Window};
-use gpui_component::{Icon, IconNamed};
+use gpui_kit::component::{Icon, IconNamed};
 
 /// Application icon set powered by official Lucide SVG icons.
 #[derive(IntoElement, Clone, Copy, Debug, PartialEq, Eq)]

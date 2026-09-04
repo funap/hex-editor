@@ -1,7 +1,7 @@
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon,
     button::{Button, ButtonVariants},
     input::{self, Input, InputState},
@@ -46,8 +46,7 @@ impl SearchBar {
                         this.update(cx, |_this, cx| {
                             cx.emit(SearchBarEvent::IncrementalSearch(query, mode));
                             cx.notify();
-                        })
-                        .ok();
+                        });
                     }
                 });
                 this.debounce_task = Some(task);

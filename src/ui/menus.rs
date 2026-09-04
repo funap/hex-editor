@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{Action, Context, Window};
-use gpui_component::menu::PopupMenu;
+use gpui_kit::component::menu::PopupMenu;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct MenuEditorState {
@@ -60,10 +60,13 @@ impl MenuItemDef {
                 name: (*label).into(),
                 action: (action)(),
                 os_action: None,
+                checked: false,
+                disabled: false,
             },
             MenuItemDef::Submenu { label, items } => gpui::MenuItem::submenu(gpui::Menu {
                 name: (*label).into(),
                 items: items.iter().map(|item| item.to_gpui_menu_item()).collect(),
+                disabled: false,
             }),
             MenuItemDef::Separator => gpui::MenuItem::separator(),
         }
@@ -98,6 +101,7 @@ impl MenuDef {
         gpui::Menu {
             name: self.name.into(),
             items: self.items.iter().map(|item| item.to_gpui_menu_item()).collect(),
+            disabled: false,
         }
     }
 

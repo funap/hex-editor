@@ -3,11 +3,12 @@ use gpui::{
     MouseUpEvent, ParentElement, Pixels, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Styled, UniformListScrollHandle, actions,
     canvas, div, point, px, size,
 };
-use gpui_component::scroll::{Scrollbar, ScrollbarAxis};
-use gpui_component::{StyledExt, h_flex};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis, ScrollbarMode};
+use gpui_kit::component::theme::Theme;
+use gpui_kit::component::{StyledExt, h_flex};
 
 pub const CONTEXT: &str = "VirtualTable";
-pub const TABLE_SCROLLBAR_WIDTH: Pixels = px(10.0);
+pub const TABLE_SCROLLBAR_WIDTH: Pixels = crate::ui::scrollbar::SCROLLBAR_WIDTH;
 pub const DEFAULT_AUTOFIT_CHAR_WIDTH: f32 = 7.2;
 pub const DEFAULT_AUTOFIT_PADDING: f32 = 16.0;
 
@@ -462,7 +463,7 @@ impl VirtualTable {
 
     /// Builds a table header container div with horizontal translation applied.
     #[allow(dead_code)]
-    pub fn header_container(scroll_offset_x: Pixels, total_width: Pixels, theme: &gpui_component::Theme) -> Div {
+    pub fn header_container(scroll_offset_x: Pixels, total_width: Pixels, theme: &gpui_kit::component::Theme) -> Div {
         h_flex()
             .w_full()
             .h(px(24.0))
@@ -518,7 +519,7 @@ impl VirtualTable {
     }
 
     /// Builds a draggable column resize handle positioned on the right edge.
-    pub fn render_resize_handle(col_ix: usize, theme: &gpui_component::Theme) -> Stateful<Div> {
+    pub fn render_resize_handle(col_ix: usize, theme: &gpui_kit::component::Theme) -> Stateful<Div> {
         div()
             .id(("table-resize-handle", col_ix))
             .absolute()
@@ -535,7 +536,7 @@ impl VirtualTable {
     pub fn render_header_row<V: 'static>(
         state: &VirtualTableState,
         header_id: impl Into<ElementId>,
-        theme: &gpui_component::Theme,
+        theme: &gpui_kit::component::Theme,
         cx: &Context<V>,
         custom_label_fn: Option<impl Fn(usize, &TableColumn) -> Option<AnyElement> + 'static>,
         on_auto_fit: impl Fn(&mut V, usize, &mut Context<V>) + 'static + Copy,
@@ -645,7 +646,7 @@ impl VirtualTable {
     }
 
     /// Builds horizontal scrollbar element if content exceeds container width.
-    pub fn render_horizontal_scrollbar(state: &VirtualTableState, container_width: Pixels) -> Option<impl IntoElement> {
+    pub fn render_horizontal_scrollbar(state: &VirtualTableState, container_width: Pixels, theme: &Theme) -> Option<impl IntoElement> {
         let width = if container_width > px(0.0) {
             container_width
         } else {
@@ -667,13 +668,15 @@ impl VirtualTable {
                 .child(
                     Scrollbar::horizontal(&state.horizontal_scroll_handle)
                         .axis(ScrollbarAxis::Horizontal)
-                        .scroll_size(size(total_w, px(0.0))),
+                        .mode(ScrollbarMode::Always)
+                        .scroll_size(size(total_w, px(0.0)))
+                        .styles(|_| crate::ui::scrollbar::common_scrollbar_styles(theme)),
                 ),
         )
     }
 
     /// Builds vertical scrollbar element for the virtual list.
-    pub fn render_vertical_scrollbar(state: &VirtualTableState) -> impl IntoElement {
+    pub fn render_vertical_scrollbar(state: &VirtualTableState, theme: &Theme) -> impl IntoElement {
         div()
             .id("table-vertical-scrollbar")
             .absolute()
@@ -681,7 +684,12 @@ impl VirtualTable {
             .right_0()
             .bottom_0()
             .w(TABLE_SCROLLBAR_WIDTH)
-            .child(Scrollbar::vertical(&state.vertical_scroll_handle).axis(ScrollbarAxis::Vertical))
+            .child(
+                Scrollbar::vertical(&state.vertical_scroll_handle)
+                    .axis(ScrollbarAxis::Vertical)
+                    .mode(ScrollbarMode::Always)
+                    .styles(|_| crate::ui::scrollbar::common_scrollbar_styles(theme)),
+            )
     }
 }
 

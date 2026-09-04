@@ -2,9 +2,9 @@ use crate::core::appearance::Appearance;
 use crate::core::encoding::Encoding;
 use gpui::prelude::*;
 use gpui::{
-    Action, App, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div,
+    Action, Anchor, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Subscription, Window, div,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable as _, Size, StyledExt,
     button::Button,
     dock::{Panel, PanelEvent},
@@ -131,7 +131,7 @@ impl Render for SettingsPanel {
                                     .outline()
                                     .dropdown_caret(true)
                                     .with_size(Size::Small)
-                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _window, _cx| {
+                                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                                         all_themes.iter().fold(menu, |menu, theme_name| {
                                             let is_active = theme_name == &active_theme_name;
                                             let name = theme_name.clone();
@@ -177,7 +177,7 @@ impl Render for SettingsPanel {
                                     .outline()
                                     .dropdown_caret(true)
                                     .with_size(Size::Small)
-                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, window, cx| {
+                                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                                         Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
                                             menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
                                                 encs.iter().copied().fold(menu, |menu, encoding| {
@@ -207,27 +207,33 @@ impl Focusable for SettingsPanel {
     }
 }
 impl Panel for SettingsPanel {
-    fn panel_name(&self) -> &'static str {
-        "SettingsPanel"
-    }
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         "Settings"
     }
     fn tab_name(&self, _: &App) -> Option<SharedString> {
         Some("Settings".into())
     }
+    fn zoom_control(&self, _: &App) -> Option<gpui_kit::component::dock::PanelControl> {
+        None
+    }
+}
+
+impl gpui_kit::base::dock::Panel for SettingsPanel {
+    fn panel_name(&self) -> &'static str {
+        "SettingsPanel"
+    }
     fn closable(&self, _: &App) -> bool {
         true
     }
-    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
-        None
+    fn zoomable(&self, _: &App) -> bool {
+        false
     }
     fn visible(&self, _: &App) -> bool {
         true
     }
-    fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
     }
     fn set_zoomed(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) {}

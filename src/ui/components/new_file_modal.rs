@@ -2,9 +2,9 @@ use crate::core::new_file::{format_fill_preview, format_size_preview, parse_buff
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{self, Input, InputState};
-use gpui_component::{ActiveTheme as _, Disableable, Icon, Sizable, Size, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{self, Input, InputState};
+use gpui_kit::component::{ActiveTheme as _, Disableable, Icon, Sizable, Size, h_flex, v_flex};
 
 #[derive(Clone, PartialEq, Action)]
 pub struct ConfirmCreate;
@@ -119,7 +119,7 @@ impl NewFileModal {
 }
 
 impl NewFileModal {
-    fn render_header(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .justify_between()
             .items_center()
@@ -152,7 +152,7 @@ impl NewFileModal {
             )
     }
 
-    fn render_size_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_size_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let size_preview_text = match &self.parsed_size {
             Ok(size) => format_size_preview(*size),
             Err(err) => err.clone(),
@@ -237,7 +237,7 @@ impl NewFileModal {
             )
     }
 
-    fn render_fill_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_fill_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let fill_preview_text = match &self.parsed_fill {
             Ok(fill) => format_fill_preview(*fill),
             Err(err) => err.clone(),
@@ -289,7 +289,7 @@ impl NewFileModal {
             )
     }
 
-    fn render_footer(&self, theme: &gpui_component::Theme, is_valid: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_footer(&self, theme: &gpui_kit::component::Theme, is_valid: bool, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .justify_end()
             .items_center()

@@ -1,8 +1,8 @@
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme, Icon};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::{ActiveTheme, Icon};
 use std::path::PathBuf;
 
 use crate::actions::{ActivateTab, CloseActivePanel};

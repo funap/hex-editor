@@ -14,8 +14,8 @@ use crate::app_state::{AppState, InsertModeState};
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
 use crate::ui::components::status_bar::StatusBar;
-use gpui_component::resizable::{h_resizable, resizable_panel};
-use gpui_component::{Root, WindowExt, v_flex};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::{Root, WindowExt, v_flex};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -37,7 +37,7 @@ pub struct Workspace {
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("shift-escape", gpui_component::dock::ToggleZoom, Some("Workspace")),
+        KeyBinding::new("shift-escape", gpui_kit::component::dock::ToggleZoom, Some("Workspace")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-s", crate::actions::Save, Some("Workspace")),
         #[cfg(not(target_os = "macos"))]
@@ -286,7 +286,7 @@ impl Workspace {
                 crate::ui::components::search_panel::SearchPanelEvent::FocusEditor => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.hex_view().read(cx).focus_handle(cx).focus(window);
+                            panel.hex_view().read(cx).focus_handle(cx).focus(window, cx);
                         });
                     }
                 }
@@ -309,7 +309,7 @@ impl Workspace {
                 crate::ui::components::strings_panel::StringsPanelEvent::FocusEditor => {
                     if let Some(editor_panel) = this.active_editor_panel(cx) {
                         editor_panel.update(cx, |panel, cx| {
-                            panel.hex_view().read(cx).focus_handle(cx).focus(window);
+                            panel.hex_view().read(cx).focus_handle(cx).focus(window, cx);
                         });
                     }
                 }
@@ -393,7 +393,7 @@ impl Workspace {
         let active_editor_id = active_editor.as_ref().map(Entity::entity_id);
         if self.last_active_editor_id.get() == active_editor_id {
             if pane_tree_is_empty {
-                self.focus_handle.focus(window);
+                self.focus_handle.focus(window, cx);
             }
             return;
         }
@@ -408,7 +408,7 @@ impl Workspace {
         self.on_focus_changed(cx);
 
         if pane_tree_is_empty {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
     }
 
@@ -420,16 +420,16 @@ impl Workspace {
                 panel.sync_file_history(cx);
             });
             let focus_handle = self.left_panel.read(cx).focus_handle(cx);
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
         } else {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
 
         self.sync_activity_bar(cx);
         cx.notify();
     }
 
-    fn observe_notification(&mut self, notification: &Entity<gpui_component::notification::NotificationList>, cx: &mut Context<Self>) {
+    fn observe_notification(&mut self, notification: &Entity<gpui_kit::component::notification::NotificationList>, cx: &mut Context<Self>) {
         cx.observe(notification, |_, _, cx| {
             cx.notify();
         })
@@ -450,7 +450,7 @@ impl Workspace {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(window_bounds)),
                 #[cfg(not(target_os = "linux"))]
-                titlebar: Some(gpui_component::TitleBar::title_bar_options()),
+                titlebar: Some(gpui_kit::component::TitleBar::title_bar_options()),
                 window_min_size: Some(gpui::Size {
                     width: px(640.),
                     height: px(480.),
@@ -1120,7 +1120,7 @@ impl Workspace {
                     Err(e) => {
                         eprintln!("Failed to open file: {:?}", e);
                         let _ = window.update(|window, cx| {
-                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open file: {e}")), cx);
+                            window.push_notification(gpui_kit::component::notification::Notification::error(format!("Failed to open file: {e}")), cx);
                         });
                     }
                 }
@@ -1180,13 +1180,19 @@ impl Workspace {
                     (Err(e), _) => {
                         eprintln!("Failed to open left diff file: {:?}", e);
                         let _ = window.update(|window, cx| {
-                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open diff file: {e}")), cx);
+                            window.push_notification(
+                                gpui_kit::component::notification::Notification::error(format!("Failed to open diff file: {e}")),
+                                cx,
+                            );
                         });
                     }
                     (_, Err(e)) => {
                         eprintln!("Failed to open right diff file: {:?}", e);
                         let _ = window.update(|window, cx| {
-                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to open diff file: {e}")), cx);
+                            window.push_notification(
+                                gpui_kit::component::notification::Notification::error(format!("Failed to open diff file: {e}")),
+                                cx,
+                            );
                         });
                     }
                 }
@@ -1316,7 +1322,7 @@ impl Workspace {
             self.set_left_panel_visible(true, window, cx);
         }
         let focus_handle = self.left_panel.read(cx).search_panel.read(cx).focus_handle(cx);
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
     }
 
     fn on_action_show_files_tab(&mut self, _: &ShowFilesTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1453,7 +1459,7 @@ impl Workspace {
                                             String::new()
                                         };
                                         window.push_notification(
-                                            gpui_component::notification::Notification::info(format!(
+                                            gpui_kit::component::notification::Notification::info(format!(
                                                 "Imported {} successfully{}",
                                                 import_result.format.label(),
                                                 gap_msg
@@ -1467,7 +1473,7 @@ impl Workspace {
                         Err(e) => {
                             let _ = window.update(|window, cx| {
                                 window.push_notification(
-                                    gpui_component::notification::Notification::error(format!("Failed to parse hex/mot file: {}", e)),
+                                    gpui_kit::component::notification::Notification::error(format!("Failed to parse hex/mot file: {}", e)),
                                     cx,
                                 );
                             });
@@ -1475,7 +1481,10 @@ impl Workspace {
                     },
                     Err(e) => {
                         let _ = window.update(|window, cx| {
-                            window.push_notification(gpui_component::notification::Notification::error(format!("Failed to read file: {}", e)), cx);
+                            window.push_notification(
+                                gpui_kit::component::notification::Notification::error(format!("Failed to read file: {}", e)),
+                                cx,
+                            );
                         });
                     }
                 }
@@ -1506,7 +1515,7 @@ impl Workspace {
             });
             self.set_left_panel_visible(true, window, cx);
             let focus_handle = self.left_panel.read(cx).focus_handle(cx);
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
         }
     }
 
@@ -1570,7 +1579,7 @@ impl Workspace {
                     eprintln!("Failed to parse KSY definition: {}", e);
                     let _ = window.update(|window, cx| {
                         window.push_notification(
-                            gpui_component::notification::Notification::error(format!("Failed to parse structure definition: {e}")),
+                            gpui_kit::component::notification::Notification::error(format!("Failed to parse structure definition: {e}")),
                             cx,
                         );
                     });
@@ -1580,7 +1589,7 @@ impl Workspace {
                 eprintln!("Failed to read KSY file at {:?}: {}", path, e);
                 let _ = window.update(|window, cx| {
                     window.push_notification(
-                        gpui_component::notification::Notification::error(format!("Failed to read structure file: {e}")),
+                        gpui_kit::component::notification::Notification::error(format!("Failed to read structure file: {e}")),
                         cx,
                     );
                 });
@@ -1711,7 +1720,7 @@ impl Workspace {
         };
         if is_read_only {
             window.push_notification(
-                gpui_component::notification::Notification::warning("Cannot save: document is in read-only mode. Toggle read-only mode or use Save As."),
+                gpui_kit::component::notification::Notification::warning("Cannot save: document is in read-only mode. Toggle read-only mode or use Save As."),
                 cx,
             );
             return;
@@ -1735,13 +1744,13 @@ impl Workspace {
                                 document.write().expect("document write lock").mark_as_saved();
                             }
                             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
-                            window.push_notification(gpui_component::notification::Notification::info(format!("Saved {}", file_name)), cx);
+                            window.push_notification(gpui_kit::component::notification::Notification::info(format!("Saved {}", file_name)), cx);
                             editor.update(cx, |_, cx| cx.notify());
                         }
                         Err(error) => {
                             eprintln!("Failed to save document: {error}");
                             window.push_notification(
-                                gpui_component::notification::Notification::error(format!("Failed to save document: {error}")),
+                                gpui_kit::component::notification::Notification::error(format!("Failed to save document: {error}")),
                                 cx,
                             );
                         }
@@ -2124,7 +2133,7 @@ impl Workspace {
                                             eprintln!("Failed to open file {:?}: {:?}", file_path, e);
                                             let _ = window.update(|window, cx| {
                                                 window.push_notification(
-                                                    gpui_component::notification::Notification::error(format!("Failed to open file: {e}")),
+                                                    gpui_kit::component::notification::Notification::error(format!("Failed to open file: {e}")),
                                                     cx,
                                                 );
                                             });

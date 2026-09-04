@@ -2,7 +2,7 @@ use crate::core::appearance::Appearance;
 use crate::core::encoding::Encoding;
 use crate::core::structure::{DefinitionHistory, FileHistory};
 use gpui::App;
-use gpui_component::theme::{Theme, ThemeMode};
+use gpui_kit::component::theme::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};

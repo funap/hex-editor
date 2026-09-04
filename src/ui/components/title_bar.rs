@@ -2,13 +2,13 @@ use crate::ui::icon::IconName;
 use crate::ui::menus::MenuEditorState;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Action, App, AppContext as _, ClickEvent, Context, Corner, DismissEvent, Entity, EventEmitter, Focusable as _, InteractiveElement as _, IntoElement,
+    Action, Anchor, App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, EventEmitter, Focusable as _, InteractiveElement as _, IntoElement,
     KeyBinding, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription, WeakEntity, Window, anchored,
     deferred, div, px,
 };
-use gpui_component::button::ButtonVariants;
-use gpui_component::menu::PopupMenu;
-use gpui_component::{Selectable, Sizable, TitleBar, button::Button, h_flex};
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::{Selectable, Sizable, TitleBar, button::Button, h_flex};
 
 const CONTEXT: &str = "AppMenuBar";
 
@@ -216,7 +216,7 @@ impl AppMenu {
                         menu
                     }
                 });
-                popup.read(cx).focus_handle(cx).focus(window);
+                popup.read(cx).focus_handle(cx).focus(window, cx);
                 self._subscription = Some(cx.subscribe_in(&popup, window, Self::handle_dismiss));
                 self.popup_menu = Some(popup.clone());
                 popup
@@ -226,7 +226,7 @@ impl AppMenu {
 
         let focus_handle = popup_menu.read(cx).focus_handle(cx);
         if !focus_handle.contains_focused(window, cx) {
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
         }
 
         popup_menu
@@ -293,7 +293,7 @@ impl Render for AppMenu {
             .when(is_selected, |this| {
                 this.child(deferred(
                     anchored()
-                        .anchor(Corner::TopLeft)
+                        .anchor(Anchor::TopLeft)
                         .snap_to_window_with_margin(px(8.))
                         .child(div().size_full().occlude().top_1().child(self.build_popup_menu(window, cx))),
                 ))

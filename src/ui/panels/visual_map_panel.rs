@@ -1,12 +1,12 @@
 use crate::core::appearance::Appearance;
 use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
+use crate::ui::scrollbar::{SCROLLBAR_WIDTH, calculate_scrollbar_geometry, paint_scrollbar_with_row_height};
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::scroll::*;
-use gpui_component::{ActiveTheme, Icon, PixelsExt, Sizable, Size, StyledExt, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dock::{Panel, PanelEvent};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt, h_flex, v_flex};
 use std::cell::RefCell;
 use std::cmp;
 use std::ops::Range;
@@ -56,7 +56,7 @@ impl ByteCategory {
         }
     }
 
-    pub fn color(self, theme: &gpui_component::Theme) -> Hsla {
+    pub fn color(self, theme: &gpui_kit::component::Theme) -> Hsla {
         match self {
             ByteCategory::Null => theme.muted_foreground.opacity(0.4),
             ByteCategory::Control => theme.red.opacity(0.85),
@@ -77,7 +77,10 @@ pub struct VisualMapPanel {
     pixel_size: usize,
     scroll_offset: usize,
     scroll_remainder: f32,
-    scroll_handle: ScrollHandle,
+    is_dragging_scrollbar: bool,
+    scrollbar_hovered: bool,
+    scrollbar_drag_start_y: f32,
+    scrollbar_drag_start_row: usize,
     color_mode: ColorMode,
     entropy_window: usize,
     hovered_info: Option<(usize, u8)>,
@@ -105,7 +108,10 @@ impl VisualMapPanel {
             pixel_size: 2,
             scroll_offset: 0,
             scroll_remainder: 0.0,
-            scroll_handle: ScrollHandle::new(),
+            is_dragging_scrollbar: false,
+            scrollbar_hovered: false,
+            scrollbar_drag_start_y: 0.0,
+            scrollbar_drag_start_row: 0,
             color_mode: ColorMode::DataCategory,
             entropy_window: 256,
             hovered_info: None,
@@ -159,22 +165,54 @@ impl VisualMapPanel {
         let total_rows = buffer_len.div_ceil(self.cols);
         let cursor_row = cursor_offset / self.cols;
         let visible_rows = if let Some(bounds) = self.last_bounds.get() {
-            (bounds.size.height.as_f32() / self.pixel_size as f32).ceil() as usize
+            (bounds.size.height.as_f32() / self.pixel_size as f32).floor() as usize
         } else {
             30
         };
+        let max_offset = total_rows.saturating_sub(visible_rows.max(1));
         let target_scroll = cursor_row.saturating_sub(visible_rows / 2);
-        self.scroll_offset = cmp::min(target_scroll, total_rows.saturating_sub(1));
-        self.update_scrollbar(cx);
+        self.scroll_offset = cmp::min(target_scroll, max_offset);
         cx.notify();
     }
 
-    fn update_scrollbar(&mut self, cx: &mut Context<Self>) {
+    fn update_scrollbar(&mut self, cx: &App) {
         let buffer_len = self.buffer_len(cx);
         let total_rows = buffer_len.div_ceil(self.cols);
-        let pixel_size_px = px(self.pixel_size as f32);
-        self.scroll_offset = self.scroll_offset.min(total_rows.saturating_sub(1));
-        self.scroll_handle.set_offset(point(px(0.), -(self.scroll_offset as f32 * pixel_size_px)));
+        let max_offset = if let Some(bounds) = self.last_bounds.get() {
+            let visible_rows = (bounds.size.height.as_f32() / self.pixel_size as f32).floor() as usize;
+            total_rows.saturating_sub(visible_rows.max(1))
+        } else {
+            total_rows.saturating_sub(1)
+        };
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    fn update_scrollbar_drag(&mut self, current_y: f32, cx: &mut Context<Self>) {
+        if !self.is_dragging_scrollbar {
+            return;
+        }
+
+        let delta_y = current_y - self.scrollbar_drag_start_y;
+        let buffer_len = self.buffer_len(cx);
+        if buffer_len == 0 {
+            return;
+        }
+        let total_rows = buffer_len.div_ceil(self.cols);
+        let row_height = self.pixel_size as f32;
+        let list_h = self.last_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
+
+        if let Some(geom) = calculate_scrollbar_geometry(list_h, self.scroll_offset, total_rows, row_height) {
+            let max_thumb_top = (list_h - geom.thumb_height).max(0.0);
+            if max_thumb_top > 0.0 && geom.max_top_row > 0 {
+                let delta_ratio = delta_y as f64 / max_thumb_top as f64;
+                let delta_rows = delta_ratio * geom.max_top_row as f64;
+                let new_row = ((self.scrollbar_drag_start_row as f64 + delta_rows).round() as isize).clamp(0, geom.max_top_row as isize) as usize;
+                if self.scroll_offset != new_row {
+                    self.scroll_offset = new_row;
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn on_scroll_wheel(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -213,8 +251,13 @@ impl VisualMapPanel {
             return;
         }
         let total_rows = buffer_len.div_ceil(self.cols);
+        let visible_rows = if let Some(bounds) = self.last_bounds.get() {
+            (bounds.size.height.as_f32() / pixel_size_px.as_f32()).floor() as usize
+        } else {
+            30
+        };
+        let max_offset = total_rows.saturating_sub(visible_rows.max(1)) as i32;
 
-        let max_offset = total_rows.saturating_sub(1).max(0) as i32;
         let delta_y_pixels = event.delta.pixel_delta(pixel_size_px).y.as_f32();
         let total_delta = delta_y_pixels + self.scroll_remainder;
         let delta_rows = (total_delta / pixel_size_px.as_f32()) as i32;
@@ -223,7 +266,6 @@ impl VisualMapPanel {
         let new_scroll_offset = self.scroll_offset as i32 - delta_rows;
 
         self.scroll_offset = cmp::max(0, cmp::min(new_scroll_offset, max_offset)) as usize;
-        self.scroll_handle.set_offset(point(px(0.), -(self.scroll_offset as f32 * pixel_size_px)));
         cx.notify();
     }
 
@@ -245,34 +287,89 @@ impl VisualMapPanel {
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
+
+        // Scrollbar hit-testing on right edge
+        if let Some(bounds) = self.last_bounds.get() {
+            let click_x = f32::from(event.position.x);
+            let bar_w = f32::from(SCROLLBAR_WIDTH);
+            let bar_x = f32::from(bounds.right()) - bar_w;
+            if click_x >= bar_x && click_x <= f32::from(bounds.right()) && event.position.y >= bounds.top() && event.position.y <= bounds.bottom() {
+                let buffer_len = self.buffer_len(cx);
+                if buffer_len > 0 {
+                    let total_rows = buffer_len.div_ceil(self.cols);
+                    let row_height = self.pixel_size as f32;
+                    let list_h = f32::from(bounds.size.height);
+                    if let Some(geom) = calculate_scrollbar_geometry(list_h, self.scroll_offset, total_rows, row_height) {
+                        let click_y = f32::from(event.position.y);
+                        let rel_y = click_y - f32::from(bounds.top());
+                        let cur_thumb_top = geom.thumb_top;
+                        let thumb_h = geom.thumb_height;
+                        let max_thumb_top = (list_h - thumb_h).max(0.0);
+
+                        if rel_y >= cur_thumb_top && rel_y <= cur_thumb_top + thumb_h {
+                            self.is_dragging_scrollbar = true;
+                            self.scrollbar_drag_start_y = click_y;
+                            self.scrollbar_drag_start_row = self.scroll_offset;
+                        } else {
+                            let target_thumb_top = (rel_y - thumb_h / 2.0).clamp(0.0, max_thumb_top);
+                            let new_ratio = if max_thumb_top > 0.0 {
+                                target_thumb_top as f64 / max_thumb_top as f64
+                            } else {
+                                0.0
+                            };
+                            let new_row = (new_ratio * geom.max_top_row as f64).round() as usize;
+                            self.scroll_offset = new_row;
+                            self.is_dragging_scrollbar = true;
+                            self.scrollbar_drag_start_y = click_y;
+                            self.scrollbar_drag_start_row = new_row;
+                        }
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        }
+
         self.is_dragging = true;
         if let Some(offset) = self.offset_from_point_clamped(event.position, cx)
             && let Some(editor) = &self.editor
         {
-            editor.update(cx, |editor, cx| {
-                editor.set_cursor_offset(offset);
-                cx.notify();
+            editor.update(cx, |ed, _cx| {
+                ed.set_cursor_offset(offset);
+                ed.clear_selection();
             });
+            cx.notify();
         }
     }
 
-    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.is_dragging = false;
+        if self.is_dragging_scrollbar {
+            self.is_dragging_scrollbar = false;
+            cx.notify();
+        }
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let pixel_size_px = px(self.pixel_size as f32);
-        let handle_y = self.scroll_handle.offset().y;
-        let handle_row = ((-handle_y).max(px(0.)) / pixel_size_px).round() as usize;
         let buffer_len = self.buffer_len(cx);
         if buffer_len == 0 {
             return;
         }
-        let total_rows = buffer_len.div_ceil(self.cols);
-        if handle_row != self.scroll_offset {
-            self.scroll_offset = handle_row.min(total_rows.saturating_sub(1));
-            cx.notify();
+
+        if let Some(bounds) = self.last_bounds.get() {
+            let pos = event.position;
+            let bar_w = SCROLLBAR_WIDTH;
+            let is_in_bar = pos.x >= bounds.right() - bar_w && pos.x <= bounds.right() && pos.y >= bounds.top() && pos.y <= bounds.bottom();
+            if self.scrollbar_hovered != is_in_bar {
+                self.scrollbar_hovered = is_in_bar;
+                cx.notify();
+            }
+        }
+
+        if self.is_dragging_scrollbar {
+            self.update_scrollbar_drag(f32::from(event.position.y), cx);
+            return;
         }
 
         if self.is_dragging
@@ -286,7 +383,8 @@ impl VisualMapPanel {
         }
 
         let mut hovered = None;
-        if let Some(bounds) = self.last_bounds.get()
+        if !self.scrollbar_hovered
+            && let Some(bounds) = self.last_bounds.get()
             && bounds.contains(&event.position)
         {
             let rel_x = event.position.x - bounds.left();
@@ -339,7 +437,7 @@ impl VisualMapPanel {
         }
 
         self._width_repeat_task = Some(cx.spawn(async move |this, cx| {
-            Timer::after(WIDTH_REPEAT_INITIAL_DELAY).await;
+            tokio::time::sleep(WIDTH_REPEAT_INITIAL_DELAY).await;
             let mut count = 0;
             loop {
                 let interval = if count < 10 {
@@ -367,7 +465,7 @@ impl VisualMapPanel {
                 }
 
                 count += 1;
-                Timer::after(interval).await;
+                tokio::time::sleep(interval).await;
             }
         }));
     }
@@ -376,7 +474,7 @@ impl VisualMapPanel {
         self._width_repeat_task = None;
     }
 
-    fn render_width_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_width_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
         let font_family = cx.global::<Appearance>().font_family.clone();
         h_flex()
@@ -459,7 +557,7 @@ impl VisualMapPanel {
             )
     }
 
-    fn render_scale_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_scale_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
         let pixel_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
             let is_selected = self.pixel_size == preset;
@@ -498,7 +596,7 @@ impl VisualMapPanel {
             )
     }
 
-    fn render_palette_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_palette_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
         let color_button = |mode: ColorMode, label: &'static str, id_str: &'static str, cx: &mut Context<Self>| {
             let is_selected = self.color_mode == mode;
@@ -537,7 +635,7 @@ impl VisualMapPanel {
             )
     }
 
-    fn render_entropy_window_section(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_entropy_window_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted_color = theme.muted_foreground;
         let window_button = |preset: usize, label: &'static str, cx: &mut Context<Self>| {
             let is_selected = self.entropy_window == preset;
@@ -576,7 +674,7 @@ impl VisualMapPanel {
             )
     }
 
-    fn render_toolbar(&self, theme: &gpui_component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_toolbar(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let mut toolbar = v_flex()
             .p_2()
             .gap_2()
@@ -593,7 +691,7 @@ impl VisualMapPanel {
         toolbar
     }
 
-    fn render_legend(&self, theme: &gpui_component::Theme) -> Option<impl IntoElement + use<>> {
+    fn render_legend(&self, theme: &gpui_kit::component::Theme) -> Option<impl IntoElement + use<>> {
         let muted_color = theme.muted_foreground;
         match self.color_mode {
             ColorMode::DataCategory => Some(
@@ -701,7 +799,7 @@ impl VisualMapPanel {
         }
     }
 
-    fn render_footer(&self, buffer_len: usize, total_rows: usize, theme: &gpui_component::Theme, cx: &App) -> impl IntoElement + use<> {
+    fn render_footer(&self, buffer_len: usize, total_rows: usize, theme: &gpui_kit::component::Theme, cx: &App) -> impl IntoElement + use<> {
         let border_color = theme.border;
         let muted_color = theme.muted_foreground;
         let font_family = cx.global::<Appearance>().font_family.clone();
@@ -838,10 +936,6 @@ impl Focusable for VisualMapPanel {
 }
 
 impl Panel for VisualMapPanel {
-    fn panel_name(&self) -> &'static str {
-        "VisualMapPanel"
-    }
-
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let path = self.file_path(cx);
         let name = path
@@ -859,7 +953,7 @@ impl Panel for VisualMapPanel {
                 .rounded_md()
                 .hover(|style| style.bg(theme.accent).text_color(theme.accent_foreground))
                 .on_click(cx.listener(|this, _, window, cx| {
-                    this.focus_handle.focus(window);
+                    this.focus_handle.focus(window, cx);
                     window.dispatch_action(Box::new(crate::actions::CloseActivePanel), cx);
                 }))
                 .child(Icon::new(IconName::Close).size(px(14.0))),
@@ -870,32 +964,42 @@ impl Panel for VisualMapPanel {
         Some("Visual Map".into())
     }
 
+    fn zoom_control(&self, _cx: &App) -> Option<gpui_kit::component::dock::PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+}
+
+impl gpui_kit::base::dock::Panel for VisualMapPanel {
+    fn panel_name(&self) -> &'static str {
+        "VisualMapPanel"
+    }
+
     fn closable(&self, _cx: &App) -> bool {
         true
     }
 
-    fn zoomable(&self, _cx: &App) -> Option<gpui_component::dock::PanelControl> {
-        None
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 
     fn visible(&self, _cx: &App) -> bool {
         true
     }
 
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
     }
 
     fn set_zoomed(&mut self, _zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
-    fn dump(&self, cx: &App) -> gpui_component::dock::PanelState {
-        let mut state = gpui_component::dock::PanelState::new(self);
+    fn dump(&self, cx: &App) -> gpui_kit::component::dock::PanelState {
+        let mut state = gpui_kit::component::dock::PanelState::new(self.panel_name());
         let path = self.file_path(cx).unwrap_or_default();
         let map_state = VisualMapPanelState {
             path,
@@ -904,7 +1008,7 @@ impl Panel for VisualMapPanel {
             color_mode: self.color_mode,
             entropy_window: self.entropy_window,
         };
-        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(map_state).expect("serialize VisualMapPanelState"));
+        state.info = gpui_kit::component::dock::PanelInfo::panel(serde_json::to_value(map_state).expect("serialize VisualMapPanelState"));
         state
     }
 }
@@ -952,8 +1056,8 @@ impl Render for VisualMapPanel {
                     .track_focus(&self.focus_handle)
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, _| {
-                            this.focus_handle.focus(window);
+                        cx.listener(|this, _, window, cx| {
+                            this.focus_handle.focus(window, cx);
                         }),
                     )
                     .child(header)
@@ -970,15 +1074,6 @@ impl Render for VisualMapPanel {
         let buffer_len = self.buffer_len(cx);
         let state_id = self.state_id(cx);
         let total_rows = buffer_len.div_ceil(self.cols);
-        let total_height = total_rows as f32 * self.pixel_size as f32;
-
-        let pixel_size_px = px(self.pixel_size as f32);
-        let handle_y = self.scroll_handle.offset().y;
-        let handle_row = ((-handle_y).max(px(0.)) / pixel_size_px).round() as usize;
-        let synced_offset = handle_row.min(total_rows.saturating_sub(1));
-        if self.scroll_offset != synced_offset {
-            self.scroll_offset = synced_offset;
-        }
 
         let toolbar = self.render_toolbar(&theme, cx);
         let legend = self.render_legend(&theme);
@@ -1008,14 +1103,9 @@ impl Render for VisualMapPanel {
                 cursor_offset,
                 selection_range,
                 hovered_offset,
-            })
-            .child(
-                div().absolute().top_0().right_0().bottom_0().w_4().child(
-                    Scrollbar::vertical(&self.scroll_handle)
-                        .axis(ScrollbarAxis::Vertical)
-                        .scroll_size(size(px(0.), px(total_height))),
-                ),
-            );
+                is_dragging_scrollbar: self.is_dragging_scrollbar,
+                scrollbar_hovered: self.scrollbar_hovered,
+            });
 
         let container = crate::ui::style::panel_container(is_focused, &theme);
 
@@ -1024,10 +1114,28 @@ impl Render for VisualMapPanel {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
-                    this.focus_handle.focus(window);
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
                 }),
             )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some(bounds) = this.last_bounds.get()
+                    && !bounds.contains(&event.position)
+                {
+                    let mut changed = false;
+                    if this.scrollbar_hovered {
+                        this.scrollbar_hovered = false;
+                        changed = true;
+                    }
+                    if this.hovered_info.is_some() {
+                        this.hovered_info = None;
+                        changed = true;
+                    }
+                    if changed {
+                        cx.notify();
+                    }
+                }
+            }))
             .child(header)
             .child(toolbar)
             .child(canvas)
@@ -1048,6 +1156,8 @@ struct VisualMapElement {
     cursor_offset: Option<usize>,
     selection_range: Option<Range<usize>>,
     hovered_offset: Option<usize>,
+    is_dragging_scrollbar: bool,
+    scrollbar_hovered: bool,
 }
 
 impl Element for VisualMapElement {
@@ -1285,15 +1395,8 @@ impl Element for VisualMapElement {
         if let Some(img) = cached_image {
             let logical_width = physical_width as f32 / scale_factor;
             let logical_height = physical_height as f32 / scale_factor;
-            window
-                .paint_image(
-                    Bounds::new(bounds.origin, size(px(logical_width), px(logical_height))),
-                    Corners::default(),
-                    img,
-                    0,
-                    false,
-                )
-                .ok();
+            let image_bounds = Bounds::new(bounds.origin, size(px(logical_width), px(logical_height)));
+            window.paint_image(image_bounds, image_bounds, Corners::default(), img, 0, false).ok();
         }
 
         // Selection Highlight Overlay
@@ -1361,6 +1464,51 @@ impl Element for VisualMapElement {
                     window.paint_quad(gpui::fill(cur_bounds, theme.accent.opacity(0.3)));
                 }
             }
+        }
+
+        // Vertical scrollbar
+        paint_scrollbar_with_row_height(
+            bounds,
+            self.scroll_offset,
+            total_rows,
+            pixel_size,
+            self.is_dragging_scrollbar,
+            self.scrollbar_hovered,
+            theme,
+            window,
+        );
+
+        if self.is_dragging_scrollbar {
+            let panel_weak = self.panel.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                if !phase.bubble() {
+                    return;
+                }
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.update(cx, |this, cx| {
+                        if !event.dragging() {
+                            this.is_dragging_scrollbar = false;
+                            cx.notify();
+                        } else {
+                            this.update_scrollbar_drag(f32::from(event.position.y), cx);
+                        }
+                    });
+                }
+            });
+            let panel_weak = self.panel.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                if !phase.bubble() || event.button != MouseButton::Left {
+                    return;
+                }
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.update(cx, |this, cx| {
+                        if this.is_dragging_scrollbar {
+                            this.is_dragging_scrollbar = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
         }
     }
 }

@@ -3,9 +3,9 @@ use crate::core::document::Document;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::ActiveTheme;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::dock::{Panel, PanelEvent};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dock::{Panel, PanelEvent};
 use std::sync::{Arc, RwLock};
 
 use crate::actions::{NextDifference, PrevDifference, RefreshDiff, SwapDiffFiles, ToggleSyncScroll};
@@ -74,7 +74,7 @@ impl DiffPanel {
             let focus_handle = focus_handle.clone();
             move |_, window, cx| {
                 if window.focused(cx).as_ref() == Some(&focus_handle) {
-                    left_focus_handle.focus(window);
+                    left_focus_handle.focus(window, cx);
                 }
             }
         })
@@ -283,10 +283,6 @@ impl Focusable for DiffPanel {
 }
 
 impl Panel for DiffPanel {
-    fn panel_name(&self) -> &'static str {
-        "DiffPanel"
-    }
-
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let left_name = self
             .left_path()
@@ -319,37 +315,47 @@ impl Panel for DiffPanel {
         Some(format!("Diff: {} ↔ {}", left_name, right_name).into())
     }
 
+    fn zoom_control(&self, _cx: &App) -> Option<gpui_kit::component::dock::PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+}
+
+impl gpui_kit::base::dock::Panel for DiffPanel {
+    fn panel_name(&self) -> &'static str {
+        "DiffPanel"
+    }
+
     fn closable(&self, _cx: &App) -> bool {
         true
     }
 
-    fn zoomable(&self, _cx: &App) -> Option<gpui_component::dock::PanelControl> {
-        None
+    fn zoomable(&self, _cx: &App) -> bool {
+        false
     }
 
     fn visible(&self, _cx: &App) -> bool {
         true
     }
 
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
     }
 
     fn set_zoomed(&mut self, _zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
-    fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {
-        let mut state = gpui_component::dock::PanelState::new(self);
+    fn dump(&self, _cx: &App) -> gpui_kit::component::dock::PanelState {
+        let mut state = gpui_kit::component::dock::PanelState::new(self.panel_name());
         let diff_state = DiffPanelState {
             left_path: self.left_path().to_string_lossy().to_string(),
             right_path: self.right_path().to_string_lossy().to_string(),
         };
-        state.info = gpui_component::dock::PanelInfo::panel(serde_json::to_value(diff_state).expect("serialize diff_state"));
+        state.info = gpui_kit::component::dock::PanelInfo::panel(serde_json::to_value(diff_state).expect("serialize diff_state"));
         state
     }
 }

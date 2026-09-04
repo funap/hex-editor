@@ -3,7 +3,7 @@ use crate::core::hex_import::AddressMap;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon,
     button::{Button, ButtonVariants},
     input::{self, Input, InputState},

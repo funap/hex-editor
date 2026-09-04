@@ -1,7 +1,7 @@
 use crate::assets::Assets;
 use crate::settings::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, Settings};
 use gpui::{App, AssetSource, SharedString, Window};
-use gpui_component::theme::{Theme, ThemeConfig, ThemeMode, ThemeSet};
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeSet};
 use std::collections::HashMap;
 use std::rc::Rc;
 

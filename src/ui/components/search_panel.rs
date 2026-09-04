@@ -6,10 +6,10 @@ use crate::ui::components::data_table::{self as table, TableColumn, VirtualTable
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{self, Input, InputState};
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{self, Input, InputState};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, WindowExt as _, h_flex, v_flex};
 
 actions!(search_panel, [FocusTable, ClearResults]);
 
@@ -270,8 +270,7 @@ impl SearchPanel {
                         });
                     }
                     cx.notify();
-                })
-                .ok();
+                });
             }
         });
 
@@ -378,7 +377,7 @@ impl SearchPanel {
 
     fn focus_table(&mut self, _: &FocusTable, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(handle) = &self.table_state.focus_handle {
-            handle.focus(window);
+            handle.focus(window, cx);
         }
         cx.notify();
     }
@@ -400,17 +399,20 @@ impl SearchPanel {
 
     fn copy_address(&mut self, action: &CopyAddress, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
-        window.push_notification(gpui_component::notification::Notification::info(format!("Copied address {}", action.value)), cx);
+        window.push_notification(
+            gpui_kit::component::notification::Notification::info(format!("Copied address {}", action.value)),
+            cx,
+        );
     }
 
     fn copy_value(&mut self, action: &CopyValue, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
-        window.push_notification(gpui_component::notification::Notification::info("Copied hex value"), cx);
+        window.push_notification(gpui_kit::component::notification::Notification::info("Copied hex value"), cx);
     }
 
     fn copy_text(&mut self, action: &CopyText, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.value.clone()));
-        window.push_notification(gpui_component::notification::Notification::info("Copied text value"), cx);
+        window.push_notification(gpui_kit::component::notification::Notification::info("Copied text value"), cx);
     }
 
     fn auto_fit_column(&mut self, col_ix: usize, cx: &mut Context<Self>) {
@@ -728,7 +730,7 @@ impl Render for SearchPanel {
                                 .hover(move |style| style.bg(hover_bg))
                                 .on_click(window.listener_for(&list_view, move |this, _, window, cx| {
                                     if let Some(handle) = &this.table_state.focus_handle {
-                                        handle.focus(window);
+                                        handle.focus(window, cx);
                                     }
                                     this.select_item(idx, cx);
                                 }))
@@ -736,7 +738,7 @@ impl Render for SearchPanel {
                                     MouseButton::Right,
                                     window.listener_for(&list_view, move |this, _, window, cx| {
                                         if let Some(handle) = &this.table_state.focus_handle {
-                                            handle.focus(window);
+                                            handle.focus(window, cx);
                                         }
                                         this.select_item(idx, cx);
                                     }),
@@ -780,11 +782,11 @@ impl Render for SearchPanel {
                     })
                     .collect::<Vec<_>>()
             })
-            .track_scroll(self.table_state.vertical_scroll_handle.clone())
+            .track_scroll(&self.table_state.vertical_scroll_handle)
             .size_full();
 
-            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
-            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width, theme);
+            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state, theme);
             let context_view = view.clone();
 
             let table_focus_handle = self.table_state.focus_handle.clone();
@@ -798,9 +800,9 @@ impl Render for SearchPanel {
             if let Some(focus_handle) = &table_focus_handle {
                 table_container = table_container.track_focus(focus_handle).on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _, window, _| {
+                    cx.listener(|this, _, window, cx| {
                         if let Some(handle) = &this.table_state.focus_handle {
-                            handle.focus(window);
+                            handle.focus(window, cx);
                         }
                     }),
                 );

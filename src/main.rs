@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use gpui::{App, Application};
+use gpui::App;
 use std::path::PathBuf;
 
 mod actions;
@@ -34,7 +34,7 @@ fn main() {
 
     let cli_args = parse_cli_args();
 
-    let app = Application::new().with_assets(Assets);
+    let app = gpui_kit::application().with_assets(Assets);
 
     app.run(move |cx| {
         init_app_state(cx);
@@ -120,7 +120,7 @@ fn init_app_state(cx: &mut App) {
     cx.set_global(settings.default_encoding);
     cx.set_global(settings::RecentHistoryState::from_settings(&settings));
 
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
     theme::init(cx);
     theme::apply_settings(&settings, None, cx);
     settings::register_quit_handler(cx);
@@ -142,7 +142,7 @@ fn init_app_state(cx: &mut App) {
 
 /// Registers the application top menu bar items.
 fn setup_menus(cx: &mut App) {
-    cx.set_menus(crate::ui::menus::application_menus().iter().map(|menu| menu.to_gpui_menu()).collect());
+    cx.set_menus(crate::ui::menus::application_menus().iter().map(|menu| menu.to_gpui_menu()));
 }
 
 /// Registers global keybindings for window and document actions.
@@ -248,12 +248,12 @@ fn setup_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("alt-ctrl-d", crate::actions::CompareOpenFiles, None),
         // Standard text input shortcuts on non-macOS platforms
         #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-home", gpui_component::input::MoveToStart, Some("Input")),
+        gpui::KeyBinding::new("ctrl-home", gpui_kit::component::input::MoveToStart, Some("Input")),
         #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-end", gpui_component::input::MoveToEnd, Some("Input")),
+        gpui::KeyBinding::new("ctrl-end", gpui_kit::component::input::MoveToEnd, Some("Input")),
         #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-shift-home", gpui_component::input::SelectToStart, Some("Input")),
+        gpui::KeyBinding::new("ctrl-shift-home", gpui_kit::component::input::SelectToStart, Some("Input")),
         #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-shift-end", gpui_component::input::SelectToEnd, Some("Input")),
+        gpui::KeyBinding::new("ctrl-shift-end", gpui_kit::component::input::SelectToEnd, Some("Input")),
     ]);
 }

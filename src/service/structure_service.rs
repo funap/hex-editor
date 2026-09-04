@@ -3,7 +3,7 @@ use crate::core::editor::Editor;
 use crate::core::structure::types::ParseProgress;
 use crate::core::structure::{KaitaiInterpreter, KaitaiStream, KsyDefinition, ParseResult, ParsedField};
 use gpui::{App, BackgroundExecutor, Entity};
-use gpui_component::Root;
+use gpui_kit::component::Root;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -302,7 +302,7 @@ impl StructureService {
                                 && let Some(window) = window.downcast::<Root>()
                             {
                                 let _ = window.update(cx, |root, window, cx| {
-                                    let note = gpui_component::notification::Notification::error(msg);
+                                    let note = gpui_kit::component::notification::Notification::error(msg);
                                     root.notification.update(cx, |view, cx| view.push(note, window, cx));
                                     cx.notify();
                                 });
@@ -317,22 +317,14 @@ impl StructureService {
                 });
 
                 let (should_continue, has_more_fields) = match delivery {
-                    Ok(ParseUpdateDelivery::Applied {
+                    ParseUpdateDelivery::Applied {
                         should_continue,
                         has_more_fields,
-                    }) => (should_continue, has_more_fields),
-                    Ok(ParseUpdateDelivery::Stale(stale_batch)) => {
+                    } => (should_continue, has_more_fields),
+                    ParseUpdateDelivery::Stale(stale_batch) => {
                         let executor = cx.background_executor();
                         mailbox.close_and_discard(executor);
                         stale_batch.discard_on_background(executor);
-                        break;
-                    }
-                    Err(_) => {
-                        let executor = cx.background_executor();
-                        mailbox.close_and_discard(executor);
-                        if let Some(batch) = batch {
-                            batch.discard_on_background(executor);
-                        }
                         break;
                     }
                 };

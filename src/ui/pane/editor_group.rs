@@ -1,9 +1,9 @@
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use std::collections::HashMap;
 
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
@@ -179,7 +179,7 @@ impl EditorGroup {
             } else if pos <= self.active_index {
                 self.active_index = self.active_index.saturating_sub(1);
                 if let Some(tab) = self.tabs.get(self.active_index) {
-                    tab.focus_handle(cx).focus(window);
+                    tab.focus_handle(cx).focus(window, cx);
                 }
             }
             cx.emit(EditorGroupEvent::TabChanged);
@@ -194,7 +194,7 @@ impl EditorGroup {
         if index < self.tabs.len() {
             self.active_index = index;
             if let Some(tab) = self.tabs.get(index) {
-                tab.focus_handle(cx).focus(window);
+                tab.focus_handle(cx).focus(window, cx);
             }
             cx.emit(EditorGroupEvent::Focused);
             cx.emit(EditorGroupEvent::TabChanged);

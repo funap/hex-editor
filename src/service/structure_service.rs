@@ -217,20 +217,14 @@ impl StructureService {
         let cancel_token_clone = cancel_token.clone();
 
         let (doc_arc, doc_path, generation) = editor_entity.update(cx, |editor, cx| {
-            editor.cancel_structure_parsing();
-            editor.parse_cancel_token = Some(cancel_token.clone());
-            editor.structure_parse_async = true;
-            editor.structure_reparse_requested = false;
-            editor.set_ksy_definition(ksy.clone());
-            editor.is_parsing_structure = true;
-            editor.parse_progress_offset = 0;
             let total = editor.document.read().expect("document read lock").buffer.len();
             let path = editor.document.read().ok().map(|d| d.path().to_path_buf());
-            editor.parse_total_size = total;
+            editor.structure.start_async_parse(total, cancel_token.clone());
+            editor.set_ksy_definition(ksy.clone());
             editor.begin_partial_parse_result(ksy.meta.id.clone());
             editor.invalidate_line_map();
             cx.notify();
-            (editor.document.clone(), path, editor.parse_generation)
+            (editor.document.clone(), path, editor.structure.generation)
         });
 
         if let Some(ref path) = doc_path {
@@ -273,26 +267,25 @@ impl StructureService {
                 let mut batch = Some(batch);
                 let delivery = editor_entity.update(cx, |editor, cx| {
                     let batch = batch.take().expect("parse update batch must be present");
-                    if editor.parse_generation != generation {
+                    if editor.structure.generation != generation {
                         return ParseUpdateDelivery::Stale(batch);
                     }
-                    if !editor.is_parsing_structure && !batch.is_done {
+                    if !editor.structure.is_parsing && !batch.is_done {
                         return ParseUpdateDelivery::Stale(batch);
                     }
                     let is_done = batch.is_done;
                     let has_more_fields = batch.has_more_fields;
-                    editor.parse_progress_offset = batch.parsed_offset;
-                    editor.parse_total_size = batch.total_bytes;
-                    editor.is_finalizing_structure = batch.is_finalizing;
+                    editor.structure.progress_offset = batch.parsed_offset;
+                    editor.structure.total_size = batch.total_bytes;
+                    editor.structure.is_finalizing = batch.is_finalizing;
                     if let Some(res) = batch.parse_result {
                         editor.set_parse_result_arc(res);
                     } else if !batch.fields.is_empty() {
                         editor.append_parse_chunks(batch.definition_id, batch.fields, batch.parsed_offset, batch.total_bytes);
                     }
                     if is_done {
-                        editor.is_parsing_structure = false;
-                        editor.is_finalizing_structure = false;
-                        editor.parse_cancel_token = None;
+                        editor.structure.finish_parse();
+                        editor.structure.cancel_token = None;
 
                         if let Some(ref res) = editor.parse_result()
                             && let Some(err) = res.errors.first()

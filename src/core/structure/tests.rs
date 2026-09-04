@@ -1096,11 +1096,11 @@ seq:
 
     assert_eq!(editor.line_starts(), vec![0, 2, 4]);
 
-    editor.is_parsing_structure = true;
+    editor.structure.is_parsing = true;
     editor.invalidate_line_map();
     assert_eq!(editor.line_starts(), vec![0]);
 
-    editor.is_parsing_structure = false;
+    editor.structure.is_parsing = false;
     editor.invalidate_line_map();
     assert_eq!(editor.line_starts(), vec![0, 2, 4]);
 }
@@ -1130,12 +1130,12 @@ seq:
 
     // Toggle inline structure view off
     editor.toggle_inline_structure_view();
-    assert!(!editor.show_inline_structure_view);
+    assert!(!editor.structure.show_inline_structure_view);
     assert!(!editor.has_custom_layout());
 
     // Toggle back on
     editor.toggle_inline_structure_view();
-    assert!(editor.show_inline_structure_view);
+    assert!(editor.structure.show_inline_structure_view);
     assert!(editor.has_custom_layout());
 }
 
@@ -1532,22 +1532,22 @@ fn test_editor_parse_progress_tracking() {
     let doc = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
     let mut editor = Editor::new(doc);
 
-    assert_eq!(editor.parse_progress_offset, 0);
-    assert_eq!(editor.parse_total_size, 0);
-    assert!(!editor.is_parsing_structure);
+    assert_eq!(editor.structure.progress_offset, 0);
+    assert_eq!(editor.structure.total_size, 0);
+    assert!(!editor.structure.is_parsing);
 
     // Update progress
-    editor.is_parsing_structure = true;
+    editor.structure.is_parsing = true;
     editor.update_parse_progress(2, 4, None);
-    assert_eq!(editor.parse_progress_offset, 2);
-    assert_eq!(editor.parse_total_size, 4);
-    assert!(editor.is_parsing_structure);
+    assert_eq!(editor.structure.progress_offset, 2);
+    assert_eq!(editor.structure.total_size, 4);
+    assert!(editor.structure.is_parsing);
 
     // Clear
     editor.clear_structure_definition();
-    assert_eq!(editor.parse_progress_offset, 0);
-    assert_eq!(editor.parse_total_size, 0);
-    assert!(!editor.is_parsing_structure);
+    assert_eq!(editor.structure.progress_offset, 0);
+    assert_eq!(editor.structure.total_size, 0);
+    assert!(!editor.structure.is_parsing);
 }
 
 #[test]
@@ -1560,7 +1560,7 @@ fn test_clear_structure_definition_discards_a_completed_result() {
     let buffer = crate::core::buffer::Buffer::new(vec![0xAA, 0xBB]);
     let document = Arc::new(RwLock::new(Document::new(std::path::PathBuf::from("test.bin"), buffer)));
     let mut editor = Editor::new(document);
-    editor.structure_parse_async = true;
+    editor.structure.is_async = true;
     editor.set_parse_result(ParseResult::new(
         "completed".into(),
         vec![ParsedField {
@@ -1578,17 +1578,17 @@ fn test_clear_structure_definition_discards_a_completed_result() {
         2,
         Vec::new(),
     ));
-    let old_generation = editor.parse_generation;
+    let old_generation = editor.structure.generation;
 
     editor.clear_structure_definition();
 
     assert!(editor.ksy_definition().is_none());
     assert!(editor.parse_result().is_none());
-    assert!(!editor.is_parsing_structure);
-    assert!(!editor.structure_parse_async);
-    assert_eq!(editor.parse_progress_offset, 0);
-    assert_eq!(editor.parse_total_size, 0);
-    assert_ne!(editor.parse_generation, old_generation);
+    assert!(!editor.structure.is_parsing);
+    assert!(!editor.structure.is_async);
+    assert_eq!(editor.structure.progress_offset, 0);
+    assert_eq!(editor.structure.total_size, 0);
+    assert_ne!(editor.structure.generation, old_generation);
 }
 
 #[test]

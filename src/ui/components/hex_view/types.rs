@@ -23,8 +23,9 @@ pub const AUTO_FIT_SCAN_BYTES: usize = 64 * 1024;
 pub const AUTO_FIT_MAX_ITEMS: usize = 16 * 1024;
 pub const AUTO_FIT_MAX_TEXT_CHARS: usize = 4096;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum EditColumn {
+    #[default]
     Hex,
     Ascii,
 }

@@ -2,10 +2,14 @@
 
 pub mod cursor;
 pub mod layout_engine;
+pub mod search_state;
+pub mod structure_state;
 pub mod view_options;
 
 pub use cursor::{CursorModel, CursorState};
 pub use layout_engine::LayoutEngine;
+pub use search_state::SearchState;
+pub use structure_state::EditorStructureState;
 pub use view_options::ViewOptions;
 
 use crate::core::bookmark::{BookmarkColor, BookmarkFile, BookmarkItem, generate_bookmark_id};
@@ -25,16 +29,6 @@ use std::sync::RwLock;
 pub use crate::core::document::FoldedBookmarkSummary;
 pub use crate::core::layout::{BYTES_PER_ROW, LineMap};
 
-#[derive(Default, Clone)]
-pub struct SearchState {
-    pub query: String,
-    pub mode: crate::core::search::SearchMode,
-    pub results: Vec<usize>,
-    pub current_result_index: Option<usize>,
-    pub is_full_search_complete: bool,
-    pub generation: usize,
-}
-
 /// Represents the editor.
 pub struct Editor {
     // Shared document containing buffer, history, and metadata
@@ -43,19 +37,7 @@ pub struct Editor {
     pub layout: LayoutEngine,
     pub options: ViewOptions,
     pub search_state: SearchState,
-    pub is_parsing_structure: bool,
-    /// True after byte parsing reaches the end and display indexes are being finalized.
-    pub is_finalizing_structure: bool,
-    pub parse_progress_offset: usize,
-    pub parse_total_size: usize,
-    pub parse_generation: usize,
-    pub parse_cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Enables background reparsing after document edits.
-    pub structure_parse_async: bool,
-    /// Set after an edit until the UI starts the debounced background parse.
-    pub structure_reparse_requested: bool,
-    pub collapsed_struct_ids: std::collections::HashSet<String>,
-    pub show_inline_structure_view: bool,
+    pub structure: EditorStructureState,
 }
 
 impl Editor {
@@ -68,16 +50,7 @@ impl Editor {
             layout: LayoutEngine::new(cached_layout_version),
             options: ViewOptions::default(),
             search_state: SearchState::default(),
-            is_parsing_structure: false,
-            is_finalizing_structure: false,
-            parse_progress_offset: 0,
-            parse_total_size: 0,
-            parse_generation: 0,
-            parse_cancel_token: None,
-            structure_parse_async: false,
-            structure_reparse_requested: false,
-            collapsed_struct_ids: std::collections::HashSet::new(),
-            show_inline_structure_view: true,
+            structure: EditorStructureState::default(),
         }
     }
 
@@ -129,12 +102,7 @@ impl Editor {
     pub fn set_encoding(&mut self, encoding: Encoding) {
         if self.options.encoding != encoding {
             self.options.encoding = encoding;
-            if self.search_state.mode == crate::core::search::SearchMode::Text && !self.search_state.query.is_empty() {
-                self.search_state.results.clear();
-                self.search_state.current_result_index = None;
-                self.search_state.is_full_search_complete = false;
-                self.search_state.generation += 1;
-            }
+            self.search_state.on_encoding_changed();
         }
     }
 
@@ -362,18 +330,63 @@ impl Editor {
 
     pub fn line_starts(&self) -> LineMap {
         let doc = self.document.read().expect("document read lock");
-        self.layout
-            .line_starts(&doc, self.show_inline_structure_view, self.is_parsing_structure, &self.collapsed_struct_ids)
+        self.layout.line_starts(
+            &doc,
+            self.structure.show_inline_structure_view,
+            self.structure.is_parsing,
+            &self.structure.collapsed_struct_ids,
+        )
     }
 
     pub fn has_custom_layout(&self) -> bool {
         let doc = self.document.read().expect("document read lock");
-        LayoutEngine::has_custom_layout(&doc, self.show_inline_structure_view, self.is_parsing_structure)
+        LayoutEngine::has_custom_layout(&doc, self.structure.show_inline_structure_view, self.structure.is_parsing)
     }
 
     pub fn has_custom_layout_doc(&self, doc: &Document) -> bool {
-        LayoutEngine::has_custom_layout(doc, self.show_inline_structure_view, self.is_parsing_structure)
+        LayoutEngine::has_custom_layout(doc, self.structure.show_inline_structure_view, self.structure.is_parsing)
     }
+
+    pub fn is_parsing_structure(&self) -> bool {
+        self.structure.is_parsing
+    }
+
+    pub fn is_finalizing_structure(&self) -> bool {
+        self.structure.is_finalizing
+    }
+
+    pub fn show_inline_structure_view(&self) -> bool {
+        self.structure.show_inline_structure_view
+    }
+
+    pub fn parse_progress_offset(&self) -> usize {
+        self.structure.progress_offset
+    }
+
+    pub fn parse_total_size(&self) -> usize {
+        self.structure.total_size
+    }
+
+    pub fn parse_generation(&self) -> usize {
+        self.structure.generation
+    }
+
+    pub fn structure_parse_async(&self) -> bool {
+        self.structure.is_async
+    }
+
+    pub fn structure_reparse_requested(&self) -> bool {
+        self.structure.reparse_requested
+    }
+
+    pub fn collapsed_struct_ids(&self) -> &std::collections::HashSet<String> {
+        &self.structure.collapsed_struct_ids
+    }
+
+    pub fn collapsed_struct_ids_mut(&mut self) -> &mut std::collections::HashSet<String> {
+        &mut self.structure.collapsed_struct_ids
+    }
+
     pub fn bookmarks_snapshot(&self) -> Vec<BookmarkItem> {
         self.document.read().expect("document read lock").metadata.bookmarks.clone()
     }
@@ -690,61 +703,23 @@ impl Editor {
     }
 
     pub fn search_pattern(&self) -> Option<Vec<crate::core::search::PatternByte>> {
-        if self.search_state.query.is_empty() {
-            return None;
-        }
-        match self.search_state.mode {
-            crate::core::search::SearchMode::Text => crate::core::search::parse_text_pattern(&self.search_state.query, self.options.encoding),
-            crate::core::search::SearchMode::Hex => crate::core::search::parse_hex_pattern(&self.search_state.query),
-        }
+        self.search_state.search_pattern(self.options.encoding)
     }
 
     pub fn set_search_query(&mut self, query: String) {
-        if self.search_state.query != query {
-            self.search_state.query = query;
-            self.search_state.results.clear();
-            self.search_state.current_result_index = None;
-            self.search_state.is_full_search_complete = false;
-            self.search_state.generation += 1;
-        }
+        self.search_state.set_query(query);
     }
 
     pub fn set_search_query_and_mode(&mut self, query: String, mode: crate::core::search::SearchMode) {
-        if self.search_state.query != query || self.search_state.mode != mode {
-            self.search_state.query = query;
-            self.search_state.mode = mode;
-            self.search_state.results.clear();
-            self.search_state.current_result_index = None;
-            self.search_state.is_full_search_complete = false;
-            self.search_state.generation += 1;
-        }
+        self.search_state.set_query_and_mode(query, mode);
     }
 
     pub fn set_search_results(&mut self, results: Vec<usize>, generation: usize, is_full: bool) {
-        if generation < self.search_state.generation {
-            return;
-        }
-        if generation > self.search_state.generation {
-            self.search_state.generation = generation;
-        }
-        if self.search_state.is_full_search_complete && !is_full {
-            return;
-        }
-        self.search_state.results = results;
-        if is_full {
-            self.search_state.is_full_search_complete = true;
-        }
-        if !self.search_state.results.is_empty() && self.search_state.current_result_index.is_none() {
-            self.search_state.current_result_index = Some(0);
-        }
+        self.search_state.set_results(results, generation, is_full);
     }
 
     pub fn clear_search(&mut self) {
-        self.search_state.query.clear();
-        self.search_state.results.clear();
-        self.search_state.current_result_index = None;
-        self.search_state.is_full_search_complete = false;
-        self.search_state.generation += 1;
+        self.search_state.clear();
     }
 
     /// Finds and navigates to the next occurrence starting after the current cursor offset,
@@ -777,14 +752,7 @@ impl Editor {
     }
 
     pub fn next_search_result(&mut self) -> Option<usize> {
-        if !self.search_state.results.is_empty() {
-            let next_index = if let Some(index) = self.search_state.current_result_index {
-                (index + 1) % self.search_state.results.len()
-            } else {
-                0
-            };
-            self.search_state.current_result_index = Some(next_index);
-            let offset = self.search_state.results[next_index];
+        if let Some(offset) = self.search_state.next_result_offset() {
             self.auto_unfold_if_needed(offset);
             self.cursor.offset = offset;
             Some(offset)
@@ -1299,16 +1267,12 @@ impl Editor {
     }
 
     pub fn toggle_struct_collapsed(&mut self, struct_id: &str) {
-        if self.collapsed_struct_ids.contains(struct_id) {
-            self.collapsed_struct_ids.remove(struct_id);
-        } else {
-            self.collapsed_struct_ids.insert(struct_id.to_string());
-        }
+        self.structure.toggle_collapsed(struct_id);
         self.layout.invalidate();
     }
 
     pub fn toggle_inline_structure_view(&mut self) {
-        self.show_inline_structure_view = !self.show_inline_structure_view;
+        self.structure.toggle_inline_view();
         self.layout.invalidate();
     }
 
@@ -1319,15 +1283,7 @@ impl Editor {
     }
 
     pub fn prev_search_result(&mut self) -> Option<usize> {
-        if !self.search_state.results.is_empty() {
-            let prev_index = if let Some(index) = self.search_state.current_result_index {
-                if index == 0 { self.search_state.results.len() - 1 } else { index - 1 }
-            } else {
-                self.search_state.results.len() - 1
-            };
-
-            self.search_state.current_result_index = Some(prev_index);
-            let offset = self.search_state.results[prev_index];
+        if let Some(offset) = self.search_state.prev_result_offset() {
             self.auto_unfold_if_needed(offset);
             self.cursor.offset = offset;
             Some(offset)
@@ -1337,11 +1293,7 @@ impl Editor {
     }
 
     pub fn current_search_result(&self) -> Option<usize> {
-        if let Some(i) = self.search_state.current_result_index {
-            self.search_state.results.get(i).copied()
-        } else {
-            None
-        }
+        self.search_state.current_result()
     }
 
     pub fn execute_command(&mut self, command: Box<dyn Command>) -> bool {
@@ -1400,8 +1352,8 @@ impl Editor {
 
     pub fn set_kaitai_definition(&mut self, ksy: Arc<crate::core::structure::KsyDefinition>) {
         self.cancel_structure_parsing();
-        self.structure_parse_async = false;
-        self.structure_reparse_requested = false;
+        self.structure.is_async = false;
+        self.structure.reparse_requested = false;
         {
             let mut doc = self.document.write().expect("document write lock");
             doc.bump_layout_version();
@@ -1417,8 +1369,8 @@ impl Editor {
     }
 
     pub fn set_parse_result(&mut self, result: ParseResult) {
-        self.parse_progress_offset = result.total_parsed_bytes;
-        self.is_finalizing_structure = false;
+        self.structure.progress_offset = result.total_parsed_bytes;
+        self.structure.is_finalizing = false;
         {
             let mut doc = self.document.write().expect("document write lock");
             doc.bump_layout_version();
@@ -1437,7 +1389,7 @@ impl Editor {
         if let Some(old_res) = old {
             crate::core::dealloc::discard_in_background(old_res);
         }
-        self.is_finalizing_structure = false;
+        self.structure.is_finalizing = false;
         self.layout.invalidate();
     }
 
@@ -1449,8 +1401,8 @@ impl Editor {
 
     /// Appends shared parse chunks without cloning their fields.
     pub fn append_parse_chunks(&mut self, definition_id: String, chunks: Vec<Arc<[ParsedField]>>, offset: usize, total_size: usize) {
-        self.parse_progress_offset = offset;
-        self.parse_total_size = total_size;
+        self.structure.progress_offset = offset;
+        self.structure.total_size = total_size;
         if chunks.iter().all(|chunk| chunk.is_empty()) {
             return;
         }
@@ -1466,8 +1418,8 @@ impl Editor {
     }
 
     pub fn set_parse_result_arc(&mut self, result: Arc<ParseResult>) {
-        self.parse_progress_offset = result.total_parsed_bytes;
-        self.is_finalizing_structure = false;
+        self.structure.progress_offset = result.total_parsed_bytes;
+        self.structure.is_finalizing = false;
         let old = {
             let mut doc = self.document.write().expect("document write lock");
             doc.bump_layout_version();
@@ -1480,8 +1432,8 @@ impl Editor {
     }
 
     pub fn update_parse_progress(&mut self, offset: usize, total_size: usize, intermediate_result: Option<ParseResult>) {
-        self.parse_progress_offset = offset;
-        self.parse_total_size = total_size;
+        self.structure.progress_offset = offset;
+        self.structure.total_size = total_size;
         if let Some(res) = intermediate_result {
             let mut doc = self.document.write().expect("document write lock");
             doc.bump_layout_version();
@@ -1513,35 +1465,25 @@ impl Editor {
     /// pending until [`Self::take_structure_reparse_request`] starts it, so a
     /// newer edit can invalidate an older timer without racing the parser.
     pub fn pending_structure_reparse(&self) -> Option<(Arc<crate::core::structure::KsyDefinition>, usize)> {
-        self.structure_reparse_requested
-            .then(|| self.ksy_definition().map(|ksy| (ksy, self.parse_generation)))
-            .flatten()
+        self.structure.pending_reparse(self.ksy_definition().as_ref())
     }
 
     /// Takes a deferred edit request if it still belongs to `generation`.
     pub fn take_structure_reparse_request(&mut self, generation: usize) -> Option<Arc<crate::core::structure::KsyDefinition>> {
-        if !self.structure_reparse_requested || self.parse_generation != generation {
-            return None;
-        }
-
-        self.structure_reparse_requested = false;
-        self.ksy_definition()
+        self.structure.take_reparse_request(generation, self.ksy_definition().as_ref())
     }
 
     fn document_changed(&mut self) {
         self.layout.invalidate();
-        self.search_state.results.clear();
-        self.search_state.current_result_index = None;
-        self.search_state.is_full_search_complete = false;
-        self.search_state.generation = self.search_state.generation.wrapping_add(1);
+        self.search_state.on_document_changed();
 
-        if self.structure_parse_async && self.ksy_definition().is_some() {
+        if self.structure.is_async && self.ksy_definition().is_some() {
             self.cancel_structure_parsing();
-            self.structure_reparse_requested = true;
-            self.is_parsing_structure = true;
-            self.is_finalizing_structure = false;
-            self.parse_progress_offset = 0;
-            self.parse_total_size = self.total_size();
+            self.structure.reparse_requested = true;
+            self.structure.is_parsing = true;
+            self.structure.is_finalizing = false;
+            self.structure.progress_offset = 0;
+            self.structure.total_size = self.total_size();
 
             if let Some(ksy) = self.ksy_definition() {
                 self.begin_partial_parse_result(ksy.meta.id.clone());
@@ -1552,21 +1494,13 @@ impl Editor {
     }
 
     pub fn cancel_structure_parsing(&mut self) {
-        if let Some(token) = self.parse_cancel_token.take() {
-            token.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        // Invalidate callbacks that are already queued in the parser's
-        // mailbox, and cancel a debounce request that has not started yet.
-        self.parse_generation = self.parse_generation.wrapping_add(1);
-        self.structure_reparse_requested = false;
-        self.is_parsing_structure = false;
-        self.is_finalizing_structure = false;
+        self.structure.cancel();
     }
 
     pub fn clear_structure_definition(&mut self) {
         self.cancel_structure_parsing();
-        self.structure_parse_async = false;
-        self.structure_reparse_requested = false;
+        self.structure.is_async = false;
+        self.structure.reparse_requested = false;
         let (old_definition, old) = {
             let mut doc = self.document.write().expect("document write lock");
             doc.bump_layout_version();
@@ -1575,10 +1509,7 @@ impl Editor {
         if old_definition.is_some() || old.is_some() {
             crate::core::dealloc::discard_in_background((old_definition, old));
         }
-        self.is_parsing_structure = false;
-        self.is_finalizing_structure = false;
-        self.parse_progress_offset = 0;
-        self.parse_total_size = 0;
+        self.structure.reset_progress();
         self.layout.invalidate();
     }
 }

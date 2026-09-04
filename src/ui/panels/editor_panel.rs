@@ -269,8 +269,8 @@ impl EditorPanel {
             (
                 ed.document.clone(),
                 ed.options,
-                ed.show_inline_structure_view,
-                ed.collapsed_struct_ids.clone(),
+                ed.structure.show_inline_structure_view,
+                ed.structure.collapsed_struct_ids.clone(),
                 ed.cursor_state(),
             )
         };
@@ -281,8 +281,8 @@ impl EditorPanel {
             let mut editor = Editor::new(doc);
             editor.options = options;
             editor.cursor.group_size = options.group_size;
-            editor.show_inline_structure_view = show_inline_structure_view;
-            editor.collapsed_struct_ids = collapsed_struct_ids;
+            editor.structure.show_inline_structure_view = show_inline_structure_view;
+            editor.structure.collapsed_struct_ids = collapsed_struct_ids;
             editor.restore_cursor_state(cursor_state);
             editor
         });

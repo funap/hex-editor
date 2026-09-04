@@ -1,7 +1,14 @@
 pub mod actions;
+pub mod clipboard_handler;
+pub mod input_controller;
 pub mod layout;
 pub mod paint;
+pub mod scroll_controller;
 pub mod types;
+
+pub use clipboard_handler::ClipboardHandler;
+pub use input_controller::InputController;
+pub use scroll_controller::ScrollController;
 
 #[cfg(test)]
 mod layout_tests;
@@ -26,11 +33,11 @@ use crate::actions::{
     ToggleHideUnbookmarked, ToggleInlineStructureView, ToggleSearch, Undo, UnfoldBookmarkAtCursor,
 };
 use crate::app_state::InsertModeState;
-use crate::core::clipboard::parse_paste_bytes;
 use crate::core::editor::Editor;
 use crate::core::encoding::Encoding;
-use crate::core::format::{CopyFormat, format_bytes, format_hex_spaces};
+use crate::core::format::CopyFormat;
 use crate::core::radix::{ByteGroupSize, DisplayRadix};
+
 use crate::core::structure::{IndexedField, ParseResult};
 use gpui::prelude::*;
 use gpui::*;
@@ -122,27 +129,10 @@ pub struct HexView {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
     cursor_blink: Entity<HexCursorBlink>,
-    scroll_offset: usize,
-    accum_scroll_y: f32,
-    outer_scroll_x: f32,
-    outer_scroll_handle: ScrollHandle,
-    is_dragging_scrollbar: bool,
-    scrollbar_hovered: bool,
-    scrollbar_drag_start_y: f32,
-    scrollbar_drag_start_row: usize,
-    pub hex_scroll_x: f32,
-    pub ascii_scroll_x: f32,
-    pub desc_scroll_x: f32,
-    pub comment_scroll_x: f32,
-    scroll_lock_axis: Option<ScrollAxisLock>,
-    last_scroll_time: Option<std::time::Instant>,
-    scroll_lock_top_row: usize,
+    pub scroll: ScrollController,
     is_selecting: bool,
     mouse_selection_anchor: Option<usize>,
-    active_column: EditColumn,
-    pending_hex_digit: Option<(usize, u8)>,
-    pending_hex_range: Option<Range<usize>>,
-    hex_nibble: u8,
+    pub input: InputController,
     bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     list_bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
     highlights: Arc<Vec<(Range<usize>, Hsla)>>,
@@ -280,27 +270,10 @@ impl HexView {
             editor,
             focus_handle,
             cursor_blink,
-            scroll_offset: 0,
-            accum_scroll_y: 0.0,
-            outer_scroll_x: 0.0,
-            outer_scroll_handle: ScrollHandle::new(),
-            is_dragging_scrollbar: false,
-            scrollbar_hovered: false,
-            scrollbar_drag_start_y: 0.0,
-            scrollbar_drag_start_row: 0,
-            hex_scroll_x: 0.0,
-            ascii_scroll_x: 0.0,
-            desc_scroll_x: 0.0,
-            comment_scroll_x: 0.0,
-            scroll_lock_axis: None,
-            last_scroll_time: None,
-            scroll_lock_top_row: 0,
+            scroll: ScrollController::default(),
             is_selecting: false,
             mouse_selection_anchor: None,
-            active_column: EditColumn::Hex,
-            pending_hex_digit: None,
-            pending_hex_range: None,
-            hex_nibble: 0,
+            input: InputController::default(),
             bounds: std::cell::Cell::new(None),
             list_bounds: std::cell::Cell::new(None),
             highlights: Arc::new(Vec::new()),
@@ -343,12 +316,12 @@ impl HexView {
             show_offset: self.show_offset,
             show_ascii: self.show_ascii,
             show_header: self.show_header,
-            scroll_offset: self.scroll_offset,
-            outer_scroll_x: self.outer_scroll_x,
-            hex_scroll_x: self.hex_scroll_x,
-            ascii_scroll_x: self.ascii_scroll_x,
-            desc_scroll_x: self.desc_scroll_x,
-            comment_scroll_x: self.comment_scroll_x,
+            scroll_offset: self.scroll.scroll_offset,
+            outer_scroll_x: self.scroll.outer_scroll_x,
+            hex_scroll_x: self.scroll.hex_scroll_x,
+            ascii_scroll_x: self.scroll.ascii_scroll_x,
+            desc_scroll_x: self.scroll.desc_scroll_x,
+            comment_scroll_x: self.scroll.comment_scroll_x,
         }
     }
 
@@ -361,12 +334,12 @@ impl HexView {
         self.show_offset = state.show_offset;
         self.show_ascii = state.show_ascii;
         self.show_header = state.show_header;
-        self.scroll_offset = state.scroll_offset;
-        self.outer_scroll_x = state.outer_scroll_x;
-        self.hex_scroll_x = state.hex_scroll_x;
-        self.ascii_scroll_x = state.ascii_scroll_x;
-        self.desc_scroll_x = state.desc_scroll_x;
-        self.comment_scroll_x = state.comment_scroll_x;
+        self.scroll.scroll_offset = state.scroll_offset;
+        self.scroll.outer_scroll_x = state.outer_scroll_x;
+        self.scroll.hex_scroll_x = state.hex_scroll_x;
+        self.scroll.ascii_scroll_x = state.ascii_scroll_x;
+        self.scroll.desc_scroll_x = state.desc_scroll_x;
+        self.scroll.comment_scroll_x = state.comment_scroll_x;
         self.cached_comment_content_width.set(None);
         self.clear_desc_content_width_cache();
     }
@@ -414,7 +387,14 @@ impl HexView {
     pub fn description_content_width_in_range(editor: &Editor, parse_result: &ParseResult, scan_range: &Range<usize>, char_w: f32) -> f32 {
         let line_starts = editor.line_starts();
         let total_size = editor.total_size();
-        Self::description_content_width_for_line_map(&line_starts, total_size, parse_result, scan_range, &editor.collapsed_struct_ids, char_w)
+        Self::description_content_width_for_line_map(
+            &line_starts,
+            total_size,
+            parse_result,
+            scan_range,
+            &editor.structure.collapsed_struct_ids,
+            char_w,
+        )
     }
 
     fn description_content_width_for_line_map(
@@ -596,7 +576,7 @@ impl HexView {
             let line_starts = editor.line_starts();
             (
                 line_starts.max_bytes_per_row(),
-                editor.show_inline_structure_view && editor.parse_result().is_some(),
+                editor.structure.show_inline_structure_view && editor.parse_result().is_some(),
             )
         };
         let bounds_width = self
@@ -636,32 +616,13 @@ impl HexView {
     }
 
     fn horizontal_offset(&self, target: HorizontalScrollTarget) -> f32 {
-        match target {
-            HorizontalScrollTarget::View => self.outer_scroll_x,
-            HorizontalScrollTarget::Column(ScrollColumn::Hex) => self.hex_scroll_x,
-            HorizontalScrollTarget::Column(ScrollColumn::Ascii) => self.ascii_scroll_x,
-            HorizontalScrollTarget::Column(ScrollColumn::Description) => self.desc_scroll_x,
-            HorizontalScrollTarget::Column(ScrollColumn::Comment) => self.comment_scroll_x,
-        }
+        self.scroll.horizontal_offset(target)
     }
 
     fn set_horizontal_offset(&mut self, target: HorizontalScrollTarget, offset: f32, layout: HexViewLayout, emit: bool, cx: &mut Context<Self>) -> bool {
-        let max_offset = layout.max_offset(target);
-        let new_offset = offset.clamp(0.0, max_offset);
-        let current_offset = self.horizontal_offset(target);
-        if (new_offset - current_offset).abs() <= 0.01 {
+        let (changed, new_offset) = self.scroll.set_horizontal_offset(target, offset, layout);
+        if !changed {
             return false;
-        }
-
-        match target {
-            HorizontalScrollTarget::View => {
-                self.outer_scroll_x = new_offset;
-                self.outer_scroll_handle.set_offset(point(-px(new_offset), px(0.0)));
-            }
-            HorizontalScrollTarget::Column(ScrollColumn::Hex) => self.hex_scroll_x = new_offset,
-            HorizontalScrollTarget::Column(ScrollColumn::Ascii) => self.ascii_scroll_x = new_offset,
-            HorizontalScrollTarget::Column(ScrollColumn::Description) => self.desc_scroll_x = new_offset,
-            HorizontalScrollTarget::Column(ScrollColumn::Comment) => self.comment_scroll_x = new_offset,
         }
 
         cx.notify();
@@ -675,7 +636,7 @@ impl HexView {
     }
 
     fn sync_outer_scroll_from_handle(&mut self, layout: HexViewLayout, cx: &mut Context<Self>) {
-        let handle_offset = (-f32::from(self.outer_scroll_handle.offset().x)).max(0.0);
+        let handle_offset = (-f32::from(self.scroll.outer_scroll_handle.offset().x)).max(0.0);
         let _ = self.set_horizontal_offset(HorizontalScrollTarget::View, handle_offset, layout, true, cx);
     }
 
@@ -687,20 +648,10 @@ impl HexView {
 
     pub fn clamp_scroll_offsets(&mut self, cx: &App) {
         let max_hex = self.max_hex_scroll(cx);
-        self.hex_scroll_x = self.hex_scroll_x.clamp(0.0, max_hex);
-
         let max_desc = self.max_desc_scroll(cx);
-        self.desc_scroll_x = self.desc_scroll_x.clamp(0.0, max_desc);
-
         let max_comment = self.max_comment_scroll(cx);
-        self.comment_scroll_x = self.comment_scroll_x.clamp(0.0, max_comment);
-
         let layout = self.current_layout(cx);
-        self.ascii_scroll_x = self
-            .ascii_scroll_x
-            .clamp(0.0, layout.max_offset(HorizontalScrollTarget::Column(ScrollColumn::Ascii)));
-        self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
-        self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
+        self.scroll.clamp_scroll_offsets(max_hex, max_desc, max_comment, layout);
     }
 
     pub fn auto_fit_column(&mut self, col: ResizingColumn, cx: &mut Context<Self>) {
@@ -716,7 +667,7 @@ impl HexView {
             ResizingColumn::Ascii => {
                 let max_bytes_per_row = self.editor.read(cx).line_starts().max_bytes_per_row();
                 self.ascii_col_width = Self::default_ascii_col_width(max_bytes_per_row);
-                self.ascii_scroll_x = 0.0;
+                self.scroll.ascii_scroll_x = 0.0;
             }
             ResizingColumn::Description => {
                 let scan_range = self.visible_auto_fit_scan_range(cx);
@@ -730,10 +681,10 @@ impl HexView {
                     } else {
                         DESC_WIDTH
                     };
-                    self.desc_scroll_x = 0.0;
+                    self.scroll.desc_scroll_x = 0.0;
                 } else {
                     self.desc_col_width = DESC_WIDTH;
-                    self.desc_scroll_x = 0.0;
+                    self.scroll.desc_scroll_x = 0.0;
                 }
             }
             ResizingColumn::Comment => {
@@ -747,7 +698,7 @@ impl HexView {
                 } else {
                     COMMENT_WIDTH
                 };
-                self.comment_scroll_x = 0.0;
+                self.scroll.comment_scroll_x = 0.0;
             }
         }
         self.cursor_reveal_pending = true;
@@ -766,54 +717,47 @@ impl HexView {
             delta_x = delta_y;
         }
 
-        if let Some(last_time) = self.last_scroll_time
+        if let Some(last_time) = self.scroll.last_scroll_time
             && now.duration_since(last_time).as_millis() > 120
         {
-            self.scroll_lock_axis = None;
+            self.scroll.scroll_lock_axis = None;
         }
-        self.last_scroll_time = Some(now);
+        self.scroll.last_scroll_time = Some(now);
 
         let abs_x = delta_x.abs();
         let abs_y = delta_y.abs();
 
         if column_only_horizontal {
-            self.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
-            self.scroll_lock_top_row = self.current_scroll_top_row();
-        } else if self.scroll_lock_axis.is_none() && (abs_x > 0.5 || abs_y > 0.5) {
+            self.scroll.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
+            self.scroll.scroll_lock_top_row = self.current_scroll_top_row();
+        } else if self.scroll.scroll_lock_axis.is_none() && (abs_x > 0.5 || abs_y > 0.5) {
             if abs_x > abs_y * 1.1 {
-                self.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
-                self.scroll_lock_top_row = self.current_scroll_top_row();
+                self.scroll.scroll_lock_axis = Some(ScrollAxisLock::Horizontal);
+                self.scroll.scroll_lock_top_row = self.current_scroll_top_row();
             } else if abs_y > abs_x * 1.1 {
-                self.scroll_lock_axis = Some(ScrollAxisLock::Vertical);
+                self.scroll.scroll_lock_axis = Some(ScrollAxisLock::Vertical);
             }
         }
 
-        if self.scroll_lock_axis == Some(ScrollAxisLock::Vertical) {
+        if self.scroll.scroll_lock_axis == Some(ScrollAxisLock::Vertical) {
             let total_rows = self.editor.read(cx).line_starts().len().max(1);
             let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
             let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
             let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
 
-            self.accum_scroll_y += delta_y;
-            let rows_to_scroll = -(self.accum_scroll_y / ROW_HEIGHT) as isize;
-            if rows_to_scroll != 0 {
-                self.accum_scroll_y += (rows_to_scroll as f32) * ROW_HEIGHT;
-                let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
-                if new_offset != self.scroll_offset {
-                    self.scroll_offset = new_offset;
-                    self.cached_comment_content_width.set(None);
-                    cx.notify();
-                    cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
-                }
+            if let Some(new_offset) = self.scroll.handle_wheel_vertical(delta_y, max_top_row) {
+                self.cached_comment_content_width.set(None);
+                cx.notify();
+                cx.emit(HexViewEvent::Scrolled(new_offset));
             }
             return;
         }
 
-        let is_horizontal = self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) || column_only_horizontal || abs_x > abs_y;
+        let is_horizontal = self.scroll.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) || column_only_horizontal || abs_x > abs_y;
 
         if is_horizontal && abs_x > 0.01 {
-            if self.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) {
-                let lock_row = self.scroll_lock_top_row;
+            if self.scroll.scroll_lock_axis == Some(ScrollAxisLock::Horizontal) {
+                let lock_row = self.scroll.scroll_lock_top_row;
                 self.scroll_to_row(lock_row, cx);
             }
 
@@ -827,7 +771,7 @@ impl HexView {
             let base_x = f32::from(bounds.left()) + 8.0;
             let relative_x = f32::from(event.position.x) - base_x;
             let target = layout
-                .column_at(relative_x, self.outer_scroll_x)
+                .column_at(relative_x, self.scroll.outer_scroll_x)
                 .map(HorizontalScrollTarget::Column)
                 .unwrap_or(HorizontalScrollTarget::View);
 
@@ -839,7 +783,7 @@ impl HexView {
             let _ = self.set_horizontal_offset(target, new_offset, layout, true, cx);
 
             if can_chain_to_outer(target, residual_delta) {
-                let current_outer = self.outer_scroll_x;
+                let current_outer = self.scroll.outer_scroll_x;
                 let new_outer = (current_outer - residual_delta).clamp(0.0, layout.outer_max);
                 let _ = self.set_horizontal_offset(HorizontalScrollTarget::View, new_outer, layout, true, cx);
             }
@@ -849,46 +793,25 @@ impl HexView {
             let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
             let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
 
-            self.accum_scroll_y += delta_y;
-            let rows_to_scroll = -(self.accum_scroll_y / ROW_HEIGHT) as isize;
-            if rows_to_scroll != 0 {
-                self.accum_scroll_y += (rows_to_scroll as f32) * ROW_HEIGHT;
-                let new_offset = ((self.scroll_offset as isize) + rows_to_scroll).clamp(0, max_top_row as isize) as usize;
-                if new_offset != self.scroll_offset {
-                    self.scroll_offset = new_offset;
-                    self.cached_comment_content_width.set(None);
-                    cx.notify();
-                    cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
-                }
+            if let Some(new_offset) = self.scroll.handle_wheel_vertical(delta_y, max_top_row) {
+                self.cached_comment_content_width.set(None);
+                cx.notify();
+                cx.emit(HexViewEvent::Scrolled(new_offset));
             }
         }
     }
 
     fn update_scrollbar_drag(&mut self, current_y: f32, cx: &mut Context<Self>) {
-        if !self.is_dragging_scrollbar {
-            return;
-        }
-
-        let delta_y = current_y - self.scrollbar_drag_start_y;
         let total_rows = self.editor.read(cx).line_starts().len().max(1);
         let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
-        let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-        let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
-        let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
-        let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
-        let max_thumb_top = (list_h - thumb_h).max(0.0);
-
-        if max_thumb_top > 0.0 && max_top_row > 0 {
-            let delta_ratio = delta_y as f64 / max_thumb_top as f64;
-            let delta_rows = delta_ratio * max_top_row as f64;
-            let new_row = ((self.scrollbar_drag_start_row as f64 + delta_rows).round() as isize).clamp(0, max_top_row as isize) as usize;
+        if let Some(new_row) = self.scroll.update_scrollbar_drag(current_y, total_rows, list_h) {
             self.scroll_to_row(new_row, cx);
         }
     }
 
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_dragging_scrollbar {
-            self.is_dragging_scrollbar = false;
+        if self.scroll.is_dragging_scrollbar {
+            self.scroll.is_dragging_scrollbar = false;
             cx.notify();
         }
         if self.resizing_column.is_some() {
@@ -1043,7 +966,7 @@ impl HexView {
         let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
         let total_rows = line_starts.len().max(1);
 
-        if let Some(target_top) = calculate_scroll_top_for_range(self.scroll_offset, visible_rows, total_rows, start_row, end_row) {
+        if let Some(target_top) = calculate_scroll_top_for_range(self.scroll.scroll_offset, visible_rows, total_rows, start_row, end_row) {
             self.scroll_to_row(target_top, cx);
         }
     }
@@ -1053,13 +976,13 @@ impl HexView {
     }
 
     pub fn current_scroll_top_row(&self) -> usize {
-        self.scroll_offset
+        self.scroll.scroll_offset
     }
 
     pub fn viewport_byte_range(&self, cx: &App) -> (usize, usize) {
         let editor = self.editor.read(cx);
         let line_starts = editor.line_starts();
-        let current_top = self.scroll_offset;
+        let current_top = self.scroll.scroll_offset;
         let start_byte = line_starts.get(current_top).unwrap_or(0);
         let visible_rows = if let Some(bounds) = self.list_bounds.get() {
             (f32::from(bounds.size.height) / ROW_HEIGHT).ceil() as usize
@@ -1079,15 +1002,11 @@ impl HexView {
         let total_rows = self.editor.read(cx).line_starts().len().max(1);
         let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
         let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-        let max_offset = total_rows.saturating_sub(visible_rows.max(1));
-        let new_offset = row.min(max_offset);
 
-        if self.scroll_offset != new_offset {
-            self.scroll_offset = new_offset;
+        if self.scroll.scroll_to_row(row, total_rows, visible_rows) {
             self.cached_comment_content_width.set(None);
-            self.accum_scroll_y = 0.0;
             cx.notify();
-            cx.emit(HexViewEvent::Scrolled(self.scroll_offset));
+            cx.emit(HexViewEvent::Scrolled(self.scroll.scroll_offset));
         }
     }
 
@@ -1107,7 +1026,7 @@ impl HexView {
 
         let list_h = self.list_bounds.get().map(|b| f32::from(b.size.height)).unwrap_or(600.0);
         let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-        let top_row = self.scroll_offset;
+        let top_row = self.scroll.scroll_offset;
         let bottom_row = top_row + visible_rows.saturating_sub(1);
 
         if cursor_row < top_row {
@@ -1118,17 +1037,15 @@ impl HexView {
     }
 
     fn clear_pending_hex_input(&mut self) {
-        self.pending_hex_digit = None;
-        self.pending_hex_range = None;
-        self.hex_nibble = 0;
+        self.input.clear_pending();
     }
 
     fn edit_column_is_hex(&self) -> bool {
-        self.active_column == EditColumn::Hex
+        self.input.is_hex()
     }
 
     fn edit_column_is_ascii(&self) -> bool {
-        self.active_column == EditColumn::Ascii
+        self.input.is_ascii()
     }
 
     fn edit_changed(&mut self, changed: bool, cx: &mut Context<Self>) {
@@ -1151,55 +1068,11 @@ impl HexView {
         }
 
         cx.focus_self(window);
-        let selected_range = {
-            let editor = self.editor.read(cx);
-            editor.has_selection().then(|| editor.edit_range()).flatten()
-        };
-        if let Some(range) = selected_range {
-            self.editor.update(cx, |editor, _| {
-                editor.set_cursor_offset_exact(range.start);
-            });
-            self.pending_hex_range = Some(range);
-            self.pending_hex_digit = None;
-            self.hex_nibble = 0;
-        }
-
-        let position = self.editor.read(cx).cursor.offset;
-        if self.hex_nibble == 0 {
-            self.pending_hex_digit = Some((position, digit));
-            self.hex_nibble = 1;
+        if let Some(changed) = self.input.handle_hex_digit(digit, &self.editor, self.radix, cx) {
+            self.edit_changed(changed, cx);
+        } else {
             cx.notify();
-            return;
         }
-
-        let high = self
-            .pending_hex_digit
-            .filter(|(pending_position, _)| *pending_position == position)
-            .map(|(_, high)| high)
-            .unwrap_or_else(|| self.editor.read(cx).value_at_cursor().unwrap_or(0) >> 4);
-        let value = (high << 4) | digit;
-        let insert_mode = InsertModeState::is_enabled(cx);
-        let replacement_range = self.pending_hex_range.take();
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let changed = if let Some(range) = replacement_range {
-                if insert_mode {
-                    let cursor_after = range.start.saturating_add(1);
-                    editor.replace_range_with_cursor(range, vec![value], cursor_after)
-                } else {
-                    editor.replace_range(range, vec![value])
-                }
-            } else if insert_mode {
-                editor.insert_bytes(position, vec![value])
-            } else {
-                editor.replace_byte(position, value)
-            };
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
-        self.clear_pending_hex_input();
-        self.edit_changed(changed, cx);
     }
 
     fn handle_ascii_character(&mut self, character: char, window: &mut Window, cx: &mut Context<Self>) {
@@ -1207,69 +1080,24 @@ impl HexView {
             return;
         }
 
-        let Some(replacement) = self.encoding.encode_char(character) else {
-            return;
-        };
-
         cx.focus_self(window);
-        self.clear_pending_hex_input();
-        let insert_mode = InsertModeState::is_enabled(cx);
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let has_selection = editor.has_selection();
-            let changed = if insert_mode && !has_selection {
-                let position = editor.cursor.offset;
-                editor.insert_bytes(position, replacement)
-            } else if has_selection {
-                let range = editor.edit_range().expect("selection has an edit range");
-                if insert_mode {
-                    let cursor_after = range.start.saturating_add(replacement.len());
-                    editor.replace_range_with_cursor(range, replacement, cursor_after)
-                } else {
-                    editor.replace_range(range, replacement)
-                }
-            } else {
-                let position = editor.cursor.offset;
-                let range = position..position.saturating_add(replacement.len()).min(editor.total_size());
-                editor.replace_range(range, replacement)
-            };
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
-        self.edit_changed(changed, cx);
+        if let Some(changed) = self.input.handle_ascii_character(character, &self.editor, self.encoding, cx) {
+            self.edit_changed(changed, cx);
+        }
     }
 
     fn delete_backward_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
-        if self.editor.read(cx).is_read_only() {
-            return;
+        if let Some(changed) = self.input.delete_backward(&self.editor, cx) {
+            self.edit_changed(changed, cx);
         }
-        self.clear_pending_hex_input();
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let changed = editor.delete_backward();
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
-        self.edit_changed(changed, cx);
     }
 
     fn delete_forward_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
-        if self.editor.read(cx).is_read_only() {
-            return;
+        if let Some(changed) = self.input.delete_forward(&self.editor, cx) {
+            self.edit_changed(changed, cx);
         }
-        self.clear_pending_hex_input();
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let changed = editor.delete_forward();
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
-        self.edit_changed(changed, cx);
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1349,92 +1177,14 @@ impl HexView {
     }
 
     pub fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        cx.focus_self(window);
-        if self.editor.read(cx).is_read_only() {
-            return;
-        }
-        let (range, bytes) = {
-            let editor = self.editor.read(cx);
-            let Some(range) = editor.edit_range() else {
-                return;
-            };
-            let bytes = editor
-                .document
-                .read()
-                .expect("document read lock")
-                .buffer
-                .get_range(range.start, range.len())
-                .to_vec();
-            (range, bytes)
-        };
-        if bytes.is_empty() {
-            return;
-        }
-
-        let clipboard_text = format_hex_spaces(&bytes);
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string_with_metadata(
-            clipboard_text.clone(),
-            format!("xvw-bytes:{clipboard_text}"),
-        ));
-
         self.clear_pending_hex_input();
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let remaining = editor.total_size().saturating_sub(range.len());
-            let cursor_after = range.start.min(remaining.saturating_sub(1));
-            let changed = editor.replace_range_with_cursor(range, Vec::new(), cursor_after);
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
+        let changed = ClipboardHandler::cut(&self.editor, &self.focus_handle, window, cx);
         self.edit_changed(changed, cx);
     }
 
     pub fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        cx.focus_self(window);
-        if self.editor.read(cx).is_read_only() {
-            return;
-        }
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
-        let bytes = item
-            .metadata()
-            .and_then(|metadata| metadata.strip_prefix("xvw-bytes:"))
-            .and_then(parse_paste_bytes)
-            .or_else(|| item.text().and_then(|text| parse_paste_bytes(&text)));
-        let Some(bytes) = bytes else {
-            return;
-        };
-        if bytes.is_empty() {
-            return;
-        }
-
         self.clear_pending_hex_input();
-        let insert_mode = InsertModeState::is_enabled(cx);
-        let changed = self.editor.update(cx, |editor, editor_cx| {
-            let has_selection = editor.has_selection();
-            let changed = if has_selection {
-                let range = editor.edit_range().expect("selection has an edit range");
-                if insert_mode {
-                    let cursor_after = range.start.saturating_add(bytes.len());
-                    editor.replace_range_with_cursor(range, bytes, cursor_after)
-                } else {
-                    editor.replace_range(range, bytes)
-                }
-            } else if insert_mode {
-                let position = editor.cursor.offset;
-                editor.insert_bytes(position, bytes)
-            } else {
-                let position = editor.cursor.offset;
-                let range = position..position.saturating_add(bytes.len()).min(editor.total_size());
-                editor.replace_range(range, bytes)
-            };
-            if changed {
-                editor_cx.notify();
-            }
-            changed
-        });
+        let changed = ClipboardHandler::paste(&self.editor, &self.focus_handle, window, cx);
         self.edit_changed(changed, cx);
     }
 
@@ -1556,7 +1306,7 @@ impl HexView {
     }
 
     fn handle_move_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_column == EditColumn::Ascii {
+        if self.input.is_ascii() {
             let encoding = self.encoding;
             let insert_mode = InsertModeState::is_enabled(cx);
             let action = {
@@ -1599,7 +1349,7 @@ impl HexView {
     }
 
     fn handle_move_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_column == EditColumn::Ascii {
+        if self.input.is_ascii() {
             let encoding = self.encoding;
             let insert_mode = InsertModeState::is_enabled(cx);
             let action = {
@@ -1647,7 +1397,7 @@ impl HexView {
     }
 
     fn handle_select_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_column == EditColumn::Ascii {
+        if self.input.is_ascii() {
             let encoding = self.encoding;
             let insert_mode = InsertModeState::is_enabled(cx);
             let drag_params = {
@@ -1692,7 +1442,7 @@ impl HexView {
     }
 
     fn handle_select_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_column == EditColumn::Ascii {
+        if self.input.is_ascii() {
             let encoding = self.encoding;
             let insert_mode = InsertModeState::is_enabled(cx);
             let drag_params = {
@@ -2051,65 +1801,11 @@ impl HexView {
     }
 
     fn copy_formatted(&self, format: CopyFormat, window: &mut Window, cx: &mut Context<Self>) {
-        let (formatted, raw_bytes) = {
-            let editor = self.editor.read(cx);
-            let selected_range = editor.selected_range_or_cursor();
-            let doc = editor.document.read().expect("document read lock");
-            let total = doc.buffer.len();
-            if total == 0 {
-                (String::new(), Vec::new())
-            } else {
-                let (start_offset, slice) = if let Some(range) = selected_range {
-                    (range.start, doc.buffer.get_range(range.start, range.len()))
-                } else {
-                    let off = editor.cursor.offset.min(total.saturating_sub(1));
-                    (off, doc.buffer.get_range(off, 1))
-                };
-                (format_bytes(slice, start_offset, format, editor.options.encoding), slice.to_vec())
-            }
-        };
-
-        self.focus_handle.focus(window, cx);
-        let item = if raw_bytes.is_empty() {
-            gpui::ClipboardItem::new_string(formatted)
-        } else {
-            let raw = format_hex_spaces(&raw_bytes);
-            gpui::ClipboardItem::new_string_with_metadata(formatted, format!("xvw-bytes:{raw}"))
-        };
-        cx.write_to_clipboard(item);
+        ClipboardHandler::copy_formatted(&self.editor, &self.focus_handle, format, window, cx);
     }
 
     pub fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
-        let (formatted, raw_bytes) = {
-            let editor = self.editor.read(cx);
-            let selected_range = editor.selected_range_or_cursor();
-            let doc = editor.document.read().expect("document read lock");
-            let total = doc.buffer.len();
-            if total == 0 {
-                (String::new(), Vec::new())
-            } else if let Some(range) = selected_range {
-                let radix = editor.options.radix;
-                let group_size = editor.options.group_size;
-                let is_big_endian = editor.options.is_big_endian;
-                let line_starts = editor.line_starts();
-                let slice = doc.buffer.get_range(range.start, range.len());
-                (
-                    crate::core::radix::format_display_content_with_lines(doc.buffer.data(), range, &line_starts, radix, group_size, is_big_endian),
-                    slice.to_vec(),
-                )
-            } else {
-                (String::new(), Vec::new())
-            }
-        };
-
-        self.focus_handle.focus(window, cx);
-        let item = if raw_bytes.is_empty() {
-            gpui::ClipboardItem::new_string(formatted)
-        } else {
-            let raw = format_hex_spaces(&raw_bytes);
-            gpui::ClipboardItem::new_string_with_metadata(formatted, format!("xvw-bytes:{raw}"))
-        };
-        cx.write_to_clipboard(item);
+        ClipboardHandler::copy(&self.editor, &self.focus_handle, window, cx);
     }
 
     pub fn copy_as_hexdump(&mut self, _: &CopyAsHexDump, window: &mut Window, cx: &mut Context<Self>) {
@@ -2328,7 +2024,7 @@ impl HexView {
         let line_starts = editor.line_starts();
         let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
         let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
-        let row_idx = self.scroll_offset + row_offset_in_view;
+        let row_idx = self.scroll.scroll_offset + row_offset_in_view;
         if row_idx >= line_starts.len() {
             return None;
         }
@@ -2341,12 +2037,12 @@ impl HexView {
         if chunk_len == 0 {
             if insert_mode {
                 let parse_result = editor.parse_result();
-                let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+                let is_struct_mode = editor.structure.show_inline_structure_view && parse_result.is_some();
                 let base_x = f32::from(list_bounds.left()) + 8.0;
                 let layout = self.current_layout(cx);
                 let relative_x = f32::from(point.x) - base_x;
                 if relative_x >= layout.fixed_width {
-                    let world_x = relative_x + self.outer_scroll_x;
+                    let world_x = relative_x + self.scroll.outer_scroll_x;
                     if !is_struct_mode
                         && let Some(ascii_column) = layout.ascii
                         && world_x >= ascii_column.start
@@ -2366,21 +2062,21 @@ impl HexView {
         }
 
         let parse_result = editor.parse_result();
-        let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+        let is_struct_mode = editor.structure.show_inline_structure_view && parse_result.is_some();
         let base_x = f32::from(list_bounds.left()) + 8.0;
         let layout = self.current_layout(cx);
         let relative_x = f32::from(point.x) - base_x;
         if relative_x < layout.fixed_width {
             return None;
         }
-        let world_x = relative_x + self.outer_scroll_x;
+        let world_x = relative_x + self.scroll.outer_scroll_x;
 
         if !is_struct_mode
             && let Some(ascii_column) = layout.ascii
             && world_x >= ascii_column.start
             && world_x < ascii_column.end()
         {
-            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
+            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.scroll.ascii_scroll_x);
             if raw_idx < chunk_len {
                 let abs_offset = line_offset + raw_idx;
                 let char_range = self.encoding.char_range_at(doc.buffer.data(), abs_offset);
@@ -2411,7 +2107,7 @@ impl HexView {
             self.is_big_endian,
         );
         let cell_width = px(self.hex_cell_width.max(1.0));
-        let origin_x = px(base_x + layout.hex.start - self.outer_scroll_x - self.hex_scroll_x);
+        let origin_x = px(base_x + layout.hex.start - self.scroll.outer_scroll_x - self.scroll.hex_scroll_x);
         let mut selected_group = None;
         for (index, group) in source.groups.iter().enumerate() {
             let (group_start, group_end) = hex_group_x(*group, origin_x, cell_width);
@@ -2484,7 +2180,7 @@ impl HexView {
 
         let rel_y = f32::from(point.y - list_bounds.top()).max(0.0);
         let row_offset_in_view = (rel_y / ROW_HEIGHT).floor() as usize;
-        let row_idx = self.scroll_offset + row_offset_in_view;
+        let row_idx = self.scroll.scroll_offset + row_offset_in_view;
         if row_idx >= line_starts.len() {
             return None;
         }
@@ -2504,14 +2200,14 @@ impl HexView {
         }
 
         let parse_result = editor.parse_result();
-        let is_struct_mode = editor.show_inline_structure_view && parse_result.is_some();
+        let is_struct_mode = editor.structure.show_inline_structure_view && parse_result.is_some();
         let base_x = f32::from(list_bounds.left()) + 8.0;
         let layout = self.current_layout(cx);
         let relative_x = f32::from(point.x) - base_x;
         if relative_x < layout.fixed_width {
             return Some(line_offset);
         }
-        let world_x = relative_x + self.outer_scroll_x;
+        let world_x = relative_x + self.scroll.outer_scroll_x;
 
         if is_struct_mode && layout.description.map(|column| world_x >= column.start).unwrap_or(false) {
             if let Some(parse_res) = parse_result {
@@ -2528,7 +2224,7 @@ impl HexView {
             && world_x >= ascii_column.start
             && world_x < ascii_column.end()
         {
-            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.ascii_scroll_x);
+            let raw_idx = ascii_byte_index_from_world_x(world_x, ascii_column, self.scroll.ascii_scroll_x);
             if insert_mode && row_idx + 1 == line_starts.len() && raw_idx >= chunk_len {
                 return Some(buffer_len);
             }
@@ -2545,7 +2241,7 @@ impl HexView {
                 self.is_big_endian,
             );
             let cell_width = px(self.hex_cell_width.max(1.0));
-            let origin_x = px(base_x + layout.hex.start - self.outer_scroll_x - self.hex_scroll_x);
+            let origin_x = px(base_x + layout.hex.start - self.scroll.outer_scroll_x - self.scroll.hex_scroll_x);
 
             let mut target_group_idx = 0;
             for (idx, group) in source.groups.iter().enumerate() {
@@ -2605,7 +2301,7 @@ impl Render for HexView {
             (
                 line_starts.len().max(1),
                 line_starts.max_bytes_per_row(),
-                editor.show_inline_structure_view && editor.parse_result().is_some(),
+                editor.structure.show_inline_structure_view && editor.parse_result().is_some(),
             )
         };
         let ascii_col_width = self.effective_ascii_col_width(max_bytes_per_row);
@@ -2644,10 +2340,10 @@ impl Render for HexView {
             self.hex_col_width = total_data_width;
         }
         let max_hex_scroll = (total_data_width - self.hex_col_width).max(0.0);
-        self.hex_scroll_x = self.hex_scroll_x.clamp(0.0, max_hex_scroll);
+        self.scroll.hex_scroll_x = self.scroll.hex_scroll_x.clamp(0.0, max_hex_scroll);
         let layout = self.current_layout(cx);
-        self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
-        self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
+        self.scroll.outer_scroll_x = self.scroll.outer_scroll_x.clamp(0.0, layout.outer_max);
+        self.scroll.outer_scroll_handle.set_offset(point(-px(self.scroll.outer_scroll_x), px(0.0)));
 
         // Keep the cursor visible using the same fixed grid as the paint pass.
         let (cursor_offset, insert_cursor_offset) = {
@@ -2705,34 +2401,24 @@ impl Render for HexView {
                     });
 
                 if let Some((cursor_left, cursor_right)) = cursor_range {
-                    if cursor_left < self.hex_scroll_x {
-                        self.hex_scroll_x = cursor_left.clamp(0.0, max_hex_scroll);
-                    } else if cursor_right > self.hex_scroll_x + self.hex_col_width {
-                        self.hex_scroll_x = (cursor_right - self.hex_col_width).clamp(0.0, max_hex_scroll);
-                    }
-
-                    let visual_left = layout.hex.start + cursor_left - self.hex_scroll_x;
-                    let visual_right = layout.hex.start + cursor_right - self.hex_scroll_x;
-                    if visual_left - self.outer_scroll_x < layout.fixed_width {
-                        self.outer_scroll_x = (visual_left - layout.fixed_width).max(0.0);
-                    } else if visual_right - self.outer_scroll_x > layout.fixed_width + layout.viewport_width {
-                        self.outer_scroll_x = (visual_right - layout.fixed_width - layout.viewport_width).max(0.0);
-                    }
-                    self.outer_scroll_x = self.outer_scroll_x.clamp(0.0, layout.outer_max);
-                    self.outer_scroll_handle.set_offset(point(-px(self.outer_scroll_x), px(0.0)));
+                    self.scroll
+                        .reveal_cursor(cursor_left, cursor_right, self.hex_col_width, max_hex_scroll, &layout);
                 }
             }
             self.last_cursor_offset = Some(reveal_cursor_offset);
             self.cursor_reveal_pending = false;
         }
-        let is_hex_clipped_left = self.hex_scroll_x > 1.0;
-        let is_hex_clipped_right = self.hex_scroll_x < max_hex_scroll - 1.0;
-        let is_ascii_clipped_left = self.ascii_scroll_x > 1.0;
-        let is_ascii_clipped_right = layout.ascii.map(|column| self.ascii_scroll_x < column.inner_max - 1.0).unwrap_or(false);
-        let is_comment_clipped_left = self.comment_scroll_x > 1.0;
-        let is_comment_clipped_right = self.comment_scroll_x < layout.comment.inner_max - 1.0;
-        let is_desc_clipped_left = self.desc_scroll_x > 1.0;
-        let is_desc_clipped_right = layout.description.map(|column| self.desc_scroll_x < column.inner_max - 1.0).unwrap_or(false);
+        let is_hex_clipped_left = self.scroll.hex_scroll_x > 1.0;
+        let is_hex_clipped_right = self.scroll.hex_scroll_x < max_hex_scroll - 1.0;
+        let is_ascii_clipped_left = self.scroll.ascii_scroll_x > 1.0;
+        let is_ascii_clipped_right = layout.ascii.map(|column| self.scroll.ascii_scroll_x < column.inner_max - 1.0).unwrap_or(false);
+        let is_comment_clipped_left = self.scroll.comment_scroll_x > 1.0;
+        let is_comment_clipped_right = self.scroll.comment_scroll_x < layout.comment.inner_max - 1.0;
+        let is_desc_clipped_left = self.scroll.desc_scroll_x > 1.0;
+        let is_desc_clipped_right = layout
+            .description
+            .map(|column| self.scroll.desc_scroll_x < column.inner_max - 1.0)
+            .unwrap_or(false);
 
         let header = if self.show_header {
             let mut hex_cols = Vec::with_capacity(items_in_row);
@@ -2744,7 +2430,7 @@ impl Render for HexView {
                 hex_cols.push(
                     div()
                         .absolute()
-                        .left(px(group_start - self.hex_scroll_x))
+                        .left(px(group_start - self.scroll.hex_scroll_x))
                         .top_0()
                         .h_full()
                         .w(px(group_end - group_start))
@@ -2905,7 +2591,7 @@ impl Render for HexView {
                 .child(
                     h_flex()
                         .relative()
-                        .left(px(-self.outer_scroll_x))
+                        .left(px(-self.scroll.outer_scroll_x))
                         .h(px(HEADER_HEIGHT))
                         .flex_shrink_0()
                         .w(px(self.hex_col_width + SECTION_GAP))
@@ -2990,7 +2676,7 @@ impl Render for HexView {
                 .child(
                     div()
                         .relative()
-                        .left(px(-self.outer_scroll_x))
+                        .left(px(-self.scroll.outer_scroll_x))
                         .flex_shrink_0()
                         .child(if is_struct_mode {
                             h_flex()
@@ -3322,15 +3008,15 @@ impl Render for HexView {
                             let max_thumb_top = (list_h - thumb_h).max(0.0);
 
                             let cur_thumb_top = if max_top_row > 0 {
-                                ((this.scroll_offset as f64 / max_top_row as f64) * max_thumb_top as f64) as f32
+                                ((this.scroll.scroll_offset as f64 / max_top_row as f64) * max_thumb_top as f64) as f32
                             } else {
                                 0.0
                             };
 
                             if rel_y >= cur_thumb_top && rel_y <= cur_thumb_top + thumb_h {
-                                this.is_dragging_scrollbar = true;
-                                this.scrollbar_drag_start_y = click_y;
-                                this.scrollbar_drag_start_row = this.scroll_offset;
+                                this.scroll.is_dragging_scrollbar = true;
+                                this.scroll.scrollbar_drag_start_y = click_y;
+                                this.scroll.scrollbar_drag_start_row = this.scroll.scroll_offset;
                             } else {
                                 let target_thumb_top = (rel_y - thumb_h / 2.0).clamp(0.0, max_thumb_top);
                                 let new_ratio = if max_thumb_top > 0.0 {
@@ -3340,9 +3026,9 @@ impl Render for HexView {
                                 };
                                 let new_row = (new_ratio * max_top_row as f64).round() as usize;
                                 this.scroll_to_row(new_row, cx);
-                                this.is_dragging_scrollbar = true;
-                                this.scrollbar_drag_start_y = click_y;
-                                this.scrollbar_drag_start_row = new_row;
+                                this.scroll.is_dragging_scrollbar = true;
+                                this.scroll.scrollbar_drag_start_y = click_y;
+                                this.scroll.scrollbar_drag_start_row = new_row;
                             }
                             cx.notify();
                             return;
@@ -3350,12 +3036,12 @@ impl Render for HexView {
                     }
 
                     if let Some(edit_target) = this.edit_target_from_point(event.position, window, cx) {
-                        this.active_column = edit_target.column();
-                        this.hex_nibble = match edit_target {
+                        this.input.active_column = edit_target.column();
+                        this.input.hex_nibble = match edit_target {
                             EditTarget::Hex { nibble, .. } => nibble,
                             EditTarget::Ascii { .. } => 0,
                         };
-                        this.pending_hex_digit = None;
+                        this.input.pending_hex_digit = None;
                         let target_pos = edit_target.offset();
                         let selection_anchor = {
                             let editor = this.editor.read(cx);
@@ -3434,12 +3120,12 @@ impl Render for HexView {
                         return;
                     }
                     if let Some(edit_target) = this.edit_target_from_point(event.position, window, cx) {
-                        this.active_column = edit_target.column();
-                        this.hex_nibble = match edit_target {
+                        this.input.active_column = edit_target.column();
+                        this.input.hex_nibble = match edit_target {
                             EditTarget::Hex { nibble, .. } => nibble,
                             EditTarget::Ascii { .. } => 0,
                         };
-                        this.pending_hex_digit = None;
+                        this.input.pending_hex_digit = None;
                         let target_pos = edit_target.offset();
                         let is_ascii = matches!(edit_target, EditTarget::Ascii { .. });
                         let (char_start, char_end) = if is_ascii {
@@ -3488,8 +3174,8 @@ impl Render for HexView {
                 if let Some(list_b) = this.list_bounds.get() {
                     let pos = event.position;
                     let is_in_bar = pos.x >= list_b.right() - px(12.0) && pos.x <= list_b.right() && pos.y >= list_b.top() && pos.y <= list_b.bottom();
-                    if this.scrollbar_hovered != is_in_bar {
-                        this.scrollbar_hovered = is_in_bar;
+                    if this.scroll.scrollbar_hovered != is_in_bar {
+                        this.scroll.scrollbar_hovered = is_in_bar;
                         cx.notify();
                     }
                 }
@@ -3526,13 +3212,13 @@ impl Render for HexView {
                         let list_bottom = f32::from(list_b.bottom());
                         if y < list_top {
                             let rows_up = ((list_top - y) / ROW_HEIGHT).ceil() as usize;
-                            let new_row = this.scroll_offset.saturating_sub(rows_up.min(5));
+                            let new_row = this.scroll.scroll_offset.saturating_sub(rows_up.min(5));
                             this.scroll_to_row(new_row, cx);
                         } else if y > list_bottom {
                             let rows_down = ((y - list_bottom) / ROW_HEIGHT).ceil() as usize;
                             let total_rows = this.editor.read(cx).line_starts().len().max(1);
                             let max_top_row = total_rows.saturating_sub(1);
-                            let new_row = (this.scroll_offset + rows_down.min(5)).min(max_top_row);
+                            let new_row = (this.scroll.scroll_offset + rows_down.min(5)).min(max_top_row);
                             this.scroll_to_row(new_row, cx);
                         }
                     }
@@ -3550,7 +3236,7 @@ impl Render for HexView {
 
                     if let Some(target_pos) = target_pos {
                         let mouse_selection_anchor = this.mouse_selection_anchor;
-                        let is_ascii = this.active_column == EditColumn::Ascii;
+                        let is_ascii = this.input.is_ascii();
                         let insert_mode = InsertModeState::is_enabled(cx);
                         let target_drag_pos = if is_ascii && !insert_mode {
                             let editor = this.editor.read(cx);
@@ -3593,12 +3279,12 @@ impl Render for HexView {
             .child(header)
             .child(div().flex_1().w_full().min_w_0().min_h_0().relative().overflow_hidden().child({
                 let editor_entity = self.editor.clone();
-                let scroll_offset = self.scroll_offset;
-                let outer_scroll_x = self.outer_scroll_x;
-                let hex_scroll_x = self.hex_scroll_x;
-                let ascii_scroll_x = self.ascii_scroll_x;
-                let desc_scroll_x = self.desc_scroll_x;
-                let comment_scroll_x = self.comment_scroll_x;
+                let scroll_offset = self.scroll.scroll_offset;
+                let outer_scroll_x = self.scroll.outer_scroll_x;
+                let hex_scroll_x = self.scroll.hex_scroll_x;
+                let ascii_scroll_x = self.scroll.ascii_scroll_x;
+                let desc_scroll_x = self.scroll.desc_scroll_x;
+                let comment_scroll_x = self.scroll.comment_scroll_x;
                 let address_col_width = self.address_col_width;
                 let hex_col_width = self.hex_col_width;
                 let desc_col_width = self.desc_col_width;
@@ -3609,11 +3295,11 @@ impl Render for HexView {
                 let radix = self.radix;
                 let group_size = self.group_size;
                 let is_big_endian = self.is_big_endian;
-                let active_column = self.active_column;
+                let active_column = self.input.active_column;
                 let _max_highlight_len = self.max_highlight_len;
                 let highlights = self.highlights.clone();
-                let is_dragging_scrollbar = self.is_dragging_scrollbar;
-                let scrollbar_hovered = self.scrollbar_hovered;
+                let is_dragging_scrollbar = self.scroll.is_dragging_scrollbar;
+                let scrollbar_hovered = self.scroll.scrollbar_hovered;
                 let scrollbar_view = view.clone();
 
                 canvas(
@@ -3647,8 +3333,8 @@ impl Render for HexView {
                                 }
 
                                 scrollbar_view.update(cx, |this, cx| {
-                                    if this.is_dragging_scrollbar {
-                                        this.is_dragging_scrollbar = false;
+                                    if this.scroll.is_dragging_scrollbar {
+                                        this.scroll.is_dragging_scrollbar = false;
                                         cx.notify();
                                     }
                                 });
@@ -3662,8 +3348,12 @@ impl Render for HexView {
                                 .map(|range| (range.start, range.end.saturating_sub(1)))
                                 .unwrap_or((usize::MAX, usize::MIN));
                             (
-                                if editor.show_inline_structure_view { editor.parse_result() } else { None },
-                                Arc::new(editor.collapsed_struct_ids.clone()),
+                                if editor.structure.show_inline_structure_view {
+                                    editor.parse_result()
+                                } else {
+                                    None
+                                },
+                                Arc::new(editor.structure.collapsed_struct_ids.clone()),
                                 Arc::new(editor.bookmarks_snapshot()),
                                 editor.document.clone(),
                                 editor.line_starts(),
@@ -3753,7 +3443,7 @@ impl Render for HexView {
                     .child(div().w(px(8.0 + layout.fixed_width)))
                     .child(
                         div().flex_1().mr(px(VERTICAL_SCROLLBAR_WIDTH)).relative().child(
-                            Scrollbar::horizontal(&self.outer_scroll_handle)
+                            Scrollbar::horizontal(&self.scroll.outer_scroll_handle)
                                 .mode(ScrollbarMode::Always)
                                 .scroll_size(size(px(layout.content_width), px(0.0)))
                                 .styles(|_| crate::ui::scrollbar::common_scrollbar_styles(theme)),

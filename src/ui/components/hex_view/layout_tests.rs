@@ -267,7 +267,7 @@ fn check_structure_and_highlights() {
     );
 
     let mut editor_collapsed = Editor::new(Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 32])))));
-    editor_collapsed.collapsed_struct_ids.insert("header".into());
+    editor_collapsed.structure.collapsed_struct_ids.insert("header".into());
     let width_collapsed = HexView::description_content_width_in_range(&editor_collapsed, &parse_result, &(0..16), char_w);
     assert!(
         width_collapsed < width_expanded,

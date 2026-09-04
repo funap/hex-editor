@@ -18,45 +18,15 @@ const WIDTH_REPEAT_MIN_INTERVAL: Duration = Duration::from_millis(15);
 const WIDTH_REPEAT_MED_INTERVAL: Duration = Duration::from_millis(30);
 const WIDTH_REPEAT_BASE_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum ColorMode {
-    Grayscale,
-    DataCategory,
-    Rainbow,
-    Entropy,
+pub use crate::core::visual_map::{ByteCategory, VisualMapColorMode as ColorMode};
+use crate::core::visual_map::{CategoryPalette, VisualMapRenderParams, category_bgra_lut, render_visual_map_bgra};
+
+trait ByteCategoryExt {
+    fn color(self, theme: &gpui_kit::component::Theme) -> Hsla;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ByteCategory {
-    Null,
-    Control,
-    Space,
-    Ascii,
-    Extended,
-}
-
-impl ByteCategory {
-    pub fn of(byte: u8) -> Self {
-        match byte {
-            0 => ByteCategory::Null,
-            1..=31 | 127 => ByteCategory::Control,
-            32 => ByteCategory::Space,
-            33..=126 => ByteCategory::Ascii,
-            _ => ByteCategory::Extended,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ByteCategory::Null => "Null (00)",
-            ByteCategory::Control => "Control",
-            ByteCategory::Space => "Space (20)",
-            ByteCategory::Ascii => "ASCII",
-            ByteCategory::Extended => "Extended",
-        }
-    }
-
-    pub fn color(self, theme: &gpui_kit::component::Theme) -> Hsla {
+impl ByteCategoryExt for ByteCategory {
+    fn color(self, theme: &gpui_kit::component::Theme) -> Hsla {
         match self {
             ByteCategory::Null => theme.muted_foreground.opacity(0.4),
             ByteCategory::Control => theme.red.opacity(0.85),
@@ -64,6 +34,25 @@ impl ByteCategory {
             ByteCategory::Ascii => theme.green.opacity(0.9),
             ByteCategory::Extended => theme.accent.opacity(0.85),
         }
+    }
+}
+
+fn category_palette_from_theme(theme: &gpui_kit::component::Theme) -> CategoryPalette {
+    let to_bgra = |hsla: Hsla| {
+        let rgb = hsla.to_rgb();
+        [
+            (rgb.b * 255.0).clamp(0.0, 255.0) as u8,
+            (rgb.g * 255.0).clamp(0.0, 255.0) as u8,
+            (rgb.r * 255.0).clamp(0.0, 255.0) as u8,
+            (rgb.a * 255.0).clamp(0.0, 255.0) as u8,
+        ]
+    };
+    CategoryPalette {
+        null: to_bgra(theme.muted_foreground.opacity(0.18)),
+        control: to_bgra(theme.red.opacity(0.75)),
+        space: to_bgra(theme.blue.opacity(0.55)),
+        ascii: to_bgra(theme.green.opacity(0.85)),
+        extended: to_bgra(theme.accent.opacity(0.8)),
     }
 }
 
@@ -1261,127 +1250,28 @@ impl Element for VisualMapElement {
             }
 
             if cached_image.is_none() && physical_width > 0 && physical_height > 0 {
-                let mut pixels = vec![0u8; physical_width * physical_height * 4];
-
-                if self.color_mode == ColorMode::Entropy {
-                    let visible_start_offset = start_row * cols;
-                    let visible_end_offset = cmp::min(buffer_len, end_row * cols);
-
-                    let entropies = crate::core::entropy::compute_sliding_entropy(buffer.data(), visible_start_offset, visible_end_offset, self.entropy_window);
-                    let lut = crate::core::entropy::entropy_bgra_lut();
-
-                    for r in start_row..end_row {
-                        let row_y = r - start_row;
-                        let row_offset = r * self.cols;
-                        let chunk_len = cmp::min(self.cols, buffer_len.saturating_sub(row_offset));
-                        let chunk_len = cmp::min(chunk_len, max_visible_cols);
-                        if chunk_len == 0 {
-                            break;
-                        }
-
-                        for c in 0..chunk_len {
-                            let byte_idx = row_offset + c;
-                            let [b_val, g_val, r_val, a_val] =
-                                if byte_idx >= visible_start_offset && byte_idx < visible_end_offset && (byte_idx - visible_start_offset) < entropies.len() {
-                                    let norm = entropies[byte_idx - visible_start_offset];
-                                    let lut_idx = crate::core::entropy::normalized_to_lut_index(norm);
-                                    lut[lut_idx]
-                                } else {
-                                    [0, 0, 0, 255]
-                                };
-
-                            for dy in 0..cell_height {
-                                let py = row_y * cell_height + dy;
-                                if py >= physical_height {
-                                    continue;
-                                }
-                                for dx in 0..cell_width {
-                                    let px_idx = c * cell_width + dx;
-                                    if px_idx >= physical_width {
-                                        continue;
-                                    }
-                                    let pixel_offset = (py * physical_width + px_idx) * 4;
-                                    pixels[pixel_offset] = b_val;
-                                    pixels[pixel_offset + 1] = g_val;
-                                    pixels[pixel_offset + 2] = r_val;
-                                    pixels[pixel_offset + 3] = a_val;
-                                }
-                            }
-                        }
-                    }
+                let custom_lut = if self.color_mode == ColorMode::DataCategory {
+                    let palette = category_palette_from_theme(theme);
+                    Some(category_bgra_lut(&palette))
                 } else {
-                    let mut bgra_lut = [[0u8; 4]; 256];
-                    for byte in 0..=255 {
-                        let color = match self.color_mode {
-                            ColorMode::Grayscale => {
-                                let val = byte as f32 / 255.0;
-                                Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: val * 0.8 + 0.1,
-                                    a: 1.0,
-                                }
-                            }
-                            ColorMode::DataCategory => match byte {
-                                0 => theme.muted_foreground.opacity(0.18),
-                                1..=31 | 127 => theme.red.opacity(0.75),
-                                32 => theme.blue.opacity(0.55),
-                                33..=126 => theme.green.opacity(0.85),
-                                _ => theme.accent.opacity(0.8),
-                            },
-                            ColorMode::Rainbow => {
-                                let val = byte as f32 / 255.0;
-                                Hsla {
-                                    h: val * 360.0,
-                                    s: 0.8,
-                                    l: 0.5,
-                                    a: 1.0,
-                                }
-                            }
-                            ColorMode::Entropy => unreachable!(),
-                        };
-                        let rgb = color.to_rgb();
-                        bgra_lut[byte as usize] = [
-                            (rgb.b * 255.0).clamp(0.0, 255.0) as u8,
-                            (rgb.g * 255.0).clamp(0.0, 255.0) as u8,
-                            (rgb.r * 255.0).clamp(0.0, 255.0) as u8,
-                            (rgb.a * 255.0).clamp(0.0, 255.0) as u8,
-                        ];
-                    }
+                    None
+                };
 
-                    for r in start_row..end_row {
-                        let row_y = r - start_row;
-                        let row_offset = r * self.cols;
-                        let chunk_len = cmp::min(self.cols, buffer_len.saturating_sub(row_offset));
-                        let chunk_len = cmp::min(chunk_len, max_visible_cols);
-                        if chunk_len == 0 {
-                            break;
-                        }
+                let params = VisualMapRenderParams {
+                    cols,
+                    start_row,
+                    visible_rows,
+                    max_visible_cols,
+                    cell_width,
+                    cell_height,
+                    physical_width,
+                    physical_height,
+                    color_mode: self.color_mode,
+                    entropy_window: self.entropy_window,
+                    custom_lut,
+                };
 
-                        let chunk = buffer.get_range(row_offset, chunk_len);
-                        for (c, &byte) in chunk.iter().take(chunk_len).enumerate() {
-                            let [b_val, g_val, r_val, a_val] = bgra_lut[byte as usize];
-
-                            for dy in 0..cell_height {
-                                let py = row_y * cell_height + dy;
-                                if py >= physical_height {
-                                    continue;
-                                }
-                                for dx in 0..cell_width {
-                                    let px_idx = c * cell_width + dx;
-                                    if px_idx >= physical_width {
-                                        continue;
-                                    }
-                                    let pixel_offset = (py * physical_width + px_idx) * 4;
-                                    pixels[pixel_offset] = b_val;
-                                    pixels[pixel_offset + 1] = g_val;
-                                    pixels[pixel_offset + 2] = r_val;
-                                    pixels[pixel_offset + 3] = a_val;
-                                }
-                            }
-                        }
-                    }
-                }
+                let pixels = render_visual_map_bgra(buffer.data(), &params);
 
                 if let Some(rgba_img) = image::RgbaImage::from_raw(physical_width as u32, physical_height as u32, pixels) {
                     let frame = image::Frame::new(rgba_img);

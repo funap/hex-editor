@@ -251,12 +251,10 @@ impl EditorService {
             async move {
                 let results = search_task.await;
                 if let Some(editor) = editor_weak.upgrade() {
-                    editor
-                        .update(&mut cx, |editor, cx| {
-                            editor.set_search_results(results, generation, is_full);
-                            cx.notify();
-                        })
-                        .ok();
+                    editor.update(&mut cx, |editor, cx| {
+                        editor.set_search_results(results, generation, is_full);
+                        cx.notify();
+                    });
                 }
             }
         })

@@ -7,8 +7,10 @@ use crate::ui::icon::IconName;
 use crate::ui::style::{format_size_friendly, format_with_commas};
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -452,7 +454,7 @@ impl StructTreeView {
                 });
                 if applied {
                     window.push_notification(
-                        gpui_component::notification::Notification::success("Structure analysis copied to clipboard"),
+                        gpui_kit::component::notification::Notification::success("Structure analysis copied to clipboard"),
                         cx,
                     );
                 }
@@ -558,10 +560,10 @@ impl StructTreeView {
                 if applied {
                     match &result {
                         Ok(path) => window.push_notification(
-                            gpui_component::notification::Notification::success(format!("Structure YAML exported to {}", path.display())),
+                            gpui_kit::component::notification::Notification::success(format!("Structure YAML exported to {}", path.display())),
                             cx,
                         ),
-                        Err(error) => window.push_notification(gpui_component::notification::Notification::error(error.clone()), cx),
+                        Err(error) => window.push_notification(gpui_kit::component::notification::Notification::error(error.clone()), cx),
                     }
                 }
             });
@@ -1056,14 +1058,14 @@ impl StructTreeView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
-                    focus_handle_left.focus(window);
+                    focus_handle_left.focus(window, cx);
                     this.select_item(ix, cx);
                 }),
             )
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 window.listener_for(&view, move |this, _event: &gpui::MouseDownEvent, window, cx| {
-                    focus_handle_right.focus(window);
+                    focus_handle_right.focus(window, cx);
                     this.select_item(ix, cx);
                 }),
             )
@@ -1188,10 +1190,10 @@ impl Render for StructTreeView {
 
         let header_actions = if has_structure {
             Some(
-                gpui_component::button::Button::new("clear-structure-btn")
+                gpui_kit::component::button::Button::new("clear-structure-btn")
                     .ghost()
                     .icon(IconName::Eraser)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .disabled(export_is_busy)
                     .tooltip("Clear Structure Definition")
                     .on_click(cx.listener(|_, _, window, cx| {
@@ -1201,10 +1203,10 @@ impl Render for StructTreeView {
             )
         } else if has_active_editor {
             Some(
-                gpui_component::button::Button::new("load-structure-header-btn")
+                gpui_kit::component::button::Button::new("load-structure-header-btn")
                     .ghost()
                     .icon(IconName::FolderOpen)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .tooltip(if cfg!(target_os = "macos") {
                         "Load Structure Definition (cmd-shift-s)"
                     } else {
@@ -1237,20 +1239,20 @@ impl Render for StructTreeView {
                             .items_center()
                             .gap_1()
                             .child(
-                                gpui_component::button::Button::new("expand-all-struct-btn")
+                                gpui_kit::component::button::Button::new("expand-all-struct-btn")
                                     .ghost()
                                     .icon(IconName::ListTree)
-                                    .with_size(gpui_component::Size::XSmall)
+                                    .with_size(gpui_kit::component::Size::XSmall)
                                     .tooltip("Expand all fields")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.expand_all(cx);
                                     })),
                             )
                             .child(
-                                gpui_component::button::Button::new("collapse-all-struct-btn")
+                                gpui_kit::component::button::Button::new("collapse-all-struct-btn")
                                     .ghost()
                                     .icon(IconName::Minimize)
-                                    .with_size(gpui_component::Size::XSmall)
+                                    .with_size(gpui_kit::component::Size::XSmall)
                                     .tooltip("Collapse all fields")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.collapse_all(cx);
@@ -1325,8 +1327,8 @@ impl Render for StructTreeView {
             .on_action(cx.listener(Self::on_action_export_structure_yaml))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
-                    this.focus_handle.focus(window);
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
                 }),
             )
             .child(header)
@@ -1412,21 +1414,21 @@ impl Render for StructTreeView {
                                         .hover(|style| style.bg(theme.muted.opacity(0.4)))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             if has_active_editor {
-                                                this.focus_handle.focus(window);
+                                                this.focus_handle.focus(window, cx);
                                                 window.dispatch_action(
                                                     Box::new(crate::actions::LoadStructureDefinitionFromHistory { path: load_path.clone() }),
                                                     cx,
                                                 );
                                             }
                                         }))
-                                        .child(Icon::new(IconName::FileCode).with_size(gpui_component::Size::XSmall))
+                                        .child(Icon::new(IconName::FileCode).with_size(gpui_kit::component::Size::XSmall))
                                         .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )
                                 .child(
-                                    gpui_component::button::Button::new(SharedString::from(format!("remove-recent-definition-{index}")))
+                                    gpui_kit::component::button::Button::new(SharedString::from(format!("remove-recent-definition-{index}")))
                                         .ghost()
                                         .icon(IconName::Close)
-                                        .with_size(gpui_component::Size::XSmall)
+                                        .with_size(gpui_kit::component::Size::XSmall)
                                         .tooltip("Remove from recents")
                                         .on_click(cx.listener(move |_, _, window, cx| {
                                             window.dispatch_action(
@@ -1471,10 +1473,10 @@ impl Render for StructTreeView {
                     )
                     .into_any_element()
                 } else {
-                    let load_btn = gpui_component::button::Button::new("load-ksy-btn")
+                    let load_btn = gpui_kit::component::button::Button::new("load-ksy-btn")
                         .label("Load Definition...")
                         .primary()
-                        .with_size(gpui_component::Size::Small)
+                        .with_size(gpui_kit::component::Size::Small)
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.dispatch_action(Box::new(crate::actions::LoadStructureDefinition), cx);
                         }))
@@ -1591,11 +1593,11 @@ impl Render for StructTreeView {
                         })
                         .collect::<Vec<_>>()
                 })
-                .track_scroll(self.table_state.vertical_scroll_handle.clone())
+                .track_scroll(&self.table_state.vertical_scroll_handle)
                 .size_full();
 
-                let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
-                let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+                let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width, theme);
+                let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state, theme);
 
                 v_flex()
                     .id("struct-table-container")

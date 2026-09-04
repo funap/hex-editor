@@ -1,7 +1,7 @@
 use crate::ui::icon::IconName;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{ActiveTheme, Icon};
+use gpui_kit::component::{ActiveTheme, Icon};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Activity {

@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::ActiveTheme;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 
 use super::editor_group::{EditorGroup, EditorGroupEvent};
 use super::types::{DropPlacement, SplitDirection, TabContent, TabDrag, TabItem};
@@ -502,7 +502,7 @@ impl PaneTree {
             if let Some(group) = self.active_group(cx)
                 && let Some(tab) = group.read(cx).active_tab()
             {
-                tab.focus_handle(cx).focus(window);
+                tab.focus_handle(cx).focus(window, cx);
             }
         }
 

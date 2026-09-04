@@ -1,9 +1,10 @@
 use gpui::prelude::*;
 use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, SharedString, Subscription, Task, WeakEntity, Window, div, px};
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dock::{Panel, PanelEvent, TabPanel};
-use gpui_component::menu::PopupMenu;
-use gpui_component::{ActiveTheme, Sizable};
+use gpui_kit::base::dock::TabGroup;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dock::{Panel, PanelEvent};
+use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::{ActiveTheme, Sizable};
 
 use crate::actions::{
     AddCustomBreak, BookmarkBlue, BookmarkCyan, BookmarkGreen, BookmarkOrange, BookmarkPink, BookmarkPurple, BookmarkRed, BookmarkYellow, ClearAllBookmarks,
@@ -52,7 +53,7 @@ pub struct EditorPanel {
     is_goto_visible: bool,
     goto_bar: Entity<GotoOffsetBar>,
     structure_reparse_task: Option<Task<()>>,
-    tab_panel: Option<WeakEntity<TabPanel>>,
+    tab_group: Option<WeakEntity<TabGroup>>,
     _appearance_subscription: Subscription,
     _editor_subscription: Subscription,
     _document_lease: Option<EditorDocumentLease>,
@@ -122,7 +123,7 @@ impl EditorPanel {
             let focus_handle = focus_handle.clone();
             move |_, window, cx| {
                 if window.focused(cx).as_ref() == Some(&focus_handle) {
-                    hex_focus_handle.focus(window);
+                    hex_focus_handle.focus(window, cx);
                 }
             }
         })
@@ -195,7 +196,7 @@ impl EditorPanel {
             is_goto_visible: false,
             goto_bar,
             structure_reparse_task: None,
-            tab_panel: None,
+            tab_group: None,
             _appearance_subscription,
             _editor_subscription,
             _document_lease: document_lease,
@@ -226,8 +227,7 @@ impl EditorPanel {
                         let service = crate::app_state::AppState::global(cx).structure_service.clone();
                         service.start_parse(&editor, ksy, cx);
                     }
-                })
-                .ok();
+                });
             }
         });
         self.structure_reparse_task = Some(task);
@@ -258,8 +258,8 @@ impl EditorPanel {
     }
 
     #[allow(dead_code)]
-    pub fn tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
-        self.tab_panel.clone()
+    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
+        self.tab_group.clone()
     }
 
     #[allow(dead_code)]
@@ -304,7 +304,7 @@ impl EditorPanel {
                 bar.focus(window, cx);
             });
         } else {
-            self.hex_view.read(cx).focus_handle(cx).focus(window);
+            self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
         }
         cx.notify();
     }
@@ -321,7 +321,7 @@ impl EditorPanel {
                 bar.focus(window, cx);
             });
         } else {
-            self.hex_view.read(cx).focus_handle(cx).focus(window);
+            self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
         }
         cx.notify();
     }
@@ -418,7 +418,7 @@ impl EditorPanel {
 
     pub fn search_next(&mut self, _: &SearchNext, window: &mut Window, cx: &mut Context<Self>) {
         self.perform_search_next(cx);
-        self.hex_view.read(cx).focus_handle(cx).focus(window);
+        self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     fn perform_search_next(&mut self, cx: &mut Context<Self>) {
@@ -439,7 +439,7 @@ impl EditorPanel {
 
     pub fn search_prev(&mut self, _: &SearchPrev, window: &mut Window, cx: &mut Context<Self>) {
         self.perform_search_prev(cx);
-        self.hex_view.read(cx).focus_handle(cx).focus(window);
+        self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     fn perform_search_prev(&mut self, cx: &mut Context<Self>) {
@@ -459,14 +459,14 @@ impl EditorPanel {
     }
 
     pub fn focus_hex_view(&mut self, _: &FocusHexView, window: &mut Window, cx: &mut Context<Self>) {
-        self.hex_view.read(cx).focus_handle(cx).focus(window);
+        self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     pub fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor: &mut Editor, _| {
             editor.select_all();
         });
-        self.hex_view.read(cx).focus_handle(cx).focus(window);
+        self.hex_view.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 
@@ -477,7 +477,7 @@ impl EditorPanel {
         let cursor_offset = self.editor.read(cx).cursor.offset;
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(cursor_offset, cx);
-            view.focus_handle(cx).focus(window);
+            view.focus_handle(cx).focus(window, cx);
         });
         cx.notify();
     }
@@ -494,7 +494,7 @@ impl EditorPanel {
         let cursor_offset = self.editor.read(cx).cursor.offset;
         self.hex_view.update(cx, |view, cx| {
             view.scroll_to_byte(cursor_offset, cx);
-            view.focus_handle(cx).focus(window);
+            view.focus_handle(cx).focus(window, cx);
         });
         cx.notify();
     }
@@ -645,10 +645,6 @@ impl Focusable for EditorPanel {
 }
 
 impl Panel for EditorPanel {
-    fn panel_name(&self) -> &'static str {
-        "EditorPanel"
-    }
-
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.read(cx);
         let doc = editor.document.read().expect("document read lock");
@@ -683,24 +679,12 @@ impl Panel for EditorPanel {
         Some(name.into())
     }
 
-    fn closable(&self, _cx: &App) -> bool {
-        true
-    }
-
-    fn zoomable(&self, _cx: &App) -> Option<gpui_component::dock::PanelControl> {
-        Some(gpui_component::dock::PanelControl::Both)
-    }
-
-    fn visible(&self, _cx: &App) -> bool {
-        true
+    fn zoom_control(&self, _cx: &App) -> Option<gpui_kit::component::dock::PanelControl> {
+        Some(gpui_kit::component::dock::PanelControl::Both)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
         false
-    }
-
-    fn on_added_to(&mut self, tab_panel: WeakEntity<TabPanel>, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.tab_panel = Some(tab_panel);
     }
 
     fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -740,21 +724,43 @@ impl Panel for EditorPanel {
             .separator()
             .menu_with_icon("Close Tab", IconName::Close, Box::new(crate::actions::CloseActivePanel))
     }
+}
 
-    fn set_active(&mut self, active: bool, window: &mut Window, _cx: &mut Context<Self>) {
+impl gpui_kit::base::dock::Panel for EditorPanel {
+    fn panel_name(&self) -> &'static str {
+        "EditorPanel"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        true
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+
+    fn visible(&self, _cx: &App) -> bool {
+        true
+    }
+
+    fn on_added_to(&mut self, tab_group: WeakEntity<TabGroup>, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.tab_group = Some(tab_group);
+    }
+
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
     }
 
     fn set_zoomed(&mut self, _zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
-    fn dump(&self, cx: &App) -> gpui_component::dock::PanelState {
-        let mut state = gpui_component::dock::PanelState::new(self);
+    fn dump(&self, cx: &App) -> gpui_kit::component::dock::PanelState {
+        let mut state = gpui_kit::component::dock::PanelState::new(self.panel_name());
         let panel_state = EditorPanelState {
             path: Some(self.editor.read(cx).document.read().expect("document read lock").path().to_path_buf()),
         };
-        state.info = gpui_component::dock::PanelInfo::panel(panel_state.to_value());
+        state.info = gpui_kit::component::dock::PanelInfo::panel(panel_state.to_value());
         state
     }
 }

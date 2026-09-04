@@ -5,9 +5,9 @@ use crate::ui::icon::IconName;
 use crate::ui::style::BookmarkColorExt;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{self, Input, InputState};
-use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{self, Input, InputState};
+use gpui_kit::component::{ActiveTheme as _, Disableable, Sizable, Size, StyledExt, h_flex, v_flex};
 
 actions!(
     bookmark_panel,
@@ -217,13 +217,13 @@ impl BookmarkPanel {
             });
             self.notify_document_changed(cx);
         }
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
     fn cancel_editing_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_id = None;
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -723,7 +723,7 @@ impl Render for BookmarkPanel {
 }
 
 impl BookmarkPanel {
-    fn render_bookmark_item(&self, item: &BookmarkItem, theme: &gpui_component::Theme, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_bookmark_item(&self, item: &BookmarkItem, theme: &gpui_kit::component::Theme, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let item_id = item.id.clone();
         let is_selected = self.selected_id.as_deref() == Some(&item_id);
         let is_editing = self.editing_id.as_deref() == Some(&item_id);
@@ -790,7 +790,7 @@ impl BookmarkPanel {
                             .on_click(cx.listener({
                                 let item_id = item_id_select.clone();
                                 move |this, _, window, cx| {
-                                    this.focus_handle.focus(window);
+                                    this.focus_handle.focus(window, cx);
                                     this.selected_id = Some(item_id.clone());
                                     this.navigate_to_bookmark(offset, size, cx);
                                 }
@@ -862,7 +862,7 @@ impl BookmarkPanel {
                             .with_size(Size::XSmall)
                             .tooltip("Go to address")
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.focus_handle.focus(window);
+                                this.focus_handle.focus(window, cx);
                                 this.navigate_to_bookmark(offset, size, cx);
                             })),
                     )

@@ -8,7 +8,7 @@ use crate::core::radix::{ByteGroupSize, DisplayRadix, digit_count, is_group_zero
 use crate::core::structure::{IndexedField, ParseResult};
 use crate::ui::style::BookmarkColorExt;
 use gpui::*;
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Range;
@@ -39,7 +39,7 @@ fn paint_insert_cursor_at(window: &mut Window, bounds: Bounds<Pixels>, cursor_x:
         return;
     }
 
-    // Match gpui-component's default TextInput cursor: a 1.5px vertical
+    // Match gpui-kit's default TextInput cursor: a 1.5px vertical
     // caret centered in the line and sized to 85% of its line height.
     let cursor_height = px(ROW_HEIGHT * TEXT_INPUT_CURSOR_HEIGHT_RATIO);
     let cursor_y = bounds.top() + (bounds.size.height - cursor_height) / 2.0;
@@ -374,7 +374,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
             };
             let shaped = window.text_system().shape_line(addr_str, params.font_size, &[run], None);
             let addr_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
-            let _ = shaped.paint(addr_pos, line_height, window, cx);
+            let _ = shaped.paint(addr_pos, line_height, gpui::TextAlign::Left, None, window, cx);
 
             let base_x = params.bounds.left() + px(8.0);
             let div1_x = base_x + px(offset_w + (gap / 2.0));
@@ -433,7 +433,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
 
         let text_x = bar_start_x + px(12.0);
         let text_pos = point(text_x, params.bounds.top() + px(2.0));
-        let _ = shaped_label.paint(text_pos, line_height, window, cx);
+        let _ = shaped_label.paint(text_pos, line_height, gpui::TextAlign::Left, None, window, cx);
         return;
     }
 
@@ -463,7 +463,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
             };
             let shaped = window.text_system().shape_line(addr_str, params.font_size, &[run], None);
             let addr_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
-            let _ = shaped.paint(addr_pos, line_height, window, cx);
+            let _ = shaped.paint(addr_pos, line_height, gpui::TextAlign::Left, None, window, cx);
 
             let base_x = params.bounds.left() + px(8.0);
             let div1_x = base_x + px(offset_w + (gap / 2.0));
@@ -503,7 +503,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
 
         let text_x = bar_start_x + px(12.0);
         let text_pos = point(text_x, params.bounds.top() + px(2.0));
-        let _ = shaped_label.paint(text_pos, line_height, window, cx);
+        let _ = shaped_label.paint(text_pos, line_height, gpui::TextAlign::Left, None, window, cx);
         return;
     }
 
@@ -522,7 +522,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
         };
         let shaped = window.text_system().shape_line(addr_str, params.font_size, &[run], None);
         let addr_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
-        let _ = shaped.paint(addr_pos, line_height, window, cx);
+        let _ = shaped.paint(addr_pos, line_height, gpui::TextAlign::Left, None, window, cx);
         (params.address_col_width, SECTION_GAP)
     } else {
         if params.show_offset {
@@ -537,7 +537,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
             };
             let shaped = window.text_system().shape_line(offset_str, params.font_size, &[run], None);
             let offset_pos = point(params.bounds.left() + px(8.0), params.bounds.top() + px(2.0));
-            let _ = shaped.paint(offset_pos, line_height, window, cx);
+            let _ = shaped.paint(offset_pos, line_height, gpui::TextAlign::Left, None, window, cx);
         }
         (if params.show_offset { OFFSET_WIDTH } else { 0.0 }, SECTION_GAP)
     };
@@ -1209,6 +1209,8 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
                         let _ = shaped_expr.paint(
                             point(desc_start_x - px(params.desc_scroll_x) + px(indent_px), params.bounds.top() + px(2.0)),
                             line_height,
+                            gpui::TextAlign::Left,
+                            None,
                             window,
                             cx,
                         );
@@ -1315,7 +1317,14 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
 
                         // Comment text
                         let text_x = cur_x + px(dot_size + dot_margin_right);
-                        let _ = shaped_comment.paint(point(text_x, params.bounds.top() + px(2.0)), line_height, window, cx);
+                        let _ = shaped_comment.paint(
+                            point(text_x, params.bounds.top() + px(2.0)),
+                            line_height,
+                            gpui::TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
 
                         cur_x = text_x + px(text_w + item_spacing);
                     }
@@ -1353,52 +1362,7 @@ pub fn paint_hex_row(params: RowPaintParams, window: &mut Window, cx: &mut App) 
     }
 }
 
-pub fn paint_scrollbar(
-    list_bounds: Bounds<Pixels>,
-    scroll_offset: usize,
-    total_rows: usize,
-    is_dragging: bool,
-    is_hovered: bool,
-    theme: &gpui_component::Theme,
-    window: &mut Window,
-) {
-    let list_h = f32::from(list_bounds.size.height);
-    let visible_rows = (list_h / ROW_HEIGHT).floor() as usize;
-    if total_rows <= visible_rows || list_h <= 0.0 {
-        return;
-    }
-    let max_top_row = total_rows.saturating_sub(visible_rows.max(1));
-    let ratio = (visible_rows as f64 / total_rows as f64).clamp(0.0, 1.0);
-    let thumb_h = (list_h as f64 * ratio).clamp(24.0, list_h as f64) as f32;
-    let max_thumb_top = (list_h - thumb_h).max(0.0);
-
-    let scroll_ratio = if max_top_row > 0 {
-        (scroll_offset as f64 / max_top_row as f64).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let thumb_top = (scroll_ratio * max_thumb_top as f64) as f32;
-
-    let bar_w = 10.0;
-    let bar_x = list_bounds.right() - px(bar_w);
-    let bar_bounds = Bounds::new(point(bar_x, list_bounds.top()), size(px(bar_w), list_bounds.size.height));
-
-    if is_hovered || is_dragging {
-        window.paint_quad(gpui::fill(bar_bounds, theme.border.opacity(0.15)));
-    }
-
-    let thumb_bounds = Bounds::new(point(bar_x + px(2.0), list_bounds.top() + px(thumb_top)), size(px(6.0), px(thumb_h)));
-    let thumb_color = if is_dragging {
-        theme.muted_foreground.opacity(0.85)
-    } else if is_hovered {
-        theme.muted_foreground.opacity(0.7)
-    } else {
-        theme.border.opacity(0.6)
-    };
-    let mut quad = gpui::fill(thumb_bounds, thumb_color);
-    quad.corner_radii = gpui::Corners::all(px(3.0));
-    window.paint_quad(quad);
-}
+pub use crate::ui::scrollbar::paint_scrollbar;
 
 #[cfg(test)]
 mod tests {

@@ -190,7 +190,7 @@ Contributions, issues, and feature requests are very welcome!
 
 This project is licensed under the [MIT License](LICENSE).
 
-- Themes from [gpui-component](https://github.com/longbridge/gpui-component).
+- Themes from [gpui-kit](https://github.com/longbridge/gpui-kit).
 - Icons from [Lucide](https://lucide.dev).
 
 

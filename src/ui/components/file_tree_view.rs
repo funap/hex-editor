@@ -8,7 +8,7 @@ use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
     SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px, relative,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
     button::ButtonVariants as _,
     h_flex,
@@ -511,10 +511,10 @@ impl Render for FileTreeView {
 
         let header_actions = if !is_empty {
             Some(
-                gpui_component::button::Button::new("close-folder")
+                gpui_kit::component::button::Button::new("close-folder")
                     .ghost()
                     .icon(IconName::Eraser)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .tooltip("Close Folder")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.close_folder(cx);
@@ -523,10 +523,10 @@ impl Render for FileTreeView {
             )
         } else {
             Some(
-                gpui_component::button::Button::new("open-folder-header")
+                gpui_kit::component::button::Button::new("open-folder-header")
                     .ghost()
                     .icon(IconName::FolderOpen)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .tooltip("Open Folder")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.prompt_open_folder(window, cx);
@@ -545,8 +545,8 @@ impl Render for FileTreeView {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
-                    this.focus_handle.focus(window);
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
                 }),
             )
             .on_action(cx.listener(Self::move_up))
@@ -561,10 +561,10 @@ impl Render for FileTreeView {
             .on_action(cx.listener(Self::on_action_load_children))
             .child(header)
             .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(if is_empty {
-                let open_btn = gpui_component::button::Button::new("open-folder-btn")
+                let open_btn = gpui_kit::component::button::Button::new("open-folder-btn")
                     .label("Open Folder")
                     .primary()
-                    .with_size(gpui_component::Size::Small)
+                    .with_size(gpui_kit::component::Size::Small)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.prompt_open_folder(window, cx);
                     }))
@@ -600,17 +600,17 @@ impl Render for FileTreeView {
                                         .hover(|style| style.bg(theme.muted.opacity(0.4)))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.recent_history.set_deferred(true);
-                                            this.focus_handle.focus(window);
+                                            this.focus_handle.focus(window, cx);
                                             cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(open_path.clone())));
                                         }))
-                                        .child(Icon::new(IconName::File).with_size(gpui_component::Size::XSmall))
+                                        .child(Icon::new(IconName::File).with_size(gpui_kit::component::Size::XSmall))
                                         .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
                                 )
                                 .child(
-                                    gpui_component::button::Button::new(SharedString::from(format!("remove-recent-file-{index}")))
+                                    gpui_kit::component::button::Button::new(SharedString::from(format!("remove-recent-file-{index}")))
                                         .ghost()
                                         .icon(IconName::Close)
-                                        .with_size(gpui_component::Size::XSmall)
+                                        .with_size(gpui_kit::component::Size::XSmall)
                                         .tooltip("Remove from recents")
                                         .on_click(cx.listener(move |_, _, window, cx| {
                                             window.dispatch_action(Box::new(crate::actions::RemoveFileFromHistory { path: remove_path.clone() }), cx);
@@ -752,7 +752,7 @@ impl Render for FileTreeView {
                                 let item = item.clone();
                                 let focus_handle = focus_handle.clone();
                                 move |this, event: &gpui::ClickEvent, window, cx| {
-                                    focus_handle.focus(window);
+                                    focus_handle.focus(window, cx);
                                     if event.modifiers().control || event.modifiers().platform {
                                         this.toggle_selection(item.clone(), cx);
                                     } else {

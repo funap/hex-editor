@@ -5,9 +5,9 @@ use crate::core::selection::Selection;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::input::{self, Input, InputState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, button::Button, button::ButtonVariants, h_flex, v_flex};
+use gpui_kit::component::input::{self, Input, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, button::Button, button::ButtonVariants, h_flex, v_flex};
 
 pub const CONTEXT: &str = "DataInspector";
 pub const EDIT_CONTEXT: &str = "InspectorEdit";
@@ -488,7 +488,7 @@ impl DataInspector {
 
         self.editing_field = None;
         self.edit_error = None;
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -506,7 +506,7 @@ impl DataInspector {
 
     pub fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_edit_internal(cx);
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -520,7 +520,7 @@ impl DataInspector {
         font_family: &str,
         view: &Entity<Self>,
         window: &mut Window,
-        theme: &gpui_component::Theme,
+        theme: &gpui_kit::component::Theme,
         is_read_only: bool,
     ) -> impl IntoElement {
         let label = field.map_or(label, |f| f.label());
@@ -560,13 +560,13 @@ impl DataInspector {
                         .flex_1()
                         .min_w_0()
                         .when(has_error, |el| el.border_1().border_color(gpui::red()).rounded_sm())
-                        .child(Input::new(&self.edit_input).with_size(gpui_component::Size::XSmall)),
+                        .child(Input::new(&self.edit_input).with_size(gpui_kit::component::Size::XSmall)),
                 )
                 .child(
                     Button::new("commit-inspector-edit")
                         .icon(IconName::Check)
                         .ghost()
-                        .with_size(gpui_component::Size::XSmall)
+                        .with_size(gpui_kit::component::Size::XSmall)
                         .tooltip("Save (Enter)")
                         .on_click(window.listener_for(view, |this, _, window, cx| {
                             this.commit_edit(window, cx);
@@ -576,7 +576,7 @@ impl DataInspector {
                     Button::new("cancel-inspector-edit")
                         .icon(IconName::Close)
                         .ghost()
-                        .with_size(gpui_component::Size::XSmall)
+                        .with_size(gpui_kit::component::Size::XSmall)
                         .tooltip("Cancel (Esc)")
                         .on_click(window.listener_for(view, |this, _, window, cx| {
                             this.cancel_edit(window, cx);
@@ -592,7 +592,7 @@ impl DataInspector {
                 let mut edit_btn = Button::new(SharedString::from(format!("inspector-edit-{}", label)))
                     .ghost()
                     .icon(IconName::PenLine)
-                    .with_size(gpui_component::Size::XSmall);
+                    .with_size(gpui_kit::component::Size::XSmall);
 
                 if is_read_only {
                     edit_btn = edit_btn.disabled(true).tooltip("Cannot edit in read-only mode");
@@ -610,7 +610,7 @@ impl DataInspector {
                     Button::new(SharedString::from(format!("inspector-copy-{}", label)))
                         .ghost()
                         .icon(IconName::Copy)
-                        .with_size(gpui_component::Size::XSmall)
+                        .with_size(gpui_kit::component::Size::XSmall)
                         .tooltip("Copy Value")
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_val.clone()));
@@ -706,7 +706,7 @@ impl DataInspector {
         }
     }
 
-    fn render_section_header(&self, label: &'static str, theme: &gpui_component::Theme) -> impl IntoElement {
+    fn render_section_header(&self, label: &'static str, theme: &gpui_kit::component::Theme) -> impl IntoElement {
         crate::ui::style::panel_section_header(label, theme)
     }
 
@@ -934,7 +934,7 @@ impl Render for DataInspector {
                     .label("LE")
                     .ghost()
                     .selected(!is_big_endian)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .tooltip("Little Endian")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.is_big_endian {
@@ -951,7 +951,7 @@ impl Render for DataInspector {
                     .label("BE")
                     .ghost()
                     .selected(is_big_endian)
-                    .with_size(gpui_component::Size::XSmall)
+                    .with_size(gpui_kit::component::Size::XSmall)
                     .tooltip("Big Endian")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if !this.is_big_endian {
@@ -977,9 +977,9 @@ impl Render for DataInspector {
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
+                cx.listener(|this, _, window, cx| {
                     if this.editing_field.is_none() {
-                        this.focus_handle.focus(window);
+                        this.focus_handle.focus(window, cx);
                     }
                 }),
             )

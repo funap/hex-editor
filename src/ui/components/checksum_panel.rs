@@ -4,10 +4,10 @@ use crate::core::editor::Editor;
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme as _, button::Button, button::ButtonVariants, h_flex, v_flex};
-use gpui_component::{Disableable, Selectable, Sizable, Size};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme as _, button::Button, button::ButtonVariants, h_flex, v_flex};
+use gpui_kit::component::{Disableable, Selectable, Sizable, Size};
 use std::ops::Range;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -163,8 +163,7 @@ impl ChecksumPanel {
                     this.results = Some(results);
                     this.is_calculating = false;
                     cx.notify();
-                })
-                .ok();
+                });
             }
         });
 
@@ -202,7 +201,7 @@ impl ChecksumPanel {
         font_family: &str,
         view: &Entity<Self>,
         window: &mut Window,
-        theme: &gpui_component::Theme,
+        theme: &gpui_kit::component::Theme,
     ) -> impl IntoElement {
         let copy_val_for_click = copy_value.clone();
         let val_for_right_click = copy_value.clone();
@@ -224,7 +223,7 @@ impl ChecksumPanel {
             .on_mouse_down(
                 MouseButton::Right,
                 window.listener_for(view, move |this, _, window, cx| {
-                    this.focus_handle.focus(window);
+                    this.focus_handle.focus(window, cx);
                     this.selected_row = Some((label, val_for_right_click.clone(), all_copy.clone()));
                     cx.notify();
                 }),
@@ -457,8 +456,8 @@ impl Render for ChecksumPanel {
             .on_action(cx.listener(Self::copy_all_checksums))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
-                    this.focus_handle.focus(window);
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
                 }),
             )
             .context_menu(move |menu, _window, cx| {

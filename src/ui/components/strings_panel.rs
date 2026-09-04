@@ -6,10 +6,10 @@ use crate::ui::components::data_table::{self as table, TableColumn, TableSortDir
 use crate::ui::icon::IconName;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{self, Input, InputState};
-use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, Disableable, Sizable, Size, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{self, Input, InputState};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::{ActiveTheme as _, Disableable, Sizable, Size, h_flex, v_flex};
 use std::collections::HashMap;
 
 actions!(strings_panel, [FocusTable, ClearResults]);
@@ -284,8 +284,7 @@ impl StringsPanel {
                         this.table_state.scroll_to_row(0, ScrollStrategy::Top);
                     }
                     cx.notify();
-                })
-                .ok();
+                });
             }
         });
 
@@ -553,7 +552,7 @@ impl StringsPanel {
 
     fn focus_table(&mut self, _: &FocusTable, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(handle) = &self.table_state.focus_handle {
-            handle.focus(window);
+            handle.focus(window, cx);
         }
         cx.notify();
     }
@@ -766,7 +765,7 @@ impl Render for StringsPanel {
                                 .hover(move |style| style.bg(hover_bg))
                                 .on_click(window.listener_for(&list_view, move |this, _, window, cx| {
                                     if let Some(handle) = &this.table_state.focus_handle {
-                                        handle.focus(window);
+                                        handle.focus(window, cx);
                                     }
                                     this.select_item(index, cx);
                                 }))
@@ -774,7 +773,7 @@ impl Render for StringsPanel {
                                     MouseButton::Right,
                                     window.listener_for(&list_view, move |this, _, window, cx| {
                                         if let Some(handle) = &this.table_state.focus_handle {
-                                            handle.focus(window);
+                                            handle.focus(window, cx);
                                         }
                                         this.select_item(index, cx);
                                     }),
@@ -817,11 +816,11 @@ impl Render for StringsPanel {
                     })
                     .collect::<Vec<_>>()
             })
-            .track_scroll(self.table_state.vertical_scroll_handle.clone())
+            .track_scroll(&self.table_state.vertical_scroll_handle)
             .size_full();
 
-            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width);
-            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state);
+            let horizontal_scrollbar = VirtualTable::render_horizontal_scrollbar(&self.table_state, self.last_container_width, theme);
+            let vertical_scrollbar = VirtualTable::render_vertical_scrollbar(&self.table_state, theme);
             let context_view = view.clone();
 
             let table_focus_handle = self.table_state.focus_handle.clone();
@@ -835,9 +834,9 @@ impl Render for StringsPanel {
             if let Some(focus_handle) = &table_focus_handle {
                 table_container = table_container.track_focus(focus_handle).on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _, window, _| {
+                    cx.listener(|this, _, window, cx| {
                         if let Some(handle) = &this.table_state.focus_handle {
-                            handle.focus(window);
+                            handle.focus(window, cx);
                         }
                     }),
                 );

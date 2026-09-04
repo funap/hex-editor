@@ -7,9 +7,9 @@ use crate::ui::icon::IconName;
 use crate::ui::style::{decode_uint_value, format_binary_repr, format_size_friendly, format_text_repr};
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
-use gpui_component::{ActiveTheme, Sizable as _, Size, StyledExt};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
+use gpui_kit::component::{ActiveTheme, Sizable as _, Size, StyledExt};
 
 pub enum StatusBarEvent {
     #[allow(dead_code)]
@@ -211,7 +211,7 @@ impl Render for StatusBar {
                             .text_color(theme.foreground)
                             .cursor_pointer()
                             .hover(|s| s.text_color(theme.accent))
-                            .tooltip(|_window, cx| cx.new(|_| gpui_component::tooltip::Tooltip::new("Click to copy address")).into())
+                            .tooltip(|_window, cx| cx.new(|_| gpui_kit::component::tooltip::Tooltip::new("Click to copy address")).into())
                             .on_mouse_down(MouseButton::Left, {
                                 let copy_str = position_copy_val.clone();
                                 move |_, _, cx| {
@@ -246,7 +246,7 @@ impl Render for StatusBar {
                                 .text_color(theme.muted_foreground)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(theme.foreground))
-                                .tooltip(|_window, cx| cx.new(|_| gpui_component::tooltip::Tooltip::new("Click to copy value")).into())
+                                .tooltip(|_window, cx| cx.new(|_| gpui_kit::component::tooltip::Tooltip::new("Click to copy value")).into())
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     if !raw_copy.is_empty() {
                                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(raw_copy.clone()));
@@ -271,7 +271,7 @@ impl Render for StatusBar {
                             .rounded_sm()
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.muted.opacity(0.4)))
-                            .tooltip(|_window, cx| cx.new(|_| gpui_component::tooltip::Tooltip::new("Click to copy exact file size")).into())
+                            .tooltip(|_window, cx| cx.new(|_| gpui_kit::component::tooltip::Tooltip::new("Click to copy exact file size")).into())
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(total_size.to_string()));
                             })
@@ -321,7 +321,7 @@ impl Render for StatusBar {
                                 .ghost()
                                 .with_size(Size::XSmall)
                                 .tooltip("Click to change Radix (Hex, Dec, Oct, Bin)")
-                                .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, _window, _cx| {
+                                .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
                                     menu.menu("Hexadecimal (16)", Box::new(SetRadixHex))
                                         .menu("Decimal (10)", Box::new(SetRadixDec))
                                         .menu("Octal (8)", Box::new(SetRadixOct))
@@ -336,7 +336,7 @@ impl Render for StatusBar {
                                 .ghost()
                                 .with_size(Size::XSmall)
                                 .tooltip("Click to change Grouping & Byte Order")
-                                .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
+                                .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, window, cx| {
                                     menu.menu("1 Byte (8-bit)", Box::new(SetGroupSize1))
                                         .menu("2 Bytes (16-bit)", Box::new(SetGroupSize2))
                                         .menu("4 Bytes (32-bit)", Box::new(SetGroupSize4))
@@ -356,7 +356,7 @@ impl Render for StatusBar {
                                 .ghost()
                                 .with_size(Size::XSmall)
                                 .tooltip("Click to change Text Encoding")
-                                .dropdown_menu_with_anchor(Corner::BottomRight, move |menu, window, cx| {
+                                .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, window, cx| {
                                     Encoding::categories().iter().fold(menu, |menu, (cat, encs)| {
                                         menu.submenu(cat.label(), window, cx, move |menu, _window, _cx| {
                                             encs.iter()

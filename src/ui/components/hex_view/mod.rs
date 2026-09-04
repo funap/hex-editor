@@ -34,9 +34,9 @@ use crate::core::radix::{ByteGroupSize, DisplayRadix};
 use crate::core::structure::{IndexedField, ParseResult};
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::menu::ContextMenuExt;
-use gpui_component::scroll::Scrollbar;
-use gpui_component::{ActiveTheme, StyledExt, h_flex};
+use gpui_kit::component::menu::ContextMenuExt;
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::{ActiveTheme, StyledExt, h_flex};
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
@@ -46,7 +46,7 @@ const HEX_CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const HEX_CURSOR_PAUSE_DELAY: Duration = Duration::from_millis(300);
 
 /// Keeps the Insert Mode cursor in sync with the blinking behavior of
-/// `gpui-component`'s text inputs.
+/// `gpui-kit`'s text inputs.
 struct HexCursorBlink {
     visible: bool,
     paused: bool,
@@ -89,9 +89,9 @@ impl HexCursorBlink {
 
         let epoch = self.next_epoch();
         self._task = cx.spawn(async move |this, cx| {
-            Timer::after(HEX_CURSOR_BLINK_INTERVAL).await;
+            tokio::time::sleep(HEX_CURSOR_BLINK_INTERVAL).await;
             if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| this.blink(epoch, cx)).ok();
+                this.update(cx, |this, cx| this.blink(epoch, cx));
             }
         });
     }
@@ -107,13 +107,12 @@ impl HexCursorBlink {
 
         let epoch = self.next_epoch();
         self._task = cx.spawn(async move |this, cx| {
-            Timer::after(HEX_CURSOR_PAUSE_DELAY).await;
+            tokio::time::sleep(HEX_CURSOR_PAUSE_DELAY).await;
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| {
                     this.paused = false;
                     this.blink(epoch, cx);
-                })
-                .ok();
+                });
             }
         });
     }
@@ -2070,7 +2069,7 @@ impl HexView {
             }
         };
 
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         let item = if raw_bytes.is_empty() {
             gpui::ClipboardItem::new_string(formatted)
         } else {
@@ -2103,7 +2102,7 @@ impl HexView {
             }
         };
 
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         let item = if raw_bytes.is_empty() {
             gpui::ClipboardItem::new_string(formatted)
         } else {
@@ -2154,7 +2153,7 @@ impl HexView {
     }
 
     fn apply_bookmark(&mut self, color: Option<Hsla>, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         self.editor.update(cx, |editor, cx| {
             if let Some(range) = editor.selected_range_or_cursor() {
                 if let Some(color) = color {
@@ -2759,7 +2758,7 @@ impl Render for HexView {
                 );
             }
 
-            let comment_header_el = |width: f32, can_scroll_left: bool, can_scroll_right: bool, theme: &gpui_component::Theme| {
+            let comment_header_el = |width: f32, can_scroll_left: bool, can_scroll_right: bool, theme: &gpui_kit::component::Theme| {
                 h_flex()
                     .w(px(width + SECTION_GAP))
                     .child(
@@ -3299,7 +3298,7 @@ impl Render for HexView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.focus_handle.focus(window);
+                    this.focus_handle.focus(window, cx);
                     this.pause_cursor_blink(cx);
 
                     // スクロールバー領域（右端12px）でのクリック判定
@@ -3429,7 +3428,7 @@ impl Render for HexView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.focus_handle.focus(window);
+                    this.focus_handle.focus(window, cx);
                     this.pause_cursor_blink(cx);
                     if this.list_bounds.get().map(|bounds| event.position.y >= bounds.bottom()).unwrap_or(false) {
                         return;
@@ -3746,17 +3745,19 @@ impl Render for HexView {
                 .size_full()
             }))
             .child(if layout.outer_max > 0.01 {
+                let theme = cx.theme();
                 div()
                     .h(px(HORIZONTAL_SCROLLBAR_HEIGHT))
                     .flex_shrink_0()
                     .flex()
                     .child(div().w(px(8.0 + layout.fixed_width)))
                     .child(
-                        div()
-                            .flex_1()
-                            .mr(px(VERTICAL_SCROLLBAR_WIDTH))
-                            .relative()
-                            .child(Scrollbar::horizontal(&self.outer_scroll_handle).scroll_size(size(px(layout.content_width), px(0.0)))),
+                        div().flex_1().mr(px(VERTICAL_SCROLLBAR_WIDTH)).relative().child(
+                            Scrollbar::horizontal(&self.outer_scroll_handle)
+                                .mode(ScrollbarMode::Always)
+                                .scroll_size(size(px(layout.content_width), px(0.0)))
+                                .styles(|_| crate::ui::scrollbar::common_scrollbar_styles(theme)),
+                        ),
                     )
                     .into_any_element()
             } else {

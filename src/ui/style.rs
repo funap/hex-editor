@@ -1,6 +1,6 @@
 use crate::ui::icon::IconName;
 use gpui::{AnyElement, Div, Hsla, InteractiveElement as _, ParentElement, SharedString, Styled, div, px};
-use gpui_component::{Icon, StyledExt as _, h_flex, theme::Theme, v_flex};
+use gpui_kit::component::{Icon, StyledExt as _, h_flex, theme::Theme, v_flex};
 
 /// Returns the header text color based on the focus state.
 /// When focused, it returns `theme.foreground`. When not focused, it returns `theme.muted_foreground`.

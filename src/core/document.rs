@@ -1,28 +1,26 @@
 #![allow(dead_code)]
 
 use crate::core::address_map::AddressMap;
-use crate::core::bookmark::{BookmarkColor, BookmarkItem};
+use crate::core::bookmark::BookmarkStore;
 use crate::core::buffer::Buffer;
 use crate::core::command::{Command, EditDelta};
 use crate::core::history::History;
+use crate::core::layout::CustomLayoutRules;
 use crate::core::structure::{KsyDefinition, ParseResult};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub use crate::core::bookmark::FoldedBookmarkSummary;
 
 /// Encapsulates metadata, annotations, structural analysis results,
 /// and formatting configuration associated with a [`Document`].
 #[derive(Debug, Clone, Default)]
 pub struct DocumentMetadata {
-    pub bookmarks: Vec<BookmarkItem>,
+    pub bookmarks: BookmarkStore,
+    pub custom_layout: CustomLayoutRules,
     pub ksy_definition: Option<Arc<KsyDefinition>>,
     pub parse_result: Option<Arc<ParseResult>>,
-    pub custom_breaks: BTreeSet<usize>,
-    pub custom_joins: BTreeSet<usize>,
-    pub empty_lines: BTreeMap<usize, usize>,
-    pub hidden_bookmark_colors: HashSet<BookmarkColor>,
-    pub hidden_bookmark_ids: HashSet<String>,
-    pub hide_unbookmarked: bool,
     /// Monotonically increasing version counter used to invalidate derived layout caches.
     pub layout_version: usize,
 }
@@ -179,43 +177,8 @@ impl Document {
         };
 
         self.bump_layout_version();
-        let meta = &mut self.metadata;
-
-        for breaks in [&mut meta.custom_breaks, &mut meta.custom_joins] {
-            let shifted = breaks.iter().copied().map(shift).collect::<BTreeSet<_>>();
-            *breaks = shifted;
-        }
-        let shifted_lines = meta.empty_lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
-        meta.empty_lines = shifted_lines;
-
-        let bookmarks = &mut meta.bookmarks;
-        for item in bookmarks.iter_mut() {
-            let item_start = item.offset;
-            let item_end = item.offset.saturating_add(item.size);
-            if old_len == 0 {
-                if item_start >= start {
-                    item.offset = item_start.saturating_add(new_len);
-                } else if item_end > start {
-                    item.size = item.size.saturating_add(new_len);
-                }
-                continue;
-            }
-
-            if item_end <= start {
-                continue;
-            }
-            if item_start >= old_end {
-                item.offset = shift(item_start);
-                continue;
-            }
-
-            let prefix = item_end.min(start).saturating_sub(item_start);
-            let suffix = item_end.saturating_sub(old_end.max(item_start));
-            item.offset = item_start.min(start);
-            item.size = prefix.saturating_add(new_len).saturating_add(suffix);
-        }
-        bookmarks.retain(|item| item.size > 0);
-        bookmarks.sort_by_key(|item| (item.offset, item.size));
+        self.metadata.custom_layout.adjust_after_edit(start, old_len, new_len, shift);
+        self.metadata.bookmarks.adjust_after_edit(start, old_len, new_len, shift);
     }
 
     /// Executes a command on the document, recording it in history if it modified the document.
@@ -268,134 +231,13 @@ impl Document {
     /// Hidden bookmarks and unbookmarked gaps (when `hide_unbookmarked` is enabled)
     /// are calculated as separate, non-overlapping folded intervals.
     pub fn computed_folded_regions(&self) -> BTreeMap<usize, usize> {
-        let total_size = self.buffer.len();
-        if total_size == 0 {
-            return BTreeMap::new();
-        }
-
-        let is_hide_unbookmarked = self.metadata.hide_unbookmarked;
-        let hidden_colors = &self.metadata.hidden_bookmark_colors;
-        let hidden_ids = &self.metadata.hidden_bookmark_ids;
-        let bookmarks = &self.metadata.bookmarks;
-
-        let mut bookmarked_ranges = Vec::new();
-        let mut hidden_ranges = Vec::new();
-
-        for item in bookmarks.iter() {
-            if item.size > 0 {
-                let start = item.offset.min(total_size);
-                let end = item.offset.saturating_add(item.size).min(total_size);
-                if start < end {
-                    bookmarked_ranges.push((start, end));
-                    if hidden_colors.contains(&item.color) || hidden_ids.contains(&item.id) {
-                        hidden_ranges.push((start, end));
-                    }
-                }
-            }
-        }
-
-        let mut folds = BTreeMap::new();
-
-        // 1. Hidden bookmark ranges become folds
-        if !hidden_ranges.is_empty() {
-            hidden_ranges.sort_unstable_by_key(|&(s, e)| (s, e));
-            let mut cur_start = hidden_ranges[0].0;
-            let mut cur_end = hidden_ranges[0].1;
-            for &(s, e) in &hidden_ranges[1..] {
-                if s < cur_end {
-                    cur_end = cur_end.max(e);
-                } else {
-                    folds.insert(cur_start, cur_end);
-                    cur_start = s;
-                    cur_end = e;
-                }
-            }
-            folds.insert(cur_start, cur_end);
-        }
-
-        // 2. If hide_unbookmarked is enabled, unbookmarked gaps also become folds (separate from bookmarks)
-        if is_hide_unbookmarked {
-            if bookmarked_ranges.is_empty() {
-                folds.insert(0, total_size);
-            } else {
-                bookmarked_ranges.sort_unstable_by_key(|&(s, e)| (s, e));
-                let mut merged_bm = Vec::new();
-                let mut cur_start = bookmarked_ranges[0].0;
-                let mut cur_end = bookmarked_ranges[0].1;
-                for &(s, e) in &bookmarked_ranges[1..] {
-                    if s <= cur_end {
-                        cur_end = cur_end.max(e);
-                    } else {
-                        merged_bm.push((cur_start, cur_end));
-                        cur_start = s;
-                        cur_end = e;
-                    }
-                }
-                merged_bm.push((cur_start, cur_end));
-
-                let mut cursor = 0;
-                for (bm_s, bm_e) in merged_bm {
-                    if bm_s > cursor {
-                        folds.insert(cursor, bm_s);
-                    }
-                    cursor = bm_e;
-                }
-                if cursor < total_size {
-                    folds.insert(cursor, total_size);
-                }
-            }
-        }
-
-        folds
+        self.metadata.bookmarks.computed_folded_regions(self.buffer.len())
     }
 
     /// Returns summary details for a folded region starting at `offset`.
     pub fn fold_bookmark_summary_at(&self, offset: usize) -> Option<FoldedBookmarkSummary> {
-        let folded = self.computed_folded_regions();
-        let fold_end = folded.get(&offset).copied()?;
-        let hidden_colors = &self.metadata.hidden_bookmark_colors;
-        let hidden_ids = &self.metadata.hidden_bookmark_ids;
-        let bookmarks = &self.metadata.bookmarks;
-
-        let mut matched_items = Vec::new();
-        for item in bookmarks.iter() {
-            if (hidden_colors.contains(&item.color) || hidden_ids.contains(&item.id))
-                && item.offset < fold_end
-                && item.offset.saturating_add(item.size) > offset
-            {
-                matched_items.push(item);
-            }
-        }
-
-        let is_unbookmarked = matched_items.is_empty();
-        let primary = matched_items.first().copied();
-        let color = primary.map(|it| it.color).unwrap_or_default();
-        let comment = primary
-            .map(|it| it.comment.clone())
-            .unwrap_or_else(|| if is_unbookmarked { "Unbookmarked".to_string() } else { String::new() });
-        let bookmark_ids = matched_items.iter().map(|it| it.id.clone()).collect();
-
-        Some(FoldedBookmarkSummary {
-            start_offset: offset,
-            end_offset: fold_end,
-            size: fold_end.saturating_sub(offset),
-            color,
-            comment,
-            bookmark_ids,
-            is_unbookmarked,
-        })
+        self.metadata.bookmarks.fold_bookmark_summary_at(offset, self.buffer.len())
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct FoldedBookmarkSummary {
-    pub start_offset: usize,
-    pub end_offset: usize,
-    pub size: usize,
-    pub color: BookmarkColor,
-    pub comment: String,
-    pub bookmark_ids: Vec<String>,
-    pub is_unbookmarked: bool,
 }
 
 impl Drop for Document {

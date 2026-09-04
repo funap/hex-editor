@@ -64,7 +64,7 @@ impl SearchService {
                 let results = search_task.await;
                 if let Some(editor) = editor_weak.upgrade() {
                     editor.update(&mut cx, |editor, cx| {
-                        editor.set_search_results(results, generation, is_full);
+                        editor.search_state_mut().set_results(results, generation, is_full);
                         cx.notify();
                     });
                 }

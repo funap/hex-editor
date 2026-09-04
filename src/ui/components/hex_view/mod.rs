@@ -523,7 +523,7 @@ impl HexView {
         }
 
         let line_starts = editor.line_starts();
-        let bookmarks = editor.bookmarks_snapshot();
+        let bookmarks = editor.bookmarks().snapshot();
         let mut start_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.start);
         start_idx = start_idx.saturating_sub(1);
         let end_idx = bookmarks.partition_point(|bookmark| bookmark.offset < scan_range.end);
@@ -1689,7 +1689,7 @@ impl HexView {
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor.offset;
             if offset > 0 {
-                editor.add_custom_break(offset);
+                editor.custom_layout_mut().add_break(offset);
             }
             cx.notify();
         });
@@ -1700,8 +1700,8 @@ impl HexView {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor.offset;
-            if offset > 0 && editor.has_custom_break(offset - 1) {
-                editor.remove_custom_break(offset - 1);
+            if offset > 0 && editor.custom_layout().has_break(offset - 1) {
+                editor.custom_layout_mut().remove_break(offset - 1);
             }
             cx.notify();
         });
@@ -1712,8 +1712,8 @@ impl HexView {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
             let offset = editor.cursor.offset;
-            if editor.has_custom_break(offset) {
-                editor.remove_custom_break(offset);
+            if editor.custom_layout().has_break(offset) {
+                editor.custom_layout_mut().remove_break(offset);
             }
             cx.notify();
         });
@@ -1724,7 +1724,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.join_line();
+            editor.custom_layout_mut().join_line();
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1733,7 +1733,7 @@ impl HexView {
     pub fn clear_all_custom_breaks(&mut self, _: &ClearAllCustomBreaks, window: &mut Window, cx: &mut Context<Self>) {
         cx.focus_self(window);
         self.editor.update(cx, |editor, cx| {
-            editor.clear_all_custom_breaks();
+            editor.custom_layout_mut().clear_all();
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1743,7 +1743,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.show_all_bookmarks();
+            editor.bookmarks_mut().show_all();
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1753,7 +1753,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.hide_all_bookmarks();
+            editor.bookmarks_mut().hide_all();
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1763,7 +1763,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.toggle_bookmark_color(color);
+            editor.bookmarks_mut().toggle_color(color);
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1773,7 +1773,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.show_only_bookmark_color(color);
+            editor.bookmarks_mut().show_only_color(color);
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1783,7 +1783,7 @@ impl HexView {
         cx.focus_self(window);
         self.cursor_reveal_pending = true;
         self.editor.update(cx, |editor, cx| {
-            editor.toggle_hide_unbookmarked();
+            editor.bookmarks_mut().toggle_hide_unbookmarked();
             cx.notify();
         });
         self.notify_document_changed(cx);
@@ -1853,9 +1853,9 @@ impl HexView {
         self.editor.update(cx, |editor, cx| {
             if let Some(range) = editor.selected_range_or_cursor() {
                 if let Some(color) = color {
-                    editor.add_custom_bookmark(range, color.into());
+                    editor.bookmarks_mut().add_custom(range, color.into());
                 } else {
-                    editor.clear_custom_bookmark(range);
+                    editor.bookmarks_mut().clear_custom(range);
                 }
                 cx.notify();
             }
@@ -1900,7 +1900,7 @@ impl HexView {
     }
 
     pub fn clear_all_bookmarks(&mut self, _: &ClearAllBookmarks, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.editor.read(cx).bookmarks_snapshot().len();
+        let count = self.editor.read(cx).bookmarks().snapshot().len();
         if count == 0 {
             return;
         }
@@ -1924,7 +1924,7 @@ impl HexView {
                 window
                     .update(|_, cx| {
                         editor.update(cx, |editor, cx| {
-                            editor.clear_all_custom_bookmarks();
+                            editor.bookmarks_mut().clear_all();
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
@@ -3354,7 +3354,7 @@ impl Render for HexView {
                                     None
                                 },
                                 Arc::new(editor.structure.collapsed_struct_ids.clone()),
-                                Arc::new(editor.bookmarks_snapshot()),
+                                Arc::new(editor.bookmarks().snapshot()),
                                 editor.document.clone(),
                                 editor.line_starts(),
                                 editor.cursor.offset,

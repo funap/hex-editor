@@ -329,7 +329,7 @@ impl EditorPanel {
     fn perform_incremental_search(&mut self, query: &str, mode: SearchMode, cx: &mut Context<Self>) {
         if query.is_empty() {
             self.editor.update(cx, |editor: &mut Editor, cx| {
-                editor.clear_search();
+                editor.search_state_mut().clear();
                 cx.notify();
             });
             self.update_highlights(cx);
@@ -337,7 +337,7 @@ impl EditorPanel {
         }
 
         self.editor.update(cx, |editor: &mut Editor, cx| {
-            editor.set_search_query_and_mode(query.to_string(), mode);
+            editor.search_state_mut().set_query_and_mode(query.to_string(), mode);
             cx.notify();
         });
 
@@ -349,7 +349,13 @@ impl EditorPanel {
 
         // 1. Add user custom bookmarks from editor
         let editor = self.editor.read(cx);
-        highlights.extend(editor.custom_bookmarks_for_rendering().into_iter().map(|(range, color)| (range, color.into())));
+        highlights.extend(
+            editor
+                .bookmarks()
+                .custom_bookmarks_for_rendering()
+                .into_iter()
+                .map(|(range, color)| (range, color.into())),
+        );
 
         // 2. Add search highlights if search is active (either in search bar or search state)
         let (query, mode) = if self.is_search_visible && !self.search_bar.read(cx).query(cx).is_empty() {

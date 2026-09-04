@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::sync::Arc;
 
 pub const BYTES_PER_ROW: usize = 16;
@@ -389,6 +390,220 @@ fn build_line_map_from_sorted_event_lists(
         total_size,
         max_bytes_per_row,
     }))
+}
+
+/// Rules for custom breaks, joins, and empty lines that alter the standard row layout.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomLayoutRules {
+    pub breaks: BTreeSet<usize>,
+    pub joins: BTreeSet<usize>,
+    pub empty_lines: BTreeMap<usize, usize>,
+}
+
+impl CustomLayoutRules {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.breaks.is_empty() && self.joins.is_empty() && self.empty_lines.is_empty()
+    }
+
+    pub fn add_break(&mut self, offset: usize, line_starts: &LineMap, total_size: usize) {
+        if offset >= total_size {
+            return;
+        }
+        let current_line_idx = match line_starts.binary_search(&offset) {
+            Ok(mut idx) => {
+                while idx + 1 < line_starts.len() && line_starts.get(idx + 1) == Some(offset) {
+                    idx += 1;
+                }
+                idx
+            }
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_start = line_starts.get(current_line_idx).unwrap_or(0);
+        let line_end = if current_line_idx + 1 < line_starts.len() {
+            line_starts.get(current_line_idx + 1).unwrap_or(total_size)
+        } else {
+            total_size
+        };
+        let line_length = line_end.saturating_sub(line_start);
+
+        if offset < line_end {
+            let joins_to_remove: Vec<usize> = self.joins.range((offset + 1)..line_end).copied().collect();
+            for j in joins_to_remove {
+                self.joins.remove(&j);
+            }
+        }
+
+        self.breaks.insert(offset);
+        self.joins.remove(&offset);
+
+        if line_length > BYTES_PER_ROW && offset != line_start {
+            let mut step = offset + BYTES_PER_ROW;
+            while step < line_end {
+                self.joins.insert(step);
+                step += BYTES_PER_ROW;
+            }
+            if line_end < total_size && !(line_end - offset).is_multiple_of(BYTES_PER_ROW) && !self.breaks.contains(&line_end) {
+                self.breaks.insert(line_end);
+            }
+        }
+    }
+
+    pub fn remove_break(&mut self, offset: usize) -> bool {
+        self.breaks.remove(&offset)
+    }
+
+    pub fn toggle_break(&mut self, offset: usize, line_starts: &LineMap, total_size: usize) {
+        if self.has_break(offset) {
+            self.remove_break(offset);
+        } else {
+            self.add_break(offset, line_starts, total_size);
+        }
+    }
+
+    pub fn has_break(&self, offset: usize) -> bool {
+        self.breaks.contains(&offset)
+    }
+
+    pub fn breaks_count(&self) -> usize {
+        self.breaks.len()
+    }
+
+    pub fn breaks_snapshot(&self) -> BTreeSet<usize> {
+        self.breaks.clone()
+    }
+
+    pub fn has_join(&self, offset: usize) -> bool {
+        self.joins.contains(&offset)
+    }
+
+    pub fn empty_lines_at(&self, offset: usize) -> usize {
+        self.empty_lines.get(&offset).copied().unwrap_or(0)
+    }
+
+    pub fn add_empty_line(&mut self, offset: usize, total_size: usize) {
+        if offset <= total_size {
+            *self.empty_lines.entry(offset).or_insert(0) += 1;
+        }
+    }
+
+    pub fn remove_empty_line(&mut self, offset: usize) -> bool {
+        if let Some(count) = self.empty_lines.get_mut(&offset) {
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                self.empty_lines.remove(&offset);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn join_line(&mut self, line_starts: &LineMap, cursor_offset: usize) {
+        let current_line_idx = match line_starts.binary_search(&cursor_offset) {
+            Ok(mut idx) => {
+                while idx + 1 < line_starts.len() && line_starts.get(idx + 1) == Some(cursor_offset) {
+                    idx += 1;
+                }
+                idx
+            }
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        if current_line_idx + 1 >= line_starts.len() {
+            return;
+        }
+
+        let next_line_start = line_starts.get(current_line_idx + 1).expect("valid next line start");
+        if self.breaks.contains(&next_line_start) {
+            self.breaks.remove(&next_line_start);
+        } else if next_line_start != line_starts.get(current_line_idx).unwrap_or(0) {
+            self.joins.insert(next_line_start);
+        }
+    }
+
+    pub fn join_range(&mut self, range: Range<usize>, line_starts: &LineMap, total_size: usize) {
+        let s = range.start.min(total_size);
+        let e = range.end.min(total_size);
+
+        if s >= e {
+            return;
+        }
+
+        let current_line_idx = match line_starts.binary_search(&s) {
+            Ok(mut idx) => {
+                while idx + 1 < line_starts.len() && line_starts.get(idx + 1) == Some(s) {
+                    idx += 1;
+                }
+                idx
+            }
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_start_of_s = line_starts.get(current_line_idx).unwrap_or(0);
+
+        // 1. s が行の先頭でなければ、s に break を追加して s から始まるようにする
+        if s > 0 && s != line_start_of_s {
+            self.breaks.insert(s);
+        }
+        self.joins.remove(&s);
+
+        // 2. e がファイル末尾でなく、e で改行する必要がある場合は e に break を追加する
+        if e < total_size {
+            self.breaks.insert(e);
+        }
+        self.joins.remove(&e);
+
+        // 3. (s..e) 内の breaks, joins, empty_lines をすべて削除する
+        let breaks_to_remove: Vec<usize> = self.breaks.range((s + 1)..e).copied().collect();
+        for b in breaks_to_remove {
+            self.breaks.remove(&b);
+        }
+        let joins_to_remove: Vec<usize> = self.joins.range((s + 1)..e).copied().collect();
+        for j in joins_to_remove {
+            self.joins.remove(&j);
+        }
+        let empty_lines_to_remove: Vec<usize> = self.empty_lines.range((s + 1)..e).map(|(&k, _)| k).collect();
+        for el in empty_lines_to_remove {
+            self.empty_lines.remove(&el);
+        }
+
+        // 4. s から BYTES_PER_ROW ずつ進むステップを joins に追加し、1行に結合する
+        let mut step = s + BYTES_PER_ROW;
+        while step < e {
+            self.joins.insert(step);
+            step += BYTES_PER_ROW;
+        }
+    }
+
+    pub fn clear_breaks(&mut self) {
+        self.breaks.clear();
+    }
+
+    pub fn clear_all(&mut self) {
+        self.breaks.clear();
+        self.joins.clear();
+        self.empty_lines.clear();
+    }
+
+    pub fn custom_layout_count(&self, folded_count: usize) -> usize {
+        self.breaks.len() + self.joins.len() + self.empty_lines.values().sum::<usize>() + folded_count
+    }
+
+    pub fn adjust_after_edit(&mut self, _start: usize, _old_len: usize, _new_len: usize, shift: impl Fn(usize) -> usize) {
+        let shifted_breaks = self.breaks.iter().copied().map(&shift).collect::<BTreeSet<_>>();
+        self.breaks = shifted_breaks;
+
+        let shifted_joins = self.joins.iter().copied().map(&shift).collect::<BTreeSet<_>>();
+        self.joins = shifted_joins;
+
+        let shifted_lines = self.empty_lines.iter().map(|(&offset, &count)| (shift(offset), count)).collect();
+        self.empty_lines = shifted_lines;
+    }
 }
 
 #[cfg(test)]

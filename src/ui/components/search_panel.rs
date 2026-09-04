@@ -159,7 +159,7 @@ impl SearchPanel {
             self.match_len = 0;
             if let Some(ed) = &self.editor {
                 ed.update(cx, |ed, cx| {
-                    ed.clear_search();
+                    ed.search_state_mut().clear();
                     cx.notify();
                 });
             }
@@ -186,7 +186,7 @@ impl SearchPanel {
             self.match_len = 0;
             if let Some(ed) = &self.editor {
                 ed.update(cx, |ed, cx| {
-                    ed.clear_search();
+                    ed.search_state_mut().clear();
                     cx.notify();
                 });
             }
@@ -203,7 +203,7 @@ impl SearchPanel {
 
         // Update editor search query so visible ranges in HexView are highlighted
         editor_entity.update(cx, |editor, cx| {
-            editor.set_search_query_and_mode(query.clone(), mode);
+            editor.search_state_mut().set_query_and_mode(query.clone(), mode);
             cx.notify();
         });
 
@@ -265,7 +265,7 @@ impl SearchPanel {
                     if let Some(ed) = &this.editor {
                         let generation = ed.read(cx).search_state.generation;
                         ed.update(cx, |editor, cx| {
-                            editor.set_search_results(offsets, generation, true);
+                            editor.search_state_mut().set_results(offsets, generation, true);
                             cx.notify();
                         });
                     }
@@ -390,7 +390,7 @@ impl SearchPanel {
         self.match_len = 0;
         if let Some(ed) = &self.editor {
             ed.update(cx, |ed, cx| {
-                ed.clear_search();
+                ed.search_state_mut().clear();
                 cx.notify();
             });
         }
@@ -554,7 +554,7 @@ impl Render for SearchPanel {
                     this.match_len = 0;
                     if let Some(ed) = &this.editor {
                         ed.update(cx, |ed, cx| {
-                            ed.clear_search();
+                            ed.search_state_mut().clear();
                             cx.notify();
                         });
                     }

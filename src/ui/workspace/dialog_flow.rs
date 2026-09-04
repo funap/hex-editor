@@ -311,7 +311,7 @@ impl Workspace {
                     .update(|_, cx| {
                         view.update(cx, |this, cx| {
                             if let Some(editor) = this.active_editor(cx)
-                                && let Err(e) = editor.read(cx).export_bookmarks_to_file(&path)
+                                && let Err(e) = editor.read(cx).bookmarks().export_to_file(&path)
                             {
                                 eprintln!("Failed to export bookmarks: {}", e);
                             }
@@ -339,7 +339,7 @@ impl Workspace {
                         view.update(cx, |this, cx| {
                             if let Some(editor) = this.active_editor(cx) {
                                 let doc_path = editor.read(cx).document.read().ok().map(|d| d.path().to_path_buf());
-                                editor.update(cx, |ed, cx| match ed.import_bookmarks_from_file(&path) {
+                                editor.update(cx, |ed, cx| match ed.bookmarks_mut().import_from_file(&path) {
                                     Ok(_) => {
                                         cx.notify();
                                     }

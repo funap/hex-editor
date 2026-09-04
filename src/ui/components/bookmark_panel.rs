@@ -124,7 +124,7 @@ impl BookmarkPanel {
         }
         let (cursor_offset, bookmarks) = {
             let ed = editor.read(cx);
-            (ed.cursor.offset, ed.bookmarks_snapshot())
+            (ed.cursor.offset, ed.bookmarks().snapshot())
         };
 
         if bookmarks.is_empty() {
@@ -164,7 +164,7 @@ impl BookmarkPanel {
         let mut actual_id = String::new();
 
         editor_entity.update(cx, |editor, cx| {
-            actual_id = editor.add_bookmark(new_item);
+            actual_id = editor.bookmarks_mut().add(new_item);
             cx.notify();
         });
 
@@ -180,7 +180,7 @@ impl BookmarkPanel {
             .as_ref()
             .and_then(|ed| {
                 let editor = ed.read(cx);
-                editor.bookmark_by_id(&id).map(|h| h.comment)
+                editor.bookmarks().by_id(&id).map(|h| h.comment)
             })
             .unwrap_or_default();
 
@@ -212,7 +212,7 @@ impl BookmarkPanel {
 
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.update_bookmark_comment(&editing_id, new_comment);
+                editor.bookmarks_mut().update_comment(&editing_id, new_comment);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -230,7 +230,7 @@ impl BookmarkPanel {
     fn set_bookmark_color(&mut self, id: &str, color: BookmarkColor, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.update_bookmark_color(id, color);
+                editor.bookmarks_mut().update_color(id, color);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -242,7 +242,7 @@ impl BookmarkPanel {
     fn delete_bookmark(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ed) = &self.editor {
             ed.update(cx, |editor, cx| {
-                editor.remove_bookmark_by_id(id);
+                editor.bookmarks_mut().remove_by_id(id);
                 cx.notify();
             });
             self.notify_document_changed(cx);
@@ -261,7 +261,7 @@ impl BookmarkPanel {
 
     fn clear_all_bookmarks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor_entity) = &self.editor else { return };
-        let count = editor_entity.read(cx).bookmarks_snapshot().len();
+        let count = editor_entity.read(cx).bookmarks().snapshot().len();
         if count == 0 {
             return;
         }
@@ -285,7 +285,7 @@ impl BookmarkPanel {
                 window
                     .update(|_, cx| {
                         editor_entity.update(cx, |editor, cx| {
-                            editor.clear_all_custom_bookmarks();
+                            editor.bookmarks_mut().clear_all();
                             cx.notify();
                         });
                         if let Some(ref path) = doc_path {
@@ -325,7 +325,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -348,7 +348,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -372,7 +372,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -388,7 +388,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -405,7 +405,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -423,7 +423,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if bookmarks.is_empty() {
             return;
         }
@@ -442,7 +442,7 @@ impl BookmarkPanel {
             return;
         }
         let Some(ed) = &self.editor else { return };
-        let bookmarks = ed.read(cx).bookmarks_snapshot();
+        let bookmarks = ed.read(cx).bookmarks().snapshot();
         if let Some(item) = self.selected_id.as_ref().and_then(|id| bookmarks.iter().find(|h| &h.id == id)) {
             self.navigate_to_bookmark(item.offset, item.size, cx);
         } else if let Some(first) = bookmarks.first() {
@@ -483,7 +483,7 @@ impl Render for BookmarkPanel {
 
         let (bookmarks, has_editor) = if let Some(ed) = &self.editor {
             let editor = ed.read(cx);
-            (editor.bookmarks_snapshot(), true)
+            (editor.bookmarks().snapshot(), true)
         } else {
             (Vec::new(), false)
         };
@@ -556,7 +556,7 @@ impl Render for BookmarkPanel {
                 let is_color_hidden = self
                     .editor
                     .as_ref()
-                    .map(|ed| ed.read(cx).is_bookmark_color_hidden(preset_color))
+                    .map(|ed| ed.read(cx).bookmarks().is_color_hidden(preset_color))
                     .unwrap_or(false);
                 let badge_hsla = preset_color.to_badge_hsla();
 
@@ -571,7 +571,7 @@ impl Render for BookmarkPanel {
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         if let Some(ed) = &this.editor {
                             ed.update(cx, |editor, cx| {
-                                editor.toggle_bookmark_color(preset_color);
+                                editor.bookmarks_mut().toggle_color(preset_color);
                                 cx.notify();
                             });
                             cx.notify();
@@ -594,7 +594,7 @@ impl Render for BookmarkPanel {
                 chips_row = chips_row.child(chip);
             }
 
-            let is_hide_unbookmarked = self.editor.as_ref().map(|ed| ed.read(cx).is_hide_unbookmarked()).unwrap_or(false);
+            let is_hide_unbookmarked = self.editor.as_ref().map(|ed| ed.read(cx).bookmarks().is_hide_unbookmarked()).unwrap_or(false);
 
             let filter_actions = h_flex()
                 .items_center()
@@ -611,7 +611,7 @@ impl Render for BookmarkPanel {
                         .on_click(cx.listener(|this, _, _window, cx| {
                             if let Some(ed) = &this.editor {
                                 ed.update(cx, |editor, cx| {
-                                    editor.toggle_hide_unbookmarked();
+                                    editor.bookmarks_mut().toggle_hide_unbookmarked();
                                     cx.notify();
                                 });
                                 cx.notify();
@@ -628,7 +628,7 @@ impl Render for BookmarkPanel {
                         .on_click(cx.listener(|this, _, _window, cx| {
                             if let Some(ed) = &this.editor {
                                 ed.update(cx, |editor, cx| {
-                                    editor.show_all_bookmarks();
+                                    editor.bookmarks_mut().show_all();
                                     cx.notify();
                                 });
                                 cx.notify();
@@ -644,7 +644,7 @@ impl Render for BookmarkPanel {
                         .on_click(cx.listener(|this, _, _window, cx| {
                             if let Some(ed) = &this.editor {
                                 ed.update(cx, |editor, cx| {
-                                    editor.hide_all_bookmarks();
+                                    editor.bookmarks_mut().hide_all();
                                     cx.notify();
                                 });
                                 cx.notify();
@@ -740,7 +740,7 @@ impl BookmarkPanel {
 
         let bg_color = if is_selected { theme.selection } else { theme.sidebar };
 
-        let is_item_hidden = self.editor.as_ref().map(|ed| ed.read(cx).is_bookmark_item_hidden(item)).unwrap_or(false);
+        let is_item_hidden = self.editor.as_ref().map(|ed| ed.read(cx).bookmarks().is_item_hidden(item)).unwrap_or(false);
         let item_id_vis = item_id.clone();
 
         let mut row_container = v_flex()
@@ -847,7 +847,7 @@ impl BookmarkPanel {
                                 move |this, _, _window, cx| {
                                     if let Some(ed) = &this.editor {
                                         ed.update(cx, |editor, cx| {
-                                            editor.toggle_bookmark_item_visibility(&item_id);
+                                            editor.bookmarks_mut().toggle_item_visibility(&item_id);
                                             cx.notify();
                                         });
                                         cx.notify();

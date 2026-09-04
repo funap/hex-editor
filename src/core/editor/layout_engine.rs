@@ -102,12 +102,10 @@ impl LayoutEngine {
     /// Returns true if the document layout deviates from standard fixed-width 16-byte rows.
     pub fn has_custom_layout(doc: &Document, show_inline_structure_view: bool, is_parsing_structure: bool) -> bool {
         let meta = &doc.metadata;
-        !meta.custom_breaks.is_empty()
-            || !meta.custom_joins.is_empty()
-            || !meta.empty_lines.is_empty()
-            || !meta.hidden_bookmark_colors.is_empty()
-            || !meta.hidden_bookmark_ids.is_empty()
-            || meta.hide_unbookmarked
+        !meta.custom_layout.is_empty()
+            || !meta.bookmarks.hidden_colors.is_empty()
+            || !meta.bookmarks.hidden_ids.is_empty()
+            || meta.bookmarks.hide_unbookmarked
             || (show_inline_structure_view && !is_parsing_structure && meta.parse_result.is_some())
             || doc.address_map.has_gaps()
     }
@@ -133,11 +131,9 @@ impl LayoutEngine {
         if show_inline_structure_view
             && !is_parsing_structure
             && collapsed_struct_ids.is_empty()
-            && meta.custom_breaks.is_empty()
-            && meta.custom_joins.is_empty()
-            && meta.empty_lines.is_empty()
-            && meta.hidden_bookmark_colors.is_empty()
-            && meta.hidden_bookmark_ids.is_empty()
+            && meta.custom_layout.is_empty()
+            && meta.bookmarks.hidden_colors.is_empty()
+            && meta.bookmarks.hidden_ids.is_empty()
             && !doc.address_map.has_gaps()
             && let Some(parse_res) = &meta.parse_result
             && let Some(line_map) = &parse_res.structure_line_map
@@ -166,9 +162,9 @@ impl LayoutEngine {
                 let mut current = 0;
                 let mut current_line = 0;
 
-                let custom_breaks = &meta.custom_breaks;
-                let custom_joins = &meta.custom_joins;
-                let mut empty_line_counts = meta.empty_lines.clone();
+                let custom_breaks = &meta.custom_layout.breaks;
+                let custom_joins = &meta.custom_layout.joins;
+                let mut empty_line_counts = meta.custom_layout.empty_lines.clone();
 
                 let mut segment_breaks = std::collections::BTreeSet::new();
                 doc.address_map.collect_segment_breaks(&mut segment_breaks);

@@ -243,7 +243,7 @@ fn test_insert_selection_select_down_with_join_line() {
     let mut editor = create_editor_with_content(&[0u8; 64]);
     // Join line 0 and line 1 -> line 0 is 32 bytes (0..32), line 1 is 16 bytes (32..48), line 2 is 16 bytes (48..64)
     editor.set_cursor_offset_exact(5);
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
     assert_eq!(editor.line_starts(), vec![0, 32, 48]);
 
     // Start at offset 5 (column 5 of 32-byte line 0)
@@ -267,7 +267,7 @@ fn test_insert_selection_select_down_with_join_line() {
     // When line 0 is 16 bytes and line 1 is joined to be 32 bytes (48 total bytes)
     let mut editor2 = create_editor_with_content(&[0u8; 48]);
     editor2.set_cursor_offset_exact(16);
-    editor2.join_line(); // lines: [0..16], [16..48]
+    editor2.custom_layout_mut().join_line(); // lines: [0..16], [16..48]
     assert_eq!(editor2.line_starts(), vec![0, 16]);
 
     // Caret at offset 10 in line 0 (16 bytes) moving down to joined line 1 (32 bytes)
@@ -289,7 +289,7 @@ fn test_insert_selection_select_down_with_join_line() {
 #[test]
 fn test_insert_selection_select_down_and_up_with_custom_breaks() {
     let mut editor = create_editor_with_content(&[0u8; 32]);
-    editor.add_custom_break(10); // Lines: [0..10], [10..26], [26..32]
+    editor.custom_layout_mut().add_break(10); // Lines: [0..10], [10..26], [26..32]
     assert_eq!(editor.line_starts(), vec![0, 10, 26]);
 
     editor.set_cursor_offset_exact(4);
@@ -530,7 +530,9 @@ fn test_search_navigation() {
 #[test]
 fn test_search_on_demand_navigation() {
     let mut editor = create_editor_with_content(b"test match test");
-    editor.set_search_query_and_mode("test".to_string(), crate::core::search::SearchMode::Text);
+    editor
+        .search_state_mut()
+        .set_query_and_mode("test".to_string(), crate::core::search::SearchMode::Text);
     // results is empty because inline search does not scan the whole file
     assert!(editor.search_state.results.is_empty());
 
@@ -562,41 +564,41 @@ fn test_search_generation_and_race_condition() {
     assert_eq!(editor.search_state.generation, 0);
 
     // 1. Verification of query changes incrementing generation
-    editor.set_search_query("foo".to_string());
+    editor.search_state_mut().set_query("foo".to_string());
     assert_eq!(editor.search_state.generation, 1);
 
-    editor.set_search_query("foo".to_string());
+    editor.search_state_mut().set_query("foo".to_string());
     assert_eq!(editor.search_state.generation, 1); // No change
 
-    editor.set_search_query("bar".to_string());
+    editor.search_state_mut().set_query("bar".to_string());
     assert_eq!(editor.search_state.generation, 2);
 
     // 2. Discarding older queries (generation < current_generation)
-    editor.set_search_results(vec![0], 1, true);
+    editor.search_state_mut().set_results(vec![0], 1, true);
     assert!(editor.search_state.results.is_empty());
 
     // 3. Allowing same generation results
-    editor.set_search_results(vec![1, 2], 2, true);
+    editor.search_state_mut().set_results(vec![1, 2], 2, true);
     assert_eq!(editor.search_state.results, vec![1, 2]);
 
     // 4. Overwriting or syncing generation if generation > current
-    editor.set_search_results(vec![3, 4], 3, true);
+    editor.search_state_mut().set_results(vec![3, 4], 3, true);
     assert_eq!(editor.search_state.results, vec![3, 4]);
     assert_eq!(editor.search_state.generation, 3);
     assert!(editor.search_state.is_full_search_complete);
 
     // 5. Preventing partial viewport search results from overwriting full search results within the same generation
-    editor.set_search_results(vec![3], 3, false); // partial results for same generation
+    editor.search_state_mut().set_results(vec![3], 3, false); // partial results for same generation
     assert_eq!(editor.search_state.results, vec![3, 4]); // results remain full-search results
 
     // 6. Discarding all results and incrementing generation upon clear_search
-    editor.clear_search();
+    editor.search_state_mut().clear();
     assert_eq!(editor.search_state.generation, 4);
     assert!(editor.search_state.results.is_empty());
     assert!(!editor.search_state.is_full_search_complete);
 
     // Try setting results with an older generation (3)
-    editor.set_search_results(vec![5], 3, true);
+    editor.search_state_mut().set_results(vec![5], 3, true);
     assert!(editor.search_state.results.is_empty());
 }
 
@@ -610,7 +612,7 @@ fn test_search_with_encoding() {
     let mut editor = create_editor_with_content(&sjis_data);
     editor.set_encoding(Encoding::ShiftJis);
 
-    editor.set_search_query_and_mode("にち".to_string(), SearchMode::Text);
+    editor.search_state_mut().set_query_and_mode("にち".to_string(), SearchMode::Text);
     let pattern = editor.search_pattern().expect("valid pattern");
     assert_eq!(pattern.len(), 4); // "にち" is 4 bytes in Shift-JIS
 
@@ -837,14 +839,15 @@ fn test_insert_at_eof_keeps_the_insertion_cursor_at_eof() {
 #[test]
 fn test_edit_adjusts_layout_and_bookmark_offsets() {
     let mut editor = create_editor_with_content(&[0; 32]);
-    editor.add_custom_break(8);
-    editor.add_custom_bookmark(4..12, RgbaColor::from_hsla_f32(0.0, 1.0, 0.5, 0.5));
-    let bookmark_id = editor.bookmarks_snapshot()[0].id.clone();
+    editor.custom_layout_mut().add_break(8);
+    editor.bookmarks_mut().add_custom(4..12, RgbaColor::from_hsla_f32(0.0, 1.0, 0.5, 0.5));
+    let bookmark_id = editor.bookmarks().snapshot()[0].id.clone();
 
     assert!(editor.insert_bytes(4, vec![1, 2]));
-    assert!(editor.has_custom_break(10));
+    assert!(editor.custom_layout().has_break(10));
     let bookmark_range = editor
-        .bookmarks_snapshot()
+        .bookmarks()
+        .snapshot()
         .into_iter()
         .find(|item| item.id == bookmark_id)
         .map(|item| item.range())
@@ -852,9 +855,10 @@ fn test_edit_adjusts_layout_and_bookmark_offsets() {
     assert_eq!(bookmark_range, 6..14);
 
     assert!(editor.undo());
-    assert!(editor.has_custom_break(8));
+    assert!(editor.custom_layout().has_break(8));
     let (bookmark_range, bookmark_color) = editor
-        .bookmarks_snapshot()
+        .bookmarks()
+        .snapshot()
         .into_iter()
         .find(|item| item.id == bookmark_id)
         .map(|item| (item.range(), item.color))
@@ -886,7 +890,7 @@ fn test_line_starts_with_custom_breaks() {
     assert_eq!(editor.line_starts(), vec![0, 16]);
 
     // Add custom break at 10
-    editor.add_custom_break(10);
+    editor.custom_layout_mut().add_break(10);
     // Should be 0, 10, 26
     // current=0 -> push 0. next_custom=10, next_default=16. 10 < 16, so current=10.
     // current=10 -> push 10. next_custom=None, next_default=26. current=26.
@@ -894,7 +898,7 @@ fn test_line_starts_with_custom_breaks() {
     assert_eq!(editor.line_starts(), vec![0, 10, 26]);
 
     // Add custom break at 5
-    editor.add_custom_break(5);
+    editor.custom_layout_mut().add_break(5);
     // 0, 5, 10, 26
     assert_eq!(editor.line_starts(), vec![0, 5, 10, 26]);
 }
@@ -902,7 +906,7 @@ fn test_line_starts_with_custom_breaks() {
 #[test]
 fn test_move_up_down_with_custom_breaks() {
     let mut editor = create_editor_with_content(&[0; 32]);
-    editor.add_custom_break(10); // Lines: [0..10], [10..26], [26..32]
+    editor.custom_layout_mut().add_break(10); // Lines: [0..10], [10..26], [26..32]
 
     editor.set_cursor_offset(5);
     editor.move_down();
@@ -939,7 +943,7 @@ fn test_join_line_creates_long_rows() {
 
     // Join line 0 and line 1 (remove 16-byte boundary at offset 16)
     editor.set_cursor_offset(5); // On line 0
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
     // Now offset 16 is in custom_joins, so line_starts should skip it
     // current=0 -> push 0. next_pos=16, but 16 is in joins, so next_pos=32. current=32.
     // current=32 -> push 32. next_pos=48, not in joins. current=48 (>= 48, loop ends).
@@ -949,13 +953,13 @@ fn test_join_line_creates_long_rows() {
 #[test]
 fn test_join_line_removes_custom_break() {
     let mut editor = create_editor_with_content(&[0; 32]);
-    editor.add_custom_break(10);
+    editor.custom_layout_mut().add_break(10);
     // Lines: [0..10], [10..26], [26..32]
     assert_eq!(editor.line_starts(), vec![0, 10, 26]);
 
     // Join line 0 with line 1 (removes custom break at 10)
     editor.set_cursor_offset(3);
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
     // Custom break at 10 removed, back to default 16-byte lines
     assert_eq!(editor.line_starts(), vec![0, 16]);
 }
@@ -968,9 +972,9 @@ fn test_join_line_multiple_joins() {
 
     // Join all into one big line
     editor.set_cursor_offset(0);
-    editor.join_line(); // joins 0+16 -> skip 16
-    editor.join_line(); // joins 0+32 -> skip 32
-    editor.join_line(); // joins 0+48 -> skip 48
+    editor.custom_layout_mut().join_line(); // joins 0+16 -> skip 16
+    editor.custom_layout_mut().join_line(); // joins 0+32 -> skip 32
+    editor.custom_layout_mut().join_line(); // joins 0+48 -> skip 48
     // All boundaries joined, single line
     assert_eq!(editor.line_starts(), vec![0]);
 }
@@ -978,15 +982,15 @@ fn test_join_line_multiple_joins() {
 #[test]
 fn test_clear_all_custom_breaks() {
     let mut editor = create_editor_with_content(&[0; 48]);
-    editor.add_custom_break(5);
-    editor.add_custom_break(10);
+    editor.custom_layout_mut().add_break(5);
+    editor.custom_layout_mut().add_break(10);
     editor.set_cursor_offset(0);
-    editor.join_line(); // join some lines
+    editor.custom_layout_mut().join_line(); // join some lines
 
     assert!(editor.has_custom_layout());
     assert!(editor.custom_layout_count() > 0);
 
-    editor.clear_all_custom_breaks();
+    editor.custom_layout_mut().clear_all();
     assert!(!editor.has_custom_layout());
     assert_eq!(editor.custom_layout_count(), 0);
     // Back to default
@@ -998,11 +1002,11 @@ fn test_custom_break_overrides_join() {
     let mut editor = create_editor_with_content(&[0; 48]);
     // Join at 16
     editor.set_cursor_offset(0);
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
     assert_eq!(editor.line_starts(), vec![0, 32]);
 
     // Adding a custom break at 16 should remove the join
-    editor.add_custom_break(16);
+    editor.custom_layout_mut().add_break(16);
     assert_eq!(editor.line_starts(), vec![0, 16, 32]);
 }
 
@@ -1016,8 +1020,8 @@ fn test_sparse_line_map_large_offsets() {
     assert!(matches!(starts, LineMap::Standard { .. }));
     assert_eq!(starts.len(), 100_000_usize.div_ceil(16));
 
-    editor.add_custom_break(50_000);
-    editor.add_custom_break(50_010);
+    editor.custom_layout_mut().add_break(50_000);
+    editor.custom_layout_mut().add_break(50_010);
 
     let starts = editor.line_starts();
     assert!(matches!(starts, LineMap::Sparse(_)));
@@ -1046,21 +1050,21 @@ fn test_double_empty_line() {
     assert_eq!(editor.line_starts(), vec![0, 16]);
 
     // offset 16 に空行を1つ追加
-    editor.add_empty_line(16);
+    editor.custom_layout_mut().add_empty_line(16);
     // [0..16], [空], [16..32] の3行
     assert_eq!(editor.line_starts(), vec![0, 16, 16]);
     assert_eq!(editor.line_starts().len(), 3);
 
     // offset 16 にさらに空行をもう1つ追加（2回目のEnter）
-    editor.add_empty_line(16);
+    editor.custom_layout_mut().add_empty_line(16);
     // [0..16], [空1], [空2], [16..32] の4行
     // 修正前はここで3行しか返らずバグになっていた
     assert_eq!(editor.line_starts(), vec![0, 16, 16, 16]);
     assert_eq!(editor.line_starts().len(), 4);
 
     // offset 0 にも2回空行を追加
-    editor.add_empty_line(0);
-    editor.add_empty_line(0);
+    editor.custom_layout_mut().add_empty_line(0);
+    editor.custom_layout_mut().add_empty_line(0);
     // [空1@0], [空2@0], [0..16], [空1@16], [空2@16], [16..32] の6行
     assert_eq!(editor.line_starts(), vec![0, 0, 0, 16, 16, 16]);
     assert_eq!(editor.line_starts().len(), 6);
@@ -1075,13 +1079,13 @@ fn test_split_mega_line_preserves_end() {
 
     // delete×3 → 64バイトのメガ行
     editor.set_cursor_offset(0);
-    editor.join_line();
-    editor.join_line();
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
+    editor.custom_layout_mut().join_line();
+    editor.custom_layout_mut().join_line();
     assert_eq!(editor.line_starts(), vec![0]);
 
     // オフセット5で改行 → [0..5] と [5..64]
-    editor.add_custom_break(5);
+    editor.custom_layout_mut().add_break(5);
     assert_eq!(editor.line_starts(), vec![0, 5]);
     assert_eq!(editor.line_starts().len(), 2);
 
@@ -1090,11 +1094,11 @@ fn test_split_mega_line_preserves_end() {
     let mut editor2 = create_editor_with_content(&[0; 48]);
     assert_eq!(editor2.line_starts(), vec![0, 16, 32]);
     editor2.set_cursor_offset(0);
-    editor2.join_line();
-    editor2.join_line();
+    editor2.custom_layout_mut().join_line();
+    editor2.custom_layout_mut().join_line();
     assert_eq!(editor2.line_starts(), vec![0]); // 48バイト行
 
-    editor2.add_custom_break(5);
+    editor2.custom_layout_mut().add_break(5);
     // [0..5] (5バイト) と [5..48] (43バイト)
     assert_eq!(editor2.line_starts(), vec![0, 5]);
     assert_eq!(editor2.line_starts().len(), 2);
@@ -1102,9 +1106,9 @@ fn test_split_mega_line_preserves_end() {
     // 追加ケース: 32バイトのメガ行をオフセット7で分割
     let mut editor3 = create_editor_with_content(&[0; 32]);
     editor3.set_cursor_offset(0);
-    editor3.join_line();
+    editor3.custom_layout_mut().join_line();
     assert_eq!(editor3.line_starts(), vec![0]); // 32バイト行
-    editor3.add_custom_break(7);
+    editor3.custom_layout_mut().add_break(7);
     // [0..7] と [7..32]
     assert_eq!(editor3.line_starts(), vec![0, 7]);
 }
@@ -1119,23 +1123,23 @@ fn test_split_mega_line_mid_join() {
 
     // delete → 32バイトのメガ行
     editor.set_cursor_offset(0);
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
     assert_eq!(editor.line_starts(), vec![0]);
 
     // オフセット18で改行 → [0..18] と [18..32]
-    editor.add_custom_break(18);
+    editor.custom_layout_mut().add_break(18);
     assert_eq!(editor.line_starts(), vec![0, 18]);
     assert_eq!(editor.line_starts().len(), 2);
 
     // 64バイトのメガ行をオフセット18で分割
     let mut editor2 = create_editor_with_content(&[0; 64]);
     editor2.set_cursor_offset(0);
-    editor2.join_line();
-    editor2.join_line();
-    editor2.join_line();
+    editor2.custom_layout_mut().join_line();
+    editor2.custom_layout_mut().join_line();
+    editor2.custom_layout_mut().join_line();
     assert_eq!(editor2.line_starts(), vec![0]); // 64バイトのメガ行
 
-    editor2.add_custom_break(18);
+    editor2.custom_layout_mut().add_break(18);
     // [0..18] と [18..64]
     assert_eq!(editor2.line_starts(), vec![0, 18]);
     assert_eq!(editor2.line_starts().len(), 2);
@@ -1148,23 +1152,23 @@ fn test_editor_empty_lines_and_breaks() {
     let doc = Arc::new(RwLock::new(Document::new(PathBuf::from("test.bin"), Buffer::new(vec![0; 100]))));
     let mut editor = Editor::new(doc);
 
-    editor.add_empty_line(10);
-    assert_eq!(editor.empty_lines_at(10), 1);
+    editor.custom_layout_mut().add_empty_line(10);
+    assert_eq!(editor.custom_layout().empty_lines_at(10), 1);
 
-    editor.add_empty_line(10);
-    assert_eq!(editor.empty_lines_at(10), 2);
+    editor.custom_layout_mut().add_empty_line(10);
+    assert_eq!(editor.custom_layout().empty_lines_at(10), 2);
 
-    assert!(editor.remove_empty_line(10));
-    assert_eq!(editor.empty_lines_at(10), 1);
+    assert!(editor.custom_layout_mut().remove_empty_line(10));
+    assert_eq!(editor.custom_layout().empty_lines_at(10), 1);
 
-    assert!(editor.remove_empty_line(10));
-    assert_eq!(editor.empty_lines_at(10), 0);
+    assert!(editor.custom_layout_mut().remove_empty_line(10));
+    assert_eq!(editor.custom_layout().empty_lines_at(10), 0);
 
-    editor.toggle_custom_break(20);
-    assert!(editor.has_custom_break(20));
+    editor.custom_layout_mut().toggle_break(20);
+    assert!(editor.custom_layout().has_break(20));
 
-    editor.toggle_custom_break(20);
-    assert!(!editor.has_custom_break(20));
+    editor.custom_layout_mut().toggle_break(20);
+    assert!(!editor.custom_layout().has_break(20));
 }
 
 #[test]
@@ -1174,32 +1178,32 @@ fn test_custom_bookmarks() {
     let blue = RgbaColor::from_hsla_f32(0.6, 1.0, 0.5, 0.5);
 
     // Add red bookmark on 0..10
-    editor.add_custom_bookmark(0..10, red);
-    assert_eq!(editor.bookmarks_snapshot().len(), 1);
-    assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..10);
-    assert_eq!(editor.bookmarks_snapshot()[0].color, BookmarkColor::Red);
+    editor.bookmarks_mut().add_custom(0..10, red);
+    assert_eq!(editor.bookmarks().snapshot().len(), 1);
+    assert_eq!(editor.bookmarks().snapshot()[0].range(), 0..10);
+    assert_eq!(editor.bookmarks().snapshot()[0].color, BookmarkColor::Red);
 
     // Update comment
-    let id = editor.bookmarks_snapshot()[0].id.clone();
-    assert!(editor.update_bookmark_comment(&id, "Header block"));
-    assert_eq!(editor.bookmarks_snapshot()[0].comment, "Header block");
+    let id = editor.bookmarks().snapshot()[0].id.clone();
+    assert!(editor.bookmarks_mut().update_comment(&id, "Header block"));
+    assert_eq!(editor.bookmarks().snapshot()[0].comment, "Header block");
 
     // Add blue bookmark on 5..15
-    editor.add_custom_bookmark(5..15, blue);
-    assert_eq!(editor.bookmarks_snapshot().len(), 2);
-    assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..5);
-    assert_eq!(editor.bookmarks_snapshot()[1].range(), 5..15);
-    assert_eq!(editor.bookmarks_snapshot()[1].color, BookmarkColor::Blue);
+    editor.bookmarks_mut().add_custom(5..15, blue);
+    assert_eq!(editor.bookmarks().snapshot().len(), 2);
+    assert_eq!(editor.bookmarks().snapshot()[0].range(), 0..5);
+    assert_eq!(editor.bookmarks().snapshot()[1].range(), 5..15);
+    assert_eq!(editor.bookmarks().snapshot()[1].color, BookmarkColor::Blue);
 
     // Clear sub-range 3..7
-    editor.clear_custom_bookmark(3..7);
-    assert_eq!(editor.bookmarks_snapshot().len(), 2);
-    assert_eq!(editor.bookmarks_snapshot()[0].range(), 0..3);
-    assert_eq!(editor.bookmarks_snapshot()[1].range(), 7..15);
+    editor.bookmarks_mut().clear_custom(3..7);
+    assert_eq!(editor.bookmarks().snapshot().len(), 2);
+    assert_eq!(editor.bookmarks().snapshot()[0].range(), 0..3);
+    assert_eq!(editor.bookmarks().snapshot()[1].range(), 7..15);
 
     // Clear all
-    editor.clear_all_custom_bookmarks();
-    assert!(editor.bookmarks_snapshot().is_empty());
+    editor.bookmarks_mut().clear_all();
+    assert!(editor.bookmarks().snapshot().is_empty());
 }
 
 #[test]
@@ -1209,51 +1213,51 @@ fn test_editor_bookmarks_crud_and_file_io() {
     // Add bookmarks
     let item1 = BookmarkItem::new(0, 4, BookmarkColor::Red, "Magic bytes");
     let id1 = item1.id.clone();
-    editor.add_bookmark(item1);
+    editor.bookmarks_mut().add(item1);
 
     let item2 = BookmarkItem::new(10, 8, BookmarkColor::Green, "Payload");
     let id2 = item2.id.clone();
-    editor.add_bookmark(item2);
+    editor.bookmarks_mut().add(item2);
 
-    assert_eq!(editor.bookmarks_snapshot().len(), 2);
+    assert_eq!(editor.bookmarks().snapshot().len(), 2);
 
     // Update comment
-    assert!(editor.update_bookmark_comment(&id1, "ELF Magic"));
-    assert_eq!(editor.bookmarks_snapshot()[0].comment, "ELF Magic");
+    assert!(editor.bookmarks_mut().update_comment(&id1, "ELF Magic"));
+    assert_eq!(editor.bookmarks().snapshot()[0].comment, "ELF Magic");
 
     // Update color
-    assert!(editor.update_bookmark_color(&id1, BookmarkColor::Cyan));
-    assert_eq!(editor.bookmarks_snapshot()[0].color, BookmarkColor::Cyan);
+    assert!(editor.bookmarks_mut().update_color(&id1, BookmarkColor::Cyan));
+    assert_eq!(editor.bookmarks().snapshot()[0].color, BookmarkColor::Cyan);
 
     // Update range
-    assert!(editor.update_bookmark_range(&id2, 12, 10));
-    assert_eq!(editor.bookmarks_snapshot()[1].offset, 12);
-    assert_eq!(editor.bookmarks_snapshot()[1].size, 10);
+    assert!(editor.bookmarks_mut().update_range(&id2, 12, 10));
+    assert_eq!(editor.bookmarks().snapshot()[1].offset, 12);
+    assert_eq!(editor.bookmarks().snapshot()[1].size, 10);
 
     // Test export and import
     let temp_file = std::env::temp_dir().join("editor_bookmarks_test.bookmark.yaml");
-    editor.export_bookmarks_to_file(&temp_file).unwrap();
+    editor.bookmarks().export_to_file(&temp_file).unwrap();
     assert!(temp_file.exists());
 
     // Create new editor and import
     let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-    let count = editor2.import_bookmarks_from_file(&temp_file).unwrap();
+    let count = editor2.bookmarks_mut().import_from_file(&temp_file).unwrap();
     assert_eq!(count, 2);
-    assert_eq!(editor2.bookmarks_snapshot().len(), 2);
-    assert_eq!(editor2.bookmarks_snapshot()[0].comment, "ELF Magic");
-    assert_eq!(editor2.bookmarks_snapshot()[0].color, BookmarkColor::Cyan);
-    assert_eq!(editor2.bookmarks_snapshot()[1].offset, 12);
-    assert_eq!(editor2.bookmarks_snapshot()[1].size, 10);
+    assert_eq!(editor2.bookmarks().snapshot().len(), 2);
+    assert_eq!(editor2.bookmarks().snapshot()[0].comment, "ELF Magic");
+    assert_eq!(editor2.bookmarks().snapshot()[0].color, BookmarkColor::Cyan);
+    assert_eq!(editor2.bookmarks().snapshot()[1].offset, 12);
+    assert_eq!(editor2.bookmarks().snapshot()[1].size, 10);
 
     // Remove by id
-    assert!(editor.remove_bookmark_by_id(&id1));
-    assert_eq!(editor.bookmarks_snapshot().len(), 1);
-    assert_eq!(editor.bookmarks_snapshot()[0].id, id2);
+    assert!(editor.bookmarks_mut().remove_by_id(&id1));
+    assert_eq!(editor.bookmarks().snapshot().len(), 1);
+    assert_eq!(editor.bookmarks().snapshot()[0].id, id2);
 
     // Remove by index
-    let removed = editor.remove_bookmark_by_index(0);
+    let removed = editor.bookmarks_mut().remove_by_index(0);
     assert!(removed.is_some());
-    assert!(editor.bookmarks_snapshot().is_empty());
+    assert!(editor.bookmarks().snapshot().is_empty());
 
     let _ = std::fs::remove_file(temp_file);
 }
@@ -1262,33 +1266,33 @@ fn test_editor_bookmarks_crud_and_file_io() {
 fn test_import_and_add_bookmark_no_id_collision() {
     let mut editor = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
     let item1 = BookmarkItem::new(0, 4, BookmarkColor::Red, "Magic bytes");
-    editor.add_bookmark(item1);
+    editor.bookmarks_mut().add(item1);
 
     let temp_file = std::env::temp_dir().join("collision_test.bookmark.yaml");
-    editor.export_bookmarks_to_file(&temp_file).unwrap();
+    editor.bookmarks().export_to_file(&temp_file).unwrap();
 
     let mut editor2 = create_editor_with_content(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-    editor2.import_bookmarks_from_file(&temp_file).unwrap();
-    assert_eq!(editor2.bookmarks_snapshot().len(), 1);
+    editor2.bookmarks_mut().import_from_file(&temp_file).unwrap();
+    assert_eq!(editor2.bookmarks().snapshot().len(), 1);
 
     // Now add a new bookmark
     let new_item = BookmarkItem::new(10, 4, BookmarkColor::Yellow, "New bookmark");
-    let added_id = editor2.add_bookmark(new_item);
+    let added_id = editor2.bookmarks_mut().add(new_item);
 
     // Must have 2 distinct IDs
-    assert_eq!(editor2.bookmarks_snapshot().len(), 2);
-    assert_ne!(editor2.bookmarks_snapshot()[0].id, editor2.bookmarks_snapshot()[1].id);
-    assert_eq!(editor2.bookmarks_snapshot()[1].id, added_id);
+    assert_eq!(editor2.bookmarks().snapshot().len(), 2);
+    assert_ne!(editor2.bookmarks().snapshot()[0].id, editor2.bookmarks().snapshot()[1].id);
+    assert_eq!(editor2.bookmarks().snapshot()[1].id, added_id);
 
     // Editing one must not affect the other
-    assert!(editor2.update_bookmark_comment(&added_id, "Updated new comment"));
-    assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Magic bytes");
-    assert_eq!(editor2.bookmarks_snapshot()[1].comment, "Updated new comment");
+    assert!(editor2.bookmarks_mut().update_comment(&added_id, "Updated new comment"));
+    assert_eq!(editor2.bookmarks().snapshot()[0].comment, "Magic bytes");
+    assert_eq!(editor2.bookmarks().snapshot()[1].comment, "Updated new comment");
 
     // Deleting the new one must leave the first intact
-    assert!(editor2.remove_bookmark_by_id(&added_id));
-    assert_eq!(editor2.bookmarks_snapshot().len(), 1);
-    assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Magic bytes");
+    assert!(editor2.bookmarks_mut().remove_by_id(&added_id));
+    assert_eq!(editor2.bookmarks().snapshot().len(), 1);
+    assert_eq!(editor2.bookmarks().snapshot()[0].comment, "Magic bytes");
 
     let _ = std::fs::remove_file(temp_file);
 }
@@ -1302,25 +1306,25 @@ fn test_shared_bookmarks_across_split_editors() {
     let editor2 = Editor::new(doc.clone());
 
     // Both start empty
-    assert_eq!(editor1.bookmarks_snapshot().len(), 0);
-    assert_eq!(editor2.bookmarks_snapshot().len(), 0);
+    assert_eq!(editor1.bookmarks().snapshot().len(), 0);
+    assert_eq!(editor2.bookmarks().snapshot().len(), 0);
 
     // Add bookmark in editor1
     let hl = BookmarkItem::new(0, 16, BookmarkColor::Red, "Header");
-    let id = editor1.add_bookmark(hl);
+    let id = editor1.bookmarks_mut().add(hl);
 
     // editor2 immediately sees the bookmark from shared instance
-    assert_eq!(editor2.bookmarks_snapshot().len(), 1);
-    assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Header");
-    assert_eq!(editor2.bookmarks_snapshot()[0].color, BookmarkColor::Red);
+    assert_eq!(editor2.bookmarks().snapshot().len(), 1);
+    assert_eq!(editor2.bookmarks().snapshot()[0].comment, "Header");
+    assert_eq!(editor2.bookmarks().snapshot()[0].color, BookmarkColor::Red);
 
     // Update comment in editor1
-    assert!(editor1.update_bookmark_comment(&id, "Updated Header"));
-    assert_eq!(editor2.bookmarks_snapshot()[0].comment, "Updated Header");
+    assert!(editor1.bookmarks_mut().update_comment(&id, "Updated Header"));
+    assert_eq!(editor2.bookmarks().snapshot()[0].comment, "Updated Header");
 
     // Clear in editor1
-    editor1.clear_all_custom_bookmarks();
-    assert_eq!(editor2.bookmarks_snapshot().len(), 0);
+    editor1.bookmarks_mut().clear_all();
+    assert_eq!(editor2.bookmarks().snapshot().len(), 0);
 }
 
 #[test]
@@ -1331,11 +1335,11 @@ fn test_shared_custom_breaks_across_split_editors() {
     let mut editor1 = Editor::new(doc.clone());
     let editor2 = Editor::new(doc.clone());
 
-    editor1.add_custom_break(20);
-    assert!(editor2.has_custom_break(20));
+    editor1.custom_layout_mut().add_break(20);
+    assert!(editor2.custom_layout().has_break(20));
 
-    editor1.remove_custom_break(20);
-    assert!(!editor2.has_custom_break(20));
+    editor1.custom_layout_mut().remove_break(20);
+    assert!(!editor2.custom_layout().has_break(20));
 }
 
 #[test]
@@ -1408,7 +1412,7 @@ fn test_join_line_with_selection_multiple_lines() {
     // Select 0..32 (first 2 lines: bytes 0..=31)
     editor.set_selection(0, 32);
 
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
 
     let line_starts = editor.line_starts();
     assert_eq!(line_starts.len(), 3);
@@ -1425,7 +1429,7 @@ fn test_join_line_with_selection_arbitrary_sub_range() {
     // Select bytes 10..=49 (range 10..50, 40 bytes)
     editor.set_selection(10, 50);
 
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
 
     let line_starts = editor.line_starts();
     assert_eq!(line_starts.get(0), Some(0)); // 0..10
@@ -1436,14 +1440,14 @@ fn test_join_line_with_selection_arbitrary_sub_range() {
 #[test]
 fn test_join_line_with_selection_cleans_custom_breaks() {
     let mut editor = create_editor_with_content(&[0u8; 32]);
-    editor.add_custom_break(4);
-    editor.add_custom_break(8);
-    editor.add_custom_break(12);
+    editor.custom_layout_mut().add_break(4);
+    editor.custom_layout_mut().add_break(8);
+    editor.custom_layout_mut().add_break(12);
 
     // Select bytes 0..=15 (0..16)
     editor.set_selection(0, 16);
 
-    editor.join_line();
+    editor.custom_layout_mut().join_line();
 
     let line_starts = editor.line_starts();
     assert_eq!(line_starts.get(0), Some(0)); // 0..16
@@ -1534,15 +1538,15 @@ fn test_bookmark_visibility_basic_and_line_starts() {
     assert_eq!(editor.line_starts().len(), 7); // 100 / 16 ceil = 7
 
     let bm = BookmarkItem::new(16, 48, BookmarkColor::Red, "Header");
-    editor.add_bookmark(bm);
+    editor.bookmarks_mut().add(bm);
 
     // Initially visible
     assert_eq!(editor.line_starts().len(), 7);
     assert!(!editor.is_folded(16));
 
     // Hide Red bookmarks
-    editor.hide_bookmark_color(BookmarkColor::Red);
-    assert!(editor.is_bookmark_color_hidden(BookmarkColor::Red));
+    editor.bookmarks_mut().hide_color(BookmarkColor::Red);
+    assert!(editor.bookmarks().is_color_hidden(BookmarkColor::Red));
     assert!(editor.is_folded(16));
     assert!(editor.is_folded(20));
     assert!(editor.is_folded(63));
@@ -1585,21 +1589,21 @@ fn test_bookmark_visibility_overlapping_and_merging() {
         BookmarkItem::new(35, 25, BookmarkColor::Orange, "Part 2"), // [35, 60)
         BookmarkItem::new(70, 10, BookmarkColor::Blue, "Part 3"),   // [70, 80)
     ] {
-        editor.add_bookmark(bm);
+        editor.bookmarks_mut().add(bm);
     }
 
     // Hide Red: [20, 40)
-    editor.hide_bookmark_color(BookmarkColor::Red);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Red);
     assert_eq!(editor.fold_containing(25), Some((20, 40)));
     assert!(!editor.is_folded(50));
 
     // Hide Orange: [20, 40) and [35, 60) merge into [20, 60)
-    editor.hide_bookmark_color(BookmarkColor::Orange);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Orange);
     assert_eq!(editor.fold_containing(25), Some((20, 60)));
     assert_eq!(editor.fold_containing(55), Some((20, 60)));
 
     // Hide Blue: disjoint [70, 80)
-    editor.hide_bookmark_color(BookmarkColor::Blue);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Blue);
     assert_eq!(editor.fold_containing(25), Some((20, 60)));
     assert_eq!(editor.fold_containing(75), Some((70, 80)));
     assert!(!editor.is_folded(65));
@@ -1616,27 +1620,27 @@ fn test_bookmark_visibility_show_only_and_show_all() {
         BookmarkItem::new(40, 20, BookmarkColor::Blue, "BlueSec"),
         BookmarkItem::new(70, 20, BookmarkColor::Green, "GreenSec"),
     ] {
-        editor.add_bookmark(bm);
+        editor.bookmarks_mut().add(bm);
     }
 
     // Show only Blue: Red and Green are hidden, Blue remains visible
-    editor.show_only_bookmark_color(BookmarkColor::Blue);
-    assert!(editor.is_bookmark_color_hidden(BookmarkColor::Red));
-    assert!(editor.is_bookmark_color_hidden(BookmarkColor::Green));
-    assert!(!editor.is_bookmark_color_hidden(BookmarkColor::Blue));
+    editor.bookmarks_mut().show_only_color(BookmarkColor::Blue);
+    assert!(editor.bookmarks().is_color_hidden(BookmarkColor::Red));
+    assert!(editor.bookmarks().is_color_hidden(BookmarkColor::Green));
+    assert!(!editor.bookmarks().is_color_hidden(BookmarkColor::Blue));
 
     assert!(editor.is_folded(15));
     assert!(!editor.is_folded(45));
     assert!(editor.is_folded(75));
 
     // Show all
-    editor.show_all_bookmarks();
+    editor.bookmarks_mut().show_all();
     assert!(!editor.is_folded(15));
     assert!(!editor.is_folded(45));
     assert!(!editor.is_folded(75));
 
     // Hide all
-    editor.hide_all_bookmarks();
+    editor.bookmarks_mut().hide_all();
     assert!(editor.is_folded(15));
     assert!(editor.is_folded(45));
     assert!(editor.is_folded(75));
@@ -1650,19 +1654,19 @@ fn test_bookmark_visibility_individual_toggle() {
 
     let bm1 = BookmarkItem::new(10, 20, BookmarkColor::Yellow, "BM 1");
     let bm2 = BookmarkItem::new(50, 20, BookmarkColor::Yellow, "BM 2");
-    let id1 = editor.add_bookmark(bm1);
-    let id2 = editor.add_bookmark(bm2);
+    let id1 = editor.bookmarks_mut().add(bm1);
+    let id2 = editor.bookmarks_mut().add(bm2);
 
     // Toggle individual bookmark 1
-    editor.toggle_bookmark_item_visibility(&id1);
-    assert!(editor.is_bookmark_id_hidden(&id1));
-    assert!(!editor.is_bookmark_id_hidden(&id2));
+    editor.bookmarks_mut().toggle_item_visibility(&id1);
+    assert!(editor.bookmarks().is_id_hidden(&id1));
+    assert!(!editor.bookmarks().is_id_hidden(&id2));
     assert!(editor.is_folded(15));
     assert!(!editor.is_folded(55));
 
     // Toggle individual bookmark 1 back
-    editor.toggle_bookmark_item_visibility(&id1);
-    assert!(!editor.is_bookmark_id_hidden(&id1));
+    editor.bookmarks_mut().toggle_item_visibility(&id1);
+    assert!(!editor.bookmarks().is_id_hidden(&id1));
     assert!(!editor.is_folded(15));
 }
 
@@ -1673,8 +1677,8 @@ fn test_bookmark_visibility_cursor_navigation_skips_fold() {
     let mut editor = create_editor_with_content(&content);
 
     let bm = BookmarkItem::new(16, 32, BookmarkColor::Cyan, "Middle");
-    editor.add_bookmark(bm);
-    editor.hide_bookmark_color(BookmarkColor::Cyan);
+    editor.bookmarks_mut().add(bm);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Cyan);
 
     // Initial cursor at 0
     assert_eq!(editor.cursor.offset, 0);
@@ -1696,8 +1700,8 @@ fn test_bookmark_visibility_auto_unfold_on_goto_and_search() {
     let mut editor = create_editor_with_content(&data);
 
     let bm = BookmarkItem::new(20, 30, BookmarkColor::Purple, "Section");
-    editor.add_bookmark(bm);
-    editor.hide_bookmark_color(BookmarkColor::Purple);
+    editor.bookmarks_mut().add(bm);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Purple);
     assert!(editor.is_folded(30));
 
     // go_to_offset should auto-unfold
@@ -1706,11 +1710,13 @@ fn test_bookmark_visibility_auto_unfold_on_goto_and_search() {
     assert!(!editor.is_folded(30));
 
     // Re-hide Purple
-    editor.hide_bookmark_color(BookmarkColor::Purple);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Purple);
     assert!(editor.is_folded(30));
 
     // Search navigation should auto-unfold
-    editor.set_search_query_and_mode("TARGET".to_string(), crate::core::search::SearchMode::Text);
+    editor
+        .search_state_mut()
+        .set_query_and_mode("TARGET".to_string(), crate::core::search::SearchMode::Text);
     let match_offset = editor.find_and_navigate_next();
     assert_eq!(match_offset, Some(30));
     assert_eq!(editor.cursor.offset, 30);
@@ -1724,8 +1730,8 @@ fn test_bookmark_visibility_adjust_after_edit() {
     let mut editor = create_editor_with_content(&content);
 
     let bm = BookmarkItem::new(40, 20, BookmarkColor::Pink, "Payload");
-    editor.add_bookmark(bm);
-    editor.hide_bookmark_color(BookmarkColor::Pink);
+    editor.bookmarks_mut().add(bm);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Pink);
     assert_eq!(editor.fold_containing(50), Some((40, 60)));
 
     // Insert 5 bytes before the fold -> bookmark shifts to 45..65
@@ -1748,12 +1754,12 @@ fn test_bookmark_visibility_hide_unbookmarked() {
         BookmarkItem::new(20, 16, BookmarkColor::Red, "Header"),
         BookmarkItem::new(60, 20, BookmarkColor::Blue, "Data"),
     ] {
-        editor.add_bookmark(bm);
+        editor.bookmarks_mut().add(bm);
     }
 
     // Enable hide_unbookmarked
-    editor.toggle_hide_unbookmarked();
-    assert!(editor.is_hide_unbookmarked());
+    editor.bookmarks_mut().toggle_hide_unbookmarked();
+    assert!(editor.bookmarks().is_hide_unbookmarked());
 
     // Computed folds should be the unbookmarked gaps:
     // [0..20), [36..60), [80..100)
@@ -1791,7 +1797,7 @@ fn test_bookmark_visibility_hide_unbookmarked() {
 
     // Now also hide Red bookmark: [20..36) becomes folded as its own Red fold banner,
     // separate from unbookmarked gaps [0..20) and [36..60)!
-    editor.hide_bookmark_color(BookmarkColor::Red);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Red);
     let folds2 = editor.computed_folded_regions();
     assert_eq!(folds2.len(), 4);
     assert_eq!(folds2.get(&0), Some(&20));
@@ -1821,10 +1827,10 @@ fn test_bookmark_visibility_hide_unbookmarked_navigation() {
         BookmarkItem::new(16, 16, BookmarkColor::Green, "Green1"),
         BookmarkItem::new(64, 16, BookmarkColor::Green, "Green2"),
     ] {
-        editor.add_bookmark(bm);
+        editor.bookmarks_mut().add(bm);
     }
 
-    editor.set_hide_unbookmarked(true);
+    editor.bookmarks_mut().set_hide_unbookmarked(true);
 
     // Initial cursor at offset 16 (first byte of first visible bookmark)
     editor.go_to_offset(16, false);
@@ -1849,12 +1855,12 @@ fn test_unfold_single_bookmark_when_color_hidden() {
     let bm1 = BookmarkItem::new(10, 10, BookmarkColor::Red, "Red 1");
     let bm2 = BookmarkItem::new(40, 10, BookmarkColor::Red, "Red 2");
     let bm3 = BookmarkItem::new(70, 10, BookmarkColor::Red, "Red 3");
-    let id1 = editor.add_bookmark(bm1);
-    let id2 = editor.add_bookmark(bm2);
-    let id3 = editor.add_bookmark(bm3);
+    let id1 = editor.bookmarks_mut().add(bm1);
+    let id2 = editor.bookmarks_mut().add(bm2);
+    let id3 = editor.bookmarks_mut().add(bm3);
 
     // Hide all Red bookmarks
-    editor.hide_bookmark_color(BookmarkColor::Red);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Red);
     assert!(editor.is_folded(10));
     assert!(editor.is_folded(40));
     assert!(editor.is_folded(70));
@@ -1870,9 +1876,9 @@ fn test_unfold_single_bookmark_when_color_hidden() {
     assert!(!editor.is_folded(45));
     assert!(editor.is_folded(70));
 
-    assert!(editor.is_bookmark_id_hidden(&id1));
-    assert!(!editor.is_bookmark_id_hidden(&id2));
-    assert!(editor.is_bookmark_id_hidden(&id3));
+    assert!(editor.bookmarks().is_id_hidden(&id1));
+    assert!(!editor.bookmarks().is_id_hidden(&id2));
+    assert!(editor.bookmarks().is_id_hidden(&id3));
 
     // Click/unfold first bookmark [10..20)
     editor.unfold_bookmark_at(10);
@@ -1896,11 +1902,11 @@ fn test_adjacent_consecutive_bookmarks_do_not_merge() {
         BookmarkItem::new(20, 10, BookmarkColor::Green, "Green"),
         BookmarkItem::new(30, 10, BookmarkColor::Red, "Red2"),
     ] {
-        editor.add_bookmark(bm);
+        editor.bookmarks_mut().add(bm);
     }
 
     // Scenario A: Hide only Red bookmarks (Green is visible)
-    editor.hide_bookmark_color(BookmarkColor::Red);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Red);
     let folds_red = editor.computed_folded_regions();
     assert_eq!(folds_red.len(), 2);
     assert_eq!(folds_red.get(&10), Some(&20));
@@ -1908,7 +1914,7 @@ fn test_adjacent_consecutive_bookmarks_do_not_merge() {
     assert!(!editor.is_folded(25)); // Green is visible between them
 
     // Scenario B: Hide BOTH Red and Green bookmarks
-    editor.hide_bookmark_color(BookmarkColor::Green);
+    editor.bookmarks_mut().hide_color(BookmarkColor::Green);
     let folds_all = editor.computed_folded_regions();
     // Each adjacent bookmark must remain its own distinct fold row!
     assert_eq!(folds_all.len(), 3);

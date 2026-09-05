@@ -86,7 +86,34 @@ Decode values on the fly across multiple numeric and text representations with c
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Installation
+
+#### Pre-built Binaries (Recommended)
+
+Download the latest release for your operating system from the [Releases](https://github.com/funap/xvw/releases) page:
+
+- **macOS** (`.dmg`):
+  1. Download `xvw-<version>-aarch64-apple-darwin.dmg`.
+  2. Open the disk image and drag **`xvw.app`** into your **Applications** folder.
+  
+  > [!TIP]
+  > **macOS: "“xvw” is damaged and can’t be opened"**  
+  > If macOS Gatekeeper blocks the app with a "damaged" warning, it is because open-source releases are not notarized through Apple's paid developer program. The binary is completely safe and intact.  
+  > To allow `xvw` to run, open **Terminal** and run:
+  > ```bash
+  > xattr -cr /Applications/xvw.app
+  > ```
+  > *(Alternatively, **Control-click** (right-click) `xvw.app` in Finder, select **Open**, and click **Open** in the confirmation dialog).*
+
+- **Linux** (`.deb` / `.rpm`):
+  - **Debian / Ubuntu**: `sudo dpkg -i xvw_<version>_amd64.deb`
+  - **Fedora / RHEL**: `sudo rpm -i xvw-<version>-1.x86_64.rpm`
+- **Windows** (`.zip`):
+  - Download and extract `xvw-<version>-x86_64-pc-windows-msvc.zip` and run `xvw.exe`.
+
+#### Build from Source
+
+##### Prerequisites
 
 - **Rust** (2024 edition / latest stable)  
   Install via [rustup.rs](https://rustup.rs/):
@@ -94,7 +121,7 @@ Decode values on the fly across multiple numeric and text representations with c
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
 
-### Installation
+##### Build and Run
 
 ```bash
 # Clone the repository

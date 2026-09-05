@@ -2,7 +2,7 @@
 name = "xvw"
 version = "0.2.0"
 edition = "2024"
-description = "A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
+description = "A Rust-powered GUI hex editor built on Zed's GPUI framework."
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/funap/xvw"

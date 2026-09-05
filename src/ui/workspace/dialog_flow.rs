@@ -1015,4 +1015,8 @@ impl Workspace {
         })
         .detach();
     }
+
+    pub(crate) fn open_about_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::ui::components::about_dialog::open_about_dialog(window, cx);
+    }
 }

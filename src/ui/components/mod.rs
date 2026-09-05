@@ -1,3 +1,4 @@
+pub mod about_dialog;
 pub mod activity_bar;
 pub mod bookmark_panel;
 pub mod checksum_panel;

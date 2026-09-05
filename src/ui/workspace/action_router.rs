@@ -662,6 +662,10 @@ impl Workspace {
         self.open_settings_panel(window, cx);
     }
 
+    pub(crate) fn on_action_open_about(&mut self, _: &OpenAbout, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_about_dialog(window, cx);
+    }
+
     pub(crate) fn open_settings_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::panels::settings_panel::SettingsPanel;
 

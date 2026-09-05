@@ -29,6 +29,7 @@ pub fn init(cx: &mut App) {
 
 pub enum AppTitleBarEvent {
     OpenSettings,
+    OpenAbout,
 }
 
 pub struct AppTitleBar {
@@ -52,10 +53,24 @@ impl Render for AppTitleBar {
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .child(Button::new("settings").ghost().icon(IconName::Settings).on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(AppTitleBarEvent::OpenSettings);
-                })))
-                .child(Button::new("help").ghost().icon(IconName::Info)),
+                .child(
+                    Button::new("settings")
+                        .ghost()
+                        .icon(IconName::Settings)
+                        .tooltip("Settings")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(AppTitleBarEvent::OpenSettings);
+                        })),
+                )
+                .child(
+                    Button::new("about")
+                        .ghost()
+                        .icon(IconName::Info)
+                        .tooltip("About")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(AppTitleBarEvent::OpenAbout);
+                        })),
+                ),
         )
     }
 }

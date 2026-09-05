@@ -205,6 +205,9 @@ impl Workspace {
             crate::ui::components::title_bar::AppTitleBarEvent::OpenSettings => {
                 this.open_settings_panel(window, cx);
             }
+            crate::ui::components::title_bar::AppTitleBarEvent::OpenAbout => {
+                this.open_about_dialog(window, cx);
+            }
         })
         .detach();
 
@@ -812,6 +815,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_compare_visible_panes))
             .on_action(cx.listener(Self::on_action_toggle_left_panel))
             .on_action(cx.listener(Self::on_action_open_settings))
+            .on_action(cx.listener(Self::on_action_open_about))
             .on_action(cx.listener(Self::on_action_open_visual_map))
             .on_action(cx.listener(Self::on_action_show_files_tab))
             .on_action(cx.listener(Self::on_action_show_strings_tab))

@@ -320,6 +320,15 @@ mod tests {
     }
 
     #[test]
+    fn test_new_read_only_with_format_and_address_map() {
+        let doc = Document::new_read_only(PathBuf::from("test.b64"), Buffer::empty())
+            .with_format(FileFormat::Base64)
+            .with_address_map(AddressMap::default());
+        assert!(doc.is_read_only());
+        assert_eq!(doc.format, FileFormat::Base64);
+    }
+
+    #[test]
     fn test_read_contiguous_bytes_with_segments() {
         use crate::core::address_map::{AddressMap, MemorySegment};
 

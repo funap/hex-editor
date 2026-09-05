@@ -401,7 +401,7 @@ impl Workspace {
                                             let detected_format = crate::core::format::FileFormat::Base64;
                                             this.record_recent_file(canonical_path.clone(), Some(detected_format), cx);
                                             let buffer = crate::core::buffer::Buffer::new(data);
-                                            let doc = crate::core::document::Document::new(canonical_path, buffer).with_format(detected_format);
+                                            let doc = crate::core::document::Document::new_read_only(canonical_path, buffer).with_format(detected_format);
                                             let doc_arc = std::sync::Arc::new(std::sync::RwLock::new(doc));
                                             this.open_editor_panel(doc_arc, window, cx);
                                             window.push_notification(gpui_kit::component::notification::Notification::info("Imported Base64 successfully"), cx);
@@ -436,7 +436,7 @@ impl Workspace {
                                         let detected_format = crate::core::format::FileFormat::from(import_result.format);
                                         this.record_recent_file(canonical_path.clone(), Some(detected_format), cx);
                                         let buffer = crate::core::buffer::Buffer::new(import_result.data);
-                                        let doc = crate::core::document::Document::new(canonical_path, buffer)
+                                        let doc = crate::core::document::Document::new_read_only(canonical_path, buffer)
                                             .with_address_map(import_result.address_map.clone())
                                             .with_format(detected_format);
                                         let doc_arc = std::sync::Arc::new(std::sync::RwLock::new(doc));

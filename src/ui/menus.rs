@@ -138,7 +138,19 @@ fn build_file_menu() -> MenuDef {
             MenuItemDef::separator(),
             MenuItemDef::submenu(
                 "Import",
-                vec![MenuItemDef::action("Motorola S-Record / Intel HEX...", crate::actions::ImportHexOrMot)],
+                vec![
+                    MenuItemDef::action("Motorola S-Record / Intel HEX...", crate::actions::ImportHexOrMot),
+                    MenuItemDef::action("Base64...", crate::actions::ImportBase64),
+                ],
+            ),
+            MenuItemDef::submenu(
+                "Export",
+                vec![
+                    MenuItemDef::action_with_condition("Base64...", crate::actions::ExportBase64, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Motorola S-Record...", crate::actions::ExportMotorolaSrec, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Intel HEX...", crate::actions::ExportIntelHex, |s| s.has_doc),
+                    MenuItemDef::action_with_condition("Raw Binary...", crate::actions::ExportRawBinary, |s| s.has_doc),
+                ],
             ),
             MenuItemDef::separator(),
             MenuItemDef::action_with_condition("Close Tab", crate::actions::CloseActivePanel, |s| s.has_doc),

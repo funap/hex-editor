@@ -391,6 +391,36 @@ impl Workspace {
             let content_res = tokio::fs::read_to_string(&path).await;
             match content_res {
                 Ok(content) => {
+                    if format == Some(crate::core::format::FileFormat::Base64) {
+                        match crate::core::format::parse_base64(&content) {
+                            Ok(data) => {
+                                window
+                                    .update(|window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                                            let detected_format = crate::core::format::FileFormat::Base64;
+                                            this.record_recent_file(canonical_path.clone(), Some(detected_format), cx);
+                                            let buffer = crate::core::buffer::Buffer::new(data);
+                                            let doc = crate::core::document::Document::new(canonical_path, buffer).with_format(detected_format);
+                                            let doc_arc = std::sync::Arc::new(std::sync::RwLock::new(doc));
+                                            this.open_editor_panel(doc_arc, window, cx);
+                                            window.push_notification(gpui_kit::component::notification::Notification::info("Imported Base64 successfully"), cx);
+                                        });
+                                    })
+                                    .ok();
+                            }
+                            Err(e) => {
+                                let _ = window.update(|window, cx| {
+                                    window.push_notification(
+                                        gpui_kit::component::notification::Notification::error(format!("Failed to parse Base64 file: {}", e)),
+                                        cx,
+                                    );
+                                });
+                            }
+                        }
+                        return;
+                    }
+
                     let parse_result = match format {
                         Some(crate::core::format::FileFormat::IntelHex) => crate::core::hex_import::parse_intel_hex(&content),
                         Some(crate::core::format::FileFormat::MotorolaSrec) => crate::core::hex_import::parse_motorola_srec(&content),
@@ -472,6 +502,145 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    pub(crate) fn on_action_import_base64(&mut self, _: &crate::actions::ImportBase64, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select Base64 file to import".into()),
+        });
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            if let Some(path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                window
+                    .update(|window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.import_file_from_path(path, Some(crate::core::format::FileFormat::Base64), window, cx);
+                        });
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn export_active_document_with_format(
+        &mut self,
+        format_label: &'static str,
+        default_ext: &'static str,
+        export_fn: fn(&[u8], &crate::core::address_map::AddressMap) -> Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let (document, default_name, parent_dir) = {
+            let editor_read = editor.read(cx);
+            let document = editor_read.document.clone();
+            let (default_name, parent_dir) = {
+                let document_read = document.read().expect("document read lock");
+                let path = document_read.path();
+
+                let stem = path
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty() && *s != "Untitled" && *s != "untitled")
+                    .unwrap_or("untitled");
+                let default_name = format!("{}.{}", stem, default_ext);
+
+                let parent_dir = path
+                    .parent()
+                    .filter(|p| p.exists())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")));
+                (default_name, parent_dir)
+            };
+            (document, default_name, parent_dir)
+        };
+
+        let prompt = cx.prompt_for_new_path(&parent_dir, Some(&default_name));
+        cx.spawn_in(window, async move |_, window| {
+            let Some(mut path) = prompt.await.ok().and_then(|result| result.ok()).flatten() else {
+                return;
+            };
+            if path.extension().is_none() {
+                path.set_extension(default_ext);
+            }
+
+            let (contents, address_map) = {
+                let doc = document.read().expect("document read lock");
+                (doc.buffer.data().to_vec(), doc.address_map.clone())
+            };
+
+            let bytes = export_fn(&contents, &address_map);
+            match tokio::fs::write(&path, bytes).await {
+                Ok(()) => {
+                    let _ = window.update(|window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::info(format!(
+                                "Exported {} to {} successfully",
+                                format_label,
+                                path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+                            )),
+                            cx,
+                        );
+                    });
+                }
+                Err(e) => {
+                    let _ = window.update(|window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::error(format!("Failed to export {}: {}", format_label, e)),
+                            cx,
+                        );
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn on_action_export_base64(&mut self, _: &crate::actions::ExportBase64, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_active_document_with_format(
+            "Base64",
+            "b64",
+            |data, map| crate::core::format::export_base64(data, map).into_bytes(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn on_action_export_motorola_srec(&mut self, _: &crate::actions::ExportMotorolaSrec, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_active_document_with_format(
+            "Motorola S-Record",
+            "mot",
+            |data, map| crate::core::hex_import::export_motorola_srec(data, map).into_bytes(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn on_action_export_intel_hex(&mut self, _: &crate::actions::ExportIntelHex, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_active_document_with_format(
+            "Intel HEX",
+            "hex",
+            |data, map| crate::core::hex_import::export_intel_hex(data, map).into_bytes(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn on_action_export_raw_binary(&mut self, _: &crate::actions::ExportRawBinary, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_active_document_with_format(
+            "Raw Binary",
+            "bin",
+            |data, map| crate::core::hex_import::export_raw_binary(data, map, 0x00),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn on_action_load_structure_definition(&mut self, _: &LoadStructureDefinition, window: &mut Window, cx: &mut Context<Self>) {
@@ -779,7 +948,11 @@ impl Workspace {
             let document = editor_read.document.clone();
             let document_read = document.read().expect("document read lock");
             let path = document_read.path();
-            let default_ext = document_read.address_map.default_extension(path);
+            let default_ext = if document_read.format == crate::core::format::FileFormat::Base64 {
+                "b64"
+            } else {
+                document_read.address_map.default_extension(path)
+            };
 
             let default_name = if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                 if file_name.is_empty() || file_name == "Untitled" || file_name == "untitled" {

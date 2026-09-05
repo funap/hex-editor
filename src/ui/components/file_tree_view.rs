@@ -737,10 +737,15 @@ impl Render for FileTreeView {
 
                                     if !is_folder {
                                         let open_path = item_id.to_string();
+                                        let open_path_b64 = open_path.clone();
                                         menu = menu.submenu("Import", window, cx, move |menu, _window, _cx| {
                                             menu.menu(
                                                 "Motorola S-Record / Intel HEX",
                                                 Box::new(OpenFile::with_format(open_path.clone(), Some(crate::core::format::FileFormat::HexOrMot))),
+                                            )
+                                            .menu(
+                                                "Base64",
+                                                Box::new(OpenFile::with_format(open_path_b64.clone(), Some(crate::core::format::FileFormat::Base64))),
                                             )
                                         });
 

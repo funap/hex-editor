@@ -1,8 +1,10 @@
+pub mod base64;
 pub mod copy;
 pub mod intel_hex;
 pub mod raw_binary;
 pub mod srec;
 
+pub use base64::*;
 pub use copy::*;
 pub use intel_hex::*;
 pub use raw_binary::*;
@@ -26,12 +28,14 @@ pub enum FileFormat {
     MotorolaSrec,
     /// Generic / auto-detected Motorola S-Record or Intel HEX format.
     HexOrMot,
+    /// Base64 encoded file format.
+    Base64,
 }
 
 impl FileFormat {
     /// Returns true if this format represents an imported hex/record format rather than raw binary.
     pub fn is_import(&self) -> bool {
-        matches!(self, Self::IntelHex | Self::MotorolaSrec | Self::HexOrMot)
+        matches!(self, Self::IntelHex | Self::MotorolaSrec | Self::HexOrMot | Self::Base64)
     }
 
     /// Short badge label for displaying in lists (e.g. Recents).
@@ -41,6 +45,7 @@ impl FileFormat {
             Self::IntelHex => "HEX",
             Self::MotorolaSrec => "SREC",
             Self::HexOrMot => "HEX",
+            Self::Base64 => "B64",
         }
     }
 
@@ -51,6 +56,7 @@ impl FileFormat {
             Self::IntelHex => "Intel HEX",
             Self::MotorolaSrec => "Motorola S-Record",
             Self::HexOrMot => "Motorola S-Record / Intel HEX",
+            Self::Base64 => "Base64",
         }
     }
 }
@@ -216,4 +222,34 @@ pub(crate) fn assemble_chunks_into_result(
         entry_point,
         header,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_format_properties() {
+        assert!(!FileFormat::Binary.is_import());
+        assert!(FileFormat::IntelHex.is_import());
+        assert!(FileFormat::MotorolaSrec.is_import());
+        assert!(FileFormat::HexOrMot.is_import());
+        assert!(FileFormat::Base64.is_import());
+
+        assert_eq!(FileFormat::Binary.badge_text(), "");
+        assert_eq!(FileFormat::IntelHex.badge_text(), "HEX");
+        assert_eq!(FileFormat::MotorolaSrec.badge_text(), "SREC");
+        assert_eq!(FileFormat::HexOrMot.badge_text(), "HEX");
+        assert_eq!(FileFormat::Base64.badge_text(), "B64");
+
+        assert_eq!(FileFormat::Base64.label(), "Base64");
+    }
+
+    #[test]
+    fn test_file_format_serde() {
+        let json = serde_json::to_string(&FileFormat::Base64).unwrap();
+        assert_eq!(json, "\"base64\"");
+        let deserialized: FileFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, FileFormat::Base64);
+    }
 }

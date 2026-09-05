@@ -85,6 +85,31 @@ pub fn init(cx: &mut App) {
             workspace.on_action_import_hex_or_mot(&crate::actions::ImportHexOrMot, window, cx);
         });
     });
+    cx.on_action::<crate::actions::ImportBase64>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_import_base64(&crate::actions::ImportBase64, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ExportBase64>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_export_base64(&crate::actions::ExportBase64, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ExportMotorolaSrec>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_export_motorola_srec(&crate::actions::ExportMotorolaSrec, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ExportIntelHex>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_export_intel_hex(&crate::actions::ExportIntelHex, window, cx);
+        });
+    });
+    cx.on_action::<crate::actions::ExportRawBinary>(|_, cx| {
+        defer_in_active_workspace(cx, |workspace, window, cx| {
+            workspace.on_action_export_raw_binary(&crate::actions::ExportRawBinary, window, cx);
+        });
+    });
     cx.on_action::<crate::actions::ExportBookmarks>(|_, cx| {
         defer_in_active_workspace(cx, |workspace, window, cx| {
             workspace.on_action_export_bookmarks(&crate::actions::ExportBookmarks, window, cx);
@@ -796,6 +821,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_action_export_bookmarks))
             .on_action(cx.listener(Self::on_action_import_bookmarks))
             .on_action(cx.listener(Self::on_action_import_hex_or_mot))
+            .on_action(cx.listener(Self::on_action_import_base64))
+            .on_action(cx.listener(Self::on_action_export_base64))
+            .on_action(cx.listener(Self::on_action_export_motorola_srec))
+            .on_action(cx.listener(Self::on_action_export_intel_hex))
+            .on_action(cx.listener(Self::on_action_export_raw_binary))
             .on_action(cx.listener(Self::on_action_load_structure_definition))
             .on_action(cx.listener(Self::on_action_load_structure_definition_from_history))
             .on_action(cx.listener(Self::on_action_remove_structure_definition_from_history))

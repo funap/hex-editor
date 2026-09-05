@@ -248,11 +248,14 @@ impl AddressMap {
         let ext = current_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
         let is_mot = matches!(ext.as_str(), "mot" | "srec" | "s19" | "s28" | "s37");
         let is_hex = matches!(ext.as_str(), "hex" | "ihex" | "ihx");
+        let is_b64 = matches!(ext.as_str(), "b64" | "base64");
 
         if is_mot {
             "mot"
         } else if is_hex {
             "hex"
+        } else if is_b64 {
+            "b64"
         } else if self.has_gaps() || self.format_options.record_data_length == 20 {
             "mot"
         } else if self.format_options.record_data_length == 16 && self.format_options.header.is_none() && self.base_address() > 0 {

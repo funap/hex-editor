@@ -149,6 +149,7 @@ impl DocumentService {
                 }
                 crate::core::format::FileFormat::IntelHex => crate::core::hex_import::export_intel_hex(&contents, &address_map).into_bytes(),
                 crate::core::format::FileFormat::Binary => crate::core::hex_import::export_raw_binary(&contents, &address_map, 0x00),
+                crate::core::format::FileFormat::Base64 => crate::core::format::export_base64(&contents, &address_map).into_bytes(),
             };
             std::fs::write(path, bytes_to_write)?;
             Ok(())
@@ -167,6 +168,8 @@ impl DocumentService {
                 crate::core::hex_import::export_motorola_srec(&contents, &address_map).into_bytes()
             } else if crate::core::hex_import::is_hex_extension(&path) {
                 crate::core::hex_import::export_intel_hex(&contents, &address_map).into_bytes()
+            } else if crate::core::format::is_base64_extension(&path) {
+                crate::core::format::export_base64(&contents, &address_map).into_bytes()
             } else {
                 match format {
                     crate::core::format::FileFormat::MotorolaSrec | crate::core::format::FileFormat::HexOrMot => {
@@ -174,6 +177,7 @@ impl DocumentService {
                     }
                     crate::core::format::FileFormat::IntelHex => crate::core::hex_import::export_intel_hex(&contents, &address_map).into_bytes(),
                     crate::core::format::FileFormat::Binary => crate::core::hex_import::export_raw_binary(&contents, &address_map, 0x00),
+                    crate::core::format::FileFormat::Base64 => crate::core::format::export_base64(&contents, &address_map).into_bytes(),
                 }
             };
             std::fs::write(path, bytes_to_write)?;
@@ -347,5 +351,20 @@ mod tests {
         assert_eq!(doc.buffer.data(), hex_content.as_bytes());
         assert_eq!(doc.address_map, crate::core::address_map::AddressMap::default());
         assert_eq!(doc.format, crate::core::format::FileFormat::Binary);
+    }
+
+    #[test]
+    fn test_export_document_as_base64() {
+        let data = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
+        let map = crate::core::address_map::AddressMap::default();
+        let doc = Document::new(PathBuf::from("test.b64"), crate::core::buffer::Buffer::new(data)).with_format(crate::core::format::FileFormat::Base64);
+
+        let b64_path = PathBuf::from("output.b64");
+        assert!(crate::core::format::is_base64_extension(&b64_path));
+
+        let b64_string = crate::core::format::export_base64(doc.buffer.data(), &map);
+        assert_eq!(b64_string.trim(), "SGVsbG8=");
+        let parsed = crate::core::format::parse_base64(&b64_string).expect("parse exported base64");
+        assert_eq!(parsed, b"Hello");
     }
 }

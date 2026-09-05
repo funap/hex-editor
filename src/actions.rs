@@ -484,3 +484,23 @@ pub struct ImportBookmarks;
 /// Imports a Motorola S-Record or Intel HEX file.
 #[derive(Clone, PartialEq, Action)]
 pub struct ImportHexOrMot;
+
+/// Imports a Base64 encoded file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ImportBase64;
+
+/// Exports the current document as a Base64 file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportBase64;
+
+/// Exports the current document as a Motorola S-Record file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportMotorolaSrec;
+
+/// Exports the current document as an Intel HEX file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportIntelHex;
+
+/// Exports the current document as a raw binary file.
+#[derive(Clone, PartialEq, Action)]
+pub struct ExportRawBinary;

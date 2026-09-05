@@ -31,13 +31,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive_ext: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive_ext: zip
 
     steps:
       - name: Checkout repository
@@ -83,16 +80,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          ARCHIVE_NAME="xvw-${{ inputs.tag_name }}-${{ matrix.target }}"
-          DIR="dist/${ARCHIVE_NAME}"
-          mkdir -p "${DIR}"
-          cp "target/${{ matrix.target }}/release/xvw" "${DIR}/"
-          [ -f README.md ] && cp README.md "${DIR}/"
-          [ -f LICENSE ] && cp LICENSE "${DIR}/"
-          
-          # 1. Binary tar.gz archive
-          (cd dist && tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}")
-
+          mkdir -p dist
           VERSION_RAW="${{ inputs.tag_name }}"
           VERSION="${VERSION_RAW#v}"
 
@@ -111,19 +99,22 @@ jobs:
               ;;
           esac
 
-          # 2. Debian / Ubuntu package (.deb)
-          DEB_DIR="xvw_${VERSION}_${DEB_ARCH}"
+          # 1. Debian / Ubuntu package (.deb)
+          DEB_DIR="xvw_${VERSION}_linux_${DEB_ARCH}"
           mkdir -p "${DEB_DIR}/DEBIAN"
           mkdir -p "${DEB_DIR}/usr/bin"
           mkdir -p "${DEB_DIR}/usr/share/applications"
           mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
           mkdir -p "${DEB_DIR}/usr/share/pixmaps"
+          mkdir -p "${DEB_DIR}/usr/share/doc/xvw"
 
           cp "target/${{ matrix.target }}/release/xvw" "${DEB_DIR}/usr/bin/"
           chmod 755 "${DEB_DIR}/usr/bin/xvw"
           cp assets/linux/xvw.desktop "${DEB_DIR}/usr/share/applications/"
           cp assets/icons/xvw.svg "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/"
           cp assets/icons/xvw.svg "${DEB_DIR}/usr/share/pixmaps/"
+          [ -f README.md ] && cp README.md "${DEB_DIR}/usr/share/doc/xvw/"
+          [ -f LICENSE ] && cp LICENSE "${DEB_DIR}/usr/share/doc/xvw/"
 
           {
             echo "Package: xvw"
@@ -135,23 +126,26 @@ jobs:
             echo "Description: A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
           } > "${DEB_DIR}/DEBIAN/control"
 
-          dpkg-deb --build --root-owner-group "${DEB_DIR}" "dist/xvw_${VERSION}_${DEB_ARCH}.deb"
+          dpkg-deb --build --root-owner-group "${DEB_DIR}" "dist/xvw_${VERSION}_linux_${DEB_ARCH}.deb"
           rm -rf "${DEB_DIR}"
 
-          # 3. Fedora / RHEL package (.rpm)
+          # 2. Fedora / RHEL package (.rpm)
           RPM_ROOT="${RUNNER_TEMP}/rpmbuild"
           mkdir -p "${RPM_ROOT}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          BUILDROOT="${RPM_ROOT}/BUILDROOT/xvw-${VERSION}-1.${RPM_ARCH}"
+          BUILDROOT="${RPM_ROOT}/BUILDROOT/xvw-${VERSION}-1.linux.${RPM_ARCH}"
           mkdir -p "${BUILDROOT}/usr/bin"
           mkdir -p "${BUILDROOT}/usr/share/applications"
           mkdir -p "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps"
           mkdir -p "${BUILDROOT}/usr/share/pixmaps"
+          mkdir -p "${BUILDROOT}/usr/share/doc/xvw"
 
           cp "target/${{ matrix.target }}/release/xvw" "${BUILDROOT}/usr/bin/"
           chmod 755 "${BUILDROOT}/usr/bin/xvw"
           cp assets/linux/xvw.desktop "${BUILDROOT}/usr/share/applications/"
           cp assets/icons/xvw.svg "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps/"
           cp assets/icons/xvw.svg "${BUILDROOT}/usr/share/pixmaps/"
+          [ -f README.md ] && cp README.md "${BUILDROOT}/usr/share/doc/xvw/"
+          [ -f LICENSE ] && cp LICENSE "${BUILDROOT}/usr/share/doc/xvw/"
 
           {
             echo "%global _build_id_links none"
@@ -160,7 +154,7 @@ jobs:
             echo ""
             echo "Name:           xvw"
             echo "Version:        ${VERSION}"
-            echo "Release:        1"
+            echo "Release:        1.linux"
             echo "Summary:        A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
             echo "License:        MIT"
             echo "URL:            https://github.com/funap/xvw"
@@ -173,6 +167,8 @@ jobs:
             echo "/usr/share/applications/xvw.desktop"
             echo "/usr/share/icons/hicolor/scalable/apps/xvw.svg"
             echo "/usr/share/pixmaps/xvw.svg"
+            echo "/usr/share/doc/xvw/README.md"
+            echo "/usr/share/doc/xvw/LICENSE"
             echo ""
             echo "%changelog"
           } > "${RPM_ROOT}/SPECS/xvw.spec"
@@ -185,20 +181,11 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          ARCHIVE_NAME="xvw-${{ inputs.tag_name }}-${{ matrix.target }}"
-          DIR="dist/${ARCHIVE_NAME}"
-          mkdir -p "${DIR}"
-          cp "target/${{ matrix.target }}/release/xvw" "${DIR}/"
-          [ -f README.md ] && cp README.md "${DIR}/"
-          [ -f LICENSE ] && cp LICENSE "${DIR}/"
-          
-          # 1. Binary tar.gz archive
-          (cd dist && tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}")
-
+          mkdir -p dist
           VERSION_RAW="${{ inputs.tag_name }}"
           VERSION="${VERSION_RAW#v}"
 
-          # 2. Build .app bundle
+          # 1. Build .app bundle
           APP_BUNDLE="xvw.app"
           mkdir -p "${APP_BUNDLE}/Contents/MacOS"
           mkdir -p "${APP_BUNDLE}/Contents/Resources"
@@ -212,18 +199,24 @@ jobs:
             cp assets/icons/xvw.icns "${APP_BUNDLE}/Contents/Resources/xvw.icns"
           fi
 
-          # 3. Build .dmg disk image
+          # Ad-hoc code sign .app bundle (required for Apple Silicon execution)
+          codesign --force --deep -s - "${APP_BUNDLE}"
+
+          # 2. Build .dmg disk image
           DMG_STAGING="dmg_staging"
           mkdir -p "${DMG_STAGING}"
           cp -R "${APP_BUNDLE}" "${DMG_STAGING}/"
           ln -s /Applications "${DMG_STAGING}/Applications"
 
+          ARCHIVE_NAME="xvw-${{ inputs.tag_name }}-${{ matrix.target }}"
           hdiutil create \
             -volname "xvw" \
             -srcfolder "${DMG_STAGING}" \
             -ov \
             -format UDZO \
             "dist/${ARCHIVE_NAME}.dmg"
+
+          codesign --force -s - "dist/${ARCHIVE_NAME}.dmg"
 
           rm -rf "${DMG_STAGING}" "${APP_BUNDLE}"
 
@@ -246,7 +239,6 @@ jobs:
         with:
           name: artifacts-${{ matrix.target }}
           path: |
-            dist/*.tar.gz
             dist/*.zip
             dist/*.dmg
             dist/*.deb
@@ -276,9 +268,7 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
           files: |
-            artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/*.dmg
             artifacts/*.deb
             artifacts/*.rpm
-

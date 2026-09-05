@@ -106,8 +106,8 @@ Download the latest release for your operating system from the [Releases](https:
   > *(Alternatively, **Control-click** (right-click) `xvw.app` in Finder, select **Open**, and click **Open** in the confirmation dialog).*
 
 - **Linux** (`.deb` / `.rpm`):
-  - **Debian / Ubuntu**: `sudo dpkg -i xvw_<version>_amd64.deb`
-  - **Fedora / RHEL**: `sudo rpm -i xvw-<version>-1.x86_64.rpm`
+  - **Debian / Ubuntu**: `sudo dpkg -i xvw_<version>_linux_amd64.deb`
+  - **Fedora / RHEL**: `sudo rpm -i xvw-<version>-1.linux.x86_64.rpm`
 - **Windows** (`.zip`):
   - Download and extract `xvw-<version>-x86_64-pc-windows-msvc.zip` and run `xvw.exe`.
 

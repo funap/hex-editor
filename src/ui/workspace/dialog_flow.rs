@@ -43,14 +43,28 @@ impl Workspace {
         let path = std::path::PathBuf::from(&file_path);
         let path = path.canonicalize().unwrap_or(path);
 
-        // Check if path is already open in any group
+        // Check if path is already open in any group with matching format
+        let requested_format = action.format.unwrap_or(crate::core::format::FileFormat::Binary);
         for group in self.pane_tree.read(cx).all_groups() {
-            let tabs = group.read(cx).tabs.iter().enumerate().map(|(i, t)| (i, t.path(cx))).collect::<Vec<_>>();
-            for (idx, tab_path) in tabs {
+            let tabs = group
+                .read(cx)
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let doc_format = t.content.document(cx).and_then(|d| d.read().ok().map(|doc| doc.format));
+                    (i, t.path(cx), doc_format)
+                })
+                .collect::<Vec<_>>();
+            for (idx, tab_path, tab_format) in tabs {
                 let is_same_file = tab_path
                     .as_ref()
                     .is_some_and(|tab_path| tab_path.canonicalize().unwrap_or_else(|_| tab_path.clone()) == path);
-                if is_same_file {
+                let is_matching_format = action.format.is_none()
+                    || tab_format.is_none()
+                    || tab_format == Some(requested_format)
+                    || (requested_format == crate::core::format::FileFormat::HexOrMot && tab_format.is_some_and(|f| f.is_import()));
+                if is_same_file && is_matching_format {
                     group.update(cx, |g, cx| {
                         g.activate_tab(idx, window, cx);
                     });
@@ -378,12 +392,8 @@ impl Workspace {
             match content_res {
                 Ok(content) => {
                     let parse_result = match format {
-                        Some(crate::core::format::FileFormat::IntelHex) => {
-                            crate::core::hex_import::parse_intel_hex(&content).or_else(|_| crate::core::hex_import::parse_hex_or_mot(&content))
-                        }
-                        Some(crate::core::format::FileFormat::MotorolaSrec) => {
-                            crate::core::hex_import::parse_motorola_srec(&content).or_else(|_| crate::core::hex_import::parse_hex_or_mot(&content))
-                        }
+                        Some(crate::core::format::FileFormat::IntelHex) => crate::core::hex_import::parse_intel_hex(&content),
+                        Some(crate::core::format::FileFormat::MotorolaSrec) => crate::core::hex_import::parse_motorola_srec(&content),
                         _ => crate::core::hex_import::parse_hex_or_mot(&content),
                     };
 

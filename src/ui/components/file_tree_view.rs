@@ -721,7 +721,7 @@ impl Render for FileTreeView {
                                 let view = view.clone();
                                 let item_id = item.id.clone();
                                 let is_folder = item.is_folder();
-                                move |menu, _window, cx| {
+                                move |menu, window, cx| {
                                     let (can_compare, left_path, right_path, pending_compare) = view.update(cx, |this, cx| {
                                         let can_compare = this.selected_items.len() == 2 && this.selected_items.iter().all(|item| !item.is_folder());
                                         let (lp, rp) = if can_compare {
@@ -736,6 +736,14 @@ impl Render for FileTreeView {
                                     let mut menu = menu.menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile::new(item_id.to_string())));
 
                                     if !is_folder {
+                                        let open_path = item_id.to_string();
+                                        menu = menu.submenu("Import", window, cx, move |menu, _window, _cx| {
+                                            menu.menu(
+                                                "Motorola S-Record / Intel HEX",
+                                                Box::new(OpenFile::with_format(open_path.clone(), Some(crate::core::format::FileFormat::HexOrMot))),
+                                            )
+                                        });
+
                                         menu = menu.separator();
                                         if let Some(ref pending_path) = pending_compare
                                             && pending_path != &item_id.to_string()

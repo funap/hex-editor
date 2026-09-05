@@ -1,6 +1,6 @@
 use crate::core::appearance::Appearance;
 use crate::core::encoding::Encoding;
-use crate::core::structure::{DefinitionHistory, FileHistory};
+use crate::core::structure::{DefinitionHistory, FileHistory, RecentFileEntry};
 use gpui::App;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub struct Settings {
     pub default_encoding: Encoding,
     pub recent_definition_paths: Vec<PathBuf>,
     pub recent_file_paths: Vec<PathBuf>,
+    pub recent_files: Vec<RecentFileEntry>,
 }
 
 /// Application-wide recent-path histories shared by all workspace windows.
@@ -45,9 +46,14 @@ impl gpui::Global for RecentHistoryState {}
 impl RecentHistoryState {
     /// Creates the in-memory histories from persisted settings.
     pub fn from_settings(settings: &Settings) -> Self {
+        let files = if !settings.recent_files.is_empty() {
+            FileHistory::from_entries(settings.recent_files.clone())
+        } else {
+            FileHistory::from_paths(settings.recent_file_paths.clone())
+        };
         Self {
             definitions: DefinitionHistory::from_paths(settings.recent_definition_paths.clone()),
-            files: FileHistory::from_paths(settings.recent_file_paths.clone()),
+            files,
         }
     }
 }
@@ -62,6 +68,7 @@ impl Default for Settings {
             default_encoding: Encoding::default(),
             recent_definition_paths: Vec::new(),
             recent_file_paths: Vec::new(),
+            recent_files: Vec::new(),
         }
     }
 }
@@ -104,7 +111,8 @@ impl Settings {
             theme_mode: theme.mode,
             default_encoding: *cx.global::<Encoding>(),
             recent_definition_paths: recent_history.definitions.paths().to_vec(),
-            recent_file_paths: recent_history.files.paths().to_vec(),
+            recent_file_paths: recent_history.files.paths(),
+            recent_files: recent_history.files.entries().to_vec(),
         }
     }
 
@@ -162,7 +170,13 @@ impl Settings {
         }
 
         self.recent_definition_paths = DefinitionHistory::from_paths(self.recent_definition_paths).paths().to_vec();
-        self.recent_file_paths = FileHistory::from_paths(self.recent_file_paths).paths().to_vec();
+        let history = if !self.recent_files.is_empty() {
+            FileHistory::from_entries(self.recent_files)
+        } else {
+            FileHistory::from_paths(self.recent_file_paths)
+        };
+        self.recent_files = history.entries().to_vec();
+        self.recent_file_paths = history.paths();
         self
     }
 }
@@ -275,11 +289,44 @@ mod tests {
             default_encoding: Encoding::Utf16Le,
             recent_definition_paths: vec![PathBuf::from("definition.ksy")],
             recent_file_paths: vec![PathBuf::from("binary.bin")],
+            recent_files: vec![RecentFileEntry::new(PathBuf::from("binary.bin"), None)],
         };
 
         settings.save_to(&file.path).expect("save settings");
 
         assert_eq!(Settings::load_from(&file.path).expect("load settings"), settings);
+    }
+
+    #[test]
+    fn legacy_recent_file_paths_migrated() {
+        let file = TestSettingsFile::new("legacy");
+        fs::write(&file.path, "recent_file_paths = [\"legacy1.bin\", \"legacy2.hex\"]\n").expect("write settings");
+
+        let settings = Settings::load_from(&file.path).expect("load settings");
+        assert_eq!(settings.recent_files.len(), 2);
+        assert_eq!(settings.recent_files[0].path, PathBuf::from("legacy1.bin"));
+        assert_eq!(settings.recent_files[0].format, None);
+        assert_eq!(settings.recent_files[1].path, PathBuf::from("legacy2.hex"));
+        assert_eq!(settings.recent_files[1].format, None);
+    }
+
+    #[test]
+    fn recent_files_with_format_round_trip() {
+        let file = TestSettingsFile::new("format-round-trip");
+        let settings = Settings {
+            recent_files: vec![
+                RecentFileEntry::new(PathBuf::from("firmware.hex"), Some(crate::core::format::FileFormat::IntelHex)),
+                RecentFileEntry::new(PathBuf::from("firmware.srec"), Some(crate::core::format::FileFormat::MotorolaSrec)),
+                RecentFileEntry::new(PathBuf::from("data.bin"), Some(crate::core::format::FileFormat::Binary)),
+            ],
+            ..Settings::default()
+        }
+        .sanitized();
+
+        settings.save_to(&file.path).expect("save settings");
+        let loaded = Settings::load_from(&file.path).expect("load settings");
+        assert_eq!(loaded.recent_files, settings.recent_files);
+        assert_eq!(loaded.recent_file_paths, settings.recent_file_paths);
     }
 
     #[test]

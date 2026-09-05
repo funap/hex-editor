@@ -28,9 +28,7 @@ impl Workspace {
                             this.left_panel.update(cx, |panel, cx| {
                                 panel.sync_file_history(cx);
                             });
-                            let action = crate::actions::OpenFile {
-                                path: path.to_string_lossy().to_string(),
-                            };
+                            let action = crate::actions::OpenFile::new(path.to_string_lossy().to_string());
                             this.on_action_open_file(&action, window, cx);
                         });
                     })
@@ -60,11 +58,18 @@ impl Workspace {
                         tree.set_active_group(group.read(cx).id, cx);
                     });
                     self.sync_active_editor(window, cx);
-                    self.record_recent_file(path.clone(), cx);
+                    self.record_recent_file(path.clone(), action.format, cx);
                     cx.notify();
                     return;
                 }
             }
+        }
+
+        if let Some(format) = action.format
+            && format.is_import()
+        {
+            self.import_file_from_path(path, Some(format), window, cx);
+            return;
         }
 
         let view = cx.entity();
@@ -78,7 +83,7 @@ impl Workspace {
                         window
                             .update(|window, cx| {
                                 view.update(cx, |this, cx| {
-                                    this.record_recent_file(recent_path.clone(), cx);
+                                    this.record_recent_file(recent_path.clone(), Some(crate::core::format::FileFormat::Binary), cx);
                                     this.open_editor_panel(document, window, cx);
                                 });
                             })
@@ -113,10 +118,10 @@ impl Workspace {
                         let right_recent_path = right_document.read().ok().map(|document| document.path().to_path_buf());
                         let _ = workspace.update_in(window, |workspace_view, window, cx| {
                             if let Some(path) = left_recent_path {
-                                workspace_view.record_recent_file(path, cx);
+                                workspace_view.record_recent_file(path, Some(crate::core::format::FileFormat::Binary), cx);
                             }
                             if let Some(path) = right_recent_path {
-                                workspace_view.record_recent_file(path, cx);
+                                workspace_view.record_recent_file(path, Some(crate::core::format::FileFormat::Binary), cx);
                             }
 
                             let app = AppState::global(cx).clone();
@@ -360,29 +365,40 @@ impl Workspace {
         .detach();
     }
 
-    pub(crate) fn on_action_import_hex_or_mot(&mut self, _: &crate::actions::ImportHexOrMot, window: &mut Window, cx: &mut Context<Self>) {
-        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Select Motorola S-Record or Intel HEX file to import".into()),
-        });
-
+    pub(crate) fn import_file_from_path(
+        &mut self,
+        path: PathBuf,
+        format: Option<crate::core::format::FileFormat>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let view = cx.entity().clone();
         cx.spawn_in(window, async move |_, window| {
-            if let Some(path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
-                let content_res = tokio::fs::read_to_string(&path).await;
-                match content_res {
-                    Ok(content) => match crate::core::hex_import::parse_hex_or_mot(&content) {
+            let content_res = tokio::fs::read_to_string(&path).await;
+            match content_res {
+                Ok(content) => {
+                    let parse_result = match format {
+                        Some(crate::core::format::FileFormat::IntelHex) => {
+                            crate::core::hex_import::parse_intel_hex(&content).or_else(|_| crate::core::hex_import::parse_hex_or_mot(&content))
+                        }
+                        Some(crate::core::format::FileFormat::MotorolaSrec) => {
+                            crate::core::hex_import::parse_motorola_srec(&content).or_else(|_| crate::core::hex_import::parse_hex_or_mot(&content))
+                        }
+                        _ => crate::core::hex_import::parse_hex_or_mot(&content),
+                    };
+
+                    match parse_result {
                         Ok(import_result) => {
                             window
                                 .update(|window, cx| {
                                     view.update(cx, |this, cx| {
                                         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-                                        this.record_recent_file(canonical_path.clone(), cx);
+                                        let detected_format = crate::core::format::FileFormat::from(import_result.format);
+                                        this.record_recent_file(canonical_path.clone(), Some(detected_format), cx);
                                         let buffer = crate::core::buffer::Buffer::new(import_result.data);
-                                        let doc =
-                                            crate::core::document::Document::new(canonical_path, buffer).with_address_map(import_result.address_map.clone());
+                                        let doc = crate::core::document::Document::new(canonical_path, buffer)
+                                            .with_address_map(import_result.address_map.clone())
+                                            .with_format(detected_format);
                                         let doc_arc = std::sync::Arc::new(std::sync::RwLock::new(doc));
                                         this.open_editor_panel(doc_arc, window, cx);
                                         let gap_msg = if import_result.address_map.has_gaps() {
@@ -410,16 +426,39 @@ impl Workspace {
                                 );
                             });
                         }
-                    },
-                    Err(e) => {
-                        let _ = window.update(|window, cx| {
-                            window.push_notification(
-                                gpui_kit::component::notification::Notification::error(format!("Failed to read file: {}", e)),
-                                cx,
-                            );
-                        });
                     }
                 }
+                Err(e) => {
+                    let _ = window.update(|window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::error(format!("Failed to read file: {}", e)),
+                            cx,
+                        );
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn on_action_import_hex_or_mot(&mut self, _: &crate::actions::ImportHexOrMot, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt_path = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select Motorola S-Record or Intel HEX file to import".into()),
+        });
+
+        let view = cx.entity().clone();
+        cx.spawn_in(window, async move |_, window| {
+            if let Some(path) = prompt_path.await.ok().and_then(|r| r.ok()).flatten().and_then(|mut v| v.pop()) {
+                window
+                    .update(|window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.import_file_from_path(path, None, window, cx);
+                        });
+                    })
+                    .ok();
             }
         })
         .detach();

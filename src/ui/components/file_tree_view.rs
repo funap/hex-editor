@@ -1,4 +1,6 @@
 use crate::actions::{LoadChildren, OpenDiff, OpenFile, Rename, SelectForCompare, SelectItem};
+use crate::core::format::FileFormat;
+use crate::core::structure::RecentFileEntry;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -24,8 +26,8 @@ const CONTEXT: &str = "FileTreeView";
 
 fn path_file_name(path: &Path) -> String {
     path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
 pub fn init(cx: &mut App) {
@@ -51,15 +53,15 @@ pub fn init(cx: &mut App) {
 }
 
 pub enum FileTreeViewEvent {
-    OpenFile(PathBuf),
+    OpenFile { path: PathBuf, format: Option<FileFormat> },
 }
 
-/// Tracks recent paths for UI display, allowing re-sorting to be deferred
+/// Tracks recent files for UI display, allowing re-sorting to be deferred
 /// when opening items from the recents list itself.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RecentDisplayHistory {
-    displayed_paths: Vec<PathBuf>,
-    latest_paths: Vec<PathBuf>,
+    displayed_entries: Vec<RecentFileEntry>,
+    latest_entries: Vec<RecentFileEntry>,
     defer_reorder: bool,
 }
 
@@ -69,15 +71,27 @@ impl RecentDisplayHistory {
         Self::default()
     }
 
+    /// Returns the currently displayed entries in their display order.
+    pub fn displayed_entries(&self) -> &[RecentFileEntry] {
+        &self.displayed_entries
+    }
+
     /// Returns the currently displayed paths in their display order.
-    pub fn displayed_paths(&self) -> &[PathBuf] {
-        &self.displayed_paths
+    #[allow(dead_code)]
+    pub fn displayed_paths(&self) -> Vec<PathBuf> {
+        self.displayed_entries.iter().map(|e| e.path.clone()).collect()
+    }
+
+    /// Returns the latest entries in MRU order.
+    #[allow(dead_code)]
+    pub fn latest_entries(&self) -> &[RecentFileEntry] {
+        &self.latest_entries
     }
 
     /// Returns the latest paths in MRU order.
     #[allow(dead_code)]
-    pub fn latest_paths(&self) -> &[PathBuf] {
-        &self.latest_paths
+    pub fn latest_paths(&self) -> Vec<PathBuf> {
+        self.latest_entries.iter().map(|e| e.path.clone()).collect()
     }
 
     /// Returns true if re-sorting is currently deferred.
@@ -91,29 +105,29 @@ impl RecentDisplayHistory {
         self.defer_reorder = deferred;
     }
 
-    /// Updates the history with new paths. Returns true if the displayed list changed.
-    pub fn update(&mut self, paths: &[PathBuf]) -> bool {
-        self.latest_paths = paths.to_vec();
+    /// Updates the history with new entries. Returns true if the displayed list changed.
+    pub fn update(&mut self, entries: &[RecentFileEntry]) -> bool {
+        self.latest_entries = entries.to_vec();
         if self.defer_reorder {
-            let previous_len = self.displayed_paths.len();
-            self.displayed_paths.retain(|p| paths.contains(p));
-            return self.displayed_paths.len() != previous_len;
+            let previous_len = self.displayed_entries.len();
+            self.displayed_entries.retain(|entry| entries.iter().any(|e| e.path == entry.path));
+            return self.displayed_entries.len() != previous_len;
         }
 
-        if self.displayed_paths == paths {
+        if self.displayed_entries == entries {
             return false;
         }
 
-        self.displayed_paths = paths.to_vec();
+        self.displayed_entries = entries.to_vec();
         true
     }
 
-    /// Resets the deferred state and synchronizes displayed paths with latest paths.
+    /// Resets the deferred state and synchronizes displayed entries with latest entries.
     /// Returns true if the displayed list changed.
     pub fn sync(&mut self) -> bool {
         self.defer_reorder = false;
-        if self.displayed_paths != self.latest_paths {
-            self.displayed_paths = self.latest_paths.clone();
+        if self.displayed_entries != self.latest_entries {
+            self.displayed_entries = self.latest_entries.clone();
             true
         } else {
             false
@@ -205,9 +219,9 @@ impl FileTreeView {
         }
     }
 
-    /// Updates the recent binary file paths displayed in the empty state.
-    pub fn set_recent_file_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        if self.recent_history.update(paths) {
+    /// Updates the recent binary file entries displayed in the empty state.
+    pub fn set_recent_file_history(&mut self, entries: &[RecentFileEntry], cx: &mut Context<Self>) {
+        if self.recent_history.update(entries) {
             cx.notify();
         }
     }
@@ -228,9 +242,10 @@ impl FileTreeView {
 
                 view.update(&mut cx, |this, cx| {
                     this.items = items.clone();
-                    this.tree_state.update(cx, |state, cx| {
-                        state.set_items(items, cx);
+                    this.tree_state.update(cx, |tree, cx| {
+                        tree.set_items(items, cx);
                     });
+                    cx.notify();
                 })
                 .ok();
             }
@@ -284,7 +299,10 @@ impl FileTreeView {
             self.clear_tree_selection(cx);
 
             if !item.is_folder() {
-                cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(item.id.to_string())));
+                cx.emit(FileTreeViewEvent::OpenFile {
+                    path: PathBuf::from(item.id.to_string()),
+                    format: None,
+                });
             }
             cx.notify();
         }
@@ -571,41 +589,63 @@ impl Render for FileTreeView {
                     .into_any_element();
 
                 let mut empty_actions = v_flex().w_full().items_center().child(open_btn);
-                if !self.recent_history.displayed_paths().is_empty() {
+                if !self.recent_history.displayed_entries().is_empty() {
                     let recent_items = self
                         .recent_history
-                        .displayed_paths()
+                        .displayed_entries()
                         .iter()
                         .enumerate()
-                        .map(|(index, path)| {
-                            let path = path.to_string_lossy().into_owned();
+                        .map(|(index, entry)| {
+                            let path = entry.path.to_string_lossy().into_owned();
                             let label = path_file_name(Path::new(&path));
-                            let open_path = path.clone();
+                            let open_path = entry.path.clone();
+                            let open_format = entry.format;
                             let remove_path = path.clone();
+                            let tooltip_text = match entry.format {
+                                Some(fmt) if fmt.is_import() => format!("{path} ({})", fmt.label()),
+                                _ => path.clone(),
+                            };
+
+                            let mut item_content = h_flex()
+                                .id(("recent-file-item", index))
+                                .flex_1()
+                                .min_w_0()
+                                .h_5()
+                                .items_center()
+                                .gap_1()
+                                .px_1()
+                                .cursor_pointer()
+                                .tooltip(move |_window, cx| cx.new(|_| gpui_kit::component::tooltip::Tooltip::new(tooltip_text.clone())).into())
+                                .hover(|style| style.bg(theme.muted.opacity(0.4)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.recent_history.set_deferred(true);
+                                    this.focus_handle.focus(window, cx);
+                                    cx.emit(FileTreeViewEvent::OpenFile {
+                                        path: open_path.clone(),
+                                        format: open_format,
+                                    });
+                                }))
+                                .child(Icon::new(IconName::File).with_size(gpui_kit::component::Size::XSmall))
+                                .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label));
+
+                            if let Some(format) = entry.format
+                                && format.is_import()
+                            {
+                                item_content = item_content.child(
+                                    div()
+                                        .px_1()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(theme.muted_foreground)
+                                        .child(format.badge_text()),
+                                );
+                            }
 
                             h_flex()
                                 .w_full()
                                 .items_center()
                                 .gap_1()
-                                .child(
-                                    h_flex()
-                                        .id(("recent-file-item", index))
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h_5()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_1()
-                                        .cursor_pointer()
-                                        .hover(|style| style.bg(theme.muted.opacity(0.4)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.recent_history.set_deferred(true);
-                                            this.focus_handle.focus(window, cx);
-                                            cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(open_path.clone())));
-                                        }))
-                                        .child(Icon::new(IconName::File).with_size(gpui_kit::component::Size::XSmall))
-                                        .child(div().flex_1().min_w_0().text_xs().truncate().whitespace_nowrap().child(label)),
-                                )
+                                .child(item_content)
                                 .child(
                                     gpui_kit::component::button::Button::new(SharedString::from(format!("remove-recent-file-{index}")))
                                         .ghost()
@@ -693,7 +733,7 @@ impl Render for FileTreeView {
                                         (can_compare, lp, rp, pending)
                                     });
 
-                                    let mut menu = menu.menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile { path: item_id.to_string() }));
+                                    let mut menu = menu.menu_with_icon("Open", IconName::FolderOpen, Box::new(OpenFile::new(item_id.to_string())));
 
                                     if !is_folder {
                                         menu = menu.separator();
@@ -761,7 +801,10 @@ impl Render for FileTreeView {
                                     }
 
                                     if !item.is_folder() && this.selected_items.len() == 1 {
-                                        cx.emit(FileTreeViewEvent::OpenFile(PathBuf::from(item.id.to_string())));
+                                        cx.emit(FileTreeViewEvent::OpenFile {
+                                            path: PathBuf::from(item.id.to_string()),
+                                            format: None,
+                                        });
                                     }
                                     this.clear_tree_selection(cx);
                                     cx.notify();
@@ -802,94 +845,138 @@ impl FileTreeViewState {
 #[cfg(test)]
 mod tests {
     use super::RecentDisplayHistory;
+    use crate::core::format::FileFormat;
+    use crate::core::structure::RecentFileEntry;
     use std::path::PathBuf;
 
     #[test]
     fn test_recent_display_history_initial_state() {
         let history = RecentDisplayHistory::new();
-        assert!(history.displayed_paths().is_empty());
-        assert!(history.latest_paths().is_empty());
+        assert!(history.displayed_entries().is_empty());
+        assert!(history.latest_entries().is_empty());
         assert!(!history.is_deferred());
     }
 
     #[test]
     fn test_recent_display_history_immediate_update_when_not_deferred() {
         let mut history = RecentDisplayHistory::new();
-        let paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
+        let entries = vec![
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.hex"), Some(FileFormat::IntelHex)),
+            RecentFileEntry::new(PathBuf::from("c.srec"), Some(FileFormat::MotorolaSrec)),
+        ];
 
-        assert!(history.update(&paths));
-        assert_eq!(history.displayed_paths(), &paths);
-        assert_eq!(history.latest_paths(), &paths);
+        assert!(history.update(&entries));
+        assert_eq!(history.displayed_entries(), &entries);
+        assert_eq!(history.latest_entries(), &entries);
 
-        // Same paths should return false (no change)
-        assert!(!history.update(&paths));
+        // Same entries should return false (no change)
+        assert!(!history.update(&entries));
     }
 
     #[test]
     fn test_recent_display_history_deferred_reorder_preserves_display_order() {
         let mut history = RecentDisplayHistory::new();
-        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
-        history.update(&initial_paths);
+        let initial_entries = vec![
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+        ];
+        history.update(&initial_entries);
 
-        // Simulate user clicking "c.bin" from recents
+        // Simulate user clicking "c.hex" from recents
         history.set_deferred(true);
         assert!(history.is_deferred());
 
-        // Background history moves "c.bin" to front
-        let updated_paths = vec![PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
-        assert!(!history.update(&updated_paths));
+        // Background history moves "c.hex" to front
+        let updated_entries = vec![
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+        ];
+        assert!(!history.update(&updated_entries));
 
-        // latest_paths updated to new MRU order, but displayed_paths keeps original order
-        assert_eq!(history.latest_paths(), &updated_paths);
-        assert_eq!(history.displayed_paths(), &initial_paths);
+        // latest_entries updated to new MRU order, but displayed_entries keeps original order
+        assert_eq!(history.latest_entries(), &updated_entries);
+        assert_eq!(history.displayed_entries(), &initial_entries);
 
         // Simulate user clicking "b.bin" from recents
-        let updated_paths_2 = vec![PathBuf::from("b.bin"), PathBuf::from("c.bin"), PathBuf::from("a.bin")];
-        assert!(!history.update(&updated_paths_2));
-        assert_eq!(history.latest_paths(), &updated_paths_2);
-        assert_eq!(history.displayed_paths(), &initial_paths);
+        let updated_entries_2 = vec![
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+        ];
+        assert!(!history.update(&updated_entries_2));
+        assert_eq!(history.latest_entries(), &updated_entries_2);
+        assert_eq!(history.displayed_entries(), &initial_entries);
     }
 
     #[test]
     fn test_recent_display_history_retains_on_removal_while_deferred() {
         let mut history = RecentDisplayHistory::new();
-        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
-        history.update(&initial_paths);
+        let initial_entries = vec![
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.bin"), None),
+        ];
+        history.update(&initial_entries);
 
         history.set_deferred(true);
 
         // Remove "b.bin" from history
-        let paths_after_remove = vec![PathBuf::from("a.bin"), PathBuf::from("c.bin")];
-        assert!(history.update(&paths_after_remove));
+        let entries_after_remove = vec![
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.bin"), None),
+        ];
+        assert!(history.update(&entries_after_remove));
 
-        assert_eq!(history.latest_paths(), &paths_after_remove);
+        assert_eq!(history.latest_entries(), &entries_after_remove);
         // "b.bin" removed, order of remaining items preserved
-        assert_eq!(history.displayed_paths(), &[PathBuf::from("a.bin"), PathBuf::from("c.bin")]);
+        assert_eq!(
+            history.displayed_entries(),
+            &[
+                RecentFileEntry::new(PathBuf::from("a.bin"), None),
+                RecentFileEntry::new(PathBuf::from("c.bin"), None),
+            ]
+        );
     }
 
     #[test]
     fn test_recent_display_history_sync_flushes_latest_order() {
         let mut history = RecentDisplayHistory::new();
-        let initial_paths = vec![PathBuf::from("a.bin"), PathBuf::from("b.bin"), PathBuf::from("c.bin")];
-        history.update(&initial_paths);
+        let initial_entries = vec![
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+        ];
+        history.update(&initial_entries);
 
         history.set_deferred(true);
-        let mru_paths = vec![PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
-        history.update(&mru_paths);
-        assert_eq!(history.displayed_paths(), &initial_paths);
+        let mru_entries = vec![
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+        ];
+        history.update(&mru_entries);
+        assert_eq!(history.displayed_entries(), &initial_entries);
 
         // Sync when FILES panel is reopened
         assert!(history.sync());
         assert!(!history.is_deferred());
-        assert_eq!(history.displayed_paths(), &mru_paths);
+        assert_eq!(history.displayed_entries(), &mru_entries);
 
         // Second sync does nothing
         assert!(!history.sync());
 
         // Subsequent update when not deferred updates immediately
-        let new_paths = vec![PathBuf::from("d.bin"), PathBuf::from("c.bin"), PathBuf::from("a.bin"), PathBuf::from("b.bin")];
-        assert!(history.update(&new_paths));
-        assert_eq!(history.displayed_paths(), &new_paths);
+        let new_entries = vec![
+            RecentFileEntry::new(PathBuf::from("d.bin"), None),
+            RecentFileEntry::new(PathBuf::from("c.hex"), Some(FileFormat::IntelHex)),
+            RecentFileEntry::new(PathBuf::from("a.bin"), None),
+            RecentFileEntry::new(PathBuf::from("b.bin"), None),
+        ];
+        assert!(history.update(&new_entries));
+        assert_eq!(history.displayed_entries(), &new_entries);
     }
 
     #[test]

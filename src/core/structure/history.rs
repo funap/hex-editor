@@ -1,3 +1,5 @@
+use crate::core::format::FileFormat;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The number of structure definitions kept in the recent history.
@@ -26,7 +28,7 @@ impl RecentPathHistory {
         let path = canonicalize_or_keep(path);
         self.paths.retain(|entry| entry != &path);
         self.paths.insert(0, path);
-        self.paths.truncate(MAX_RECENT_FILES);
+        self.paths.truncate(MAX_RECENT_DEFINITIONS);
     }
 
     /// Removes a path and reports whether an entry was removed.
@@ -46,8 +48,80 @@ impl RecentPathHistory {
 /// Stores the most recently used Kaitai structure definition paths.
 pub type DefinitionHistory = RecentPathHistory;
 
-/// Stores the most recently opened binary file paths.
-pub type FileHistory = RecentPathHistory;
+/// An entry representing a recently opened or imported file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentFileEntry {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<FileFormat>,
+}
+
+impl RecentFileEntry {
+    pub fn new(path: PathBuf, format: Option<FileFormat>) -> Self {
+        Self {
+            path: canonicalize_or_keep(path),
+            format,
+        }
+    }
+}
+
+impl From<PathBuf> for RecentFileEntry {
+    fn from(path: PathBuf) -> Self {
+        Self::new(path, None)
+    }
+}
+
+/// Stores the most recently opened binary or imported files and their formats.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileHistory {
+    entries: Vec<RecentFileEntry>,
+}
+
+impl FileHistory {
+    /// Creates a history from entries ordered newest to oldest.
+    pub fn from_entries(entries: Vec<RecentFileEntry>) -> Self {
+        let mut history = Self::default();
+        for entry in entries.into_iter().rev() {
+            history.record(entry.path, entry.format);
+        }
+        history
+    }
+
+    /// Creates a history from paths ordered newest to oldest with default format.
+    pub fn from_paths(paths: Vec<PathBuf>) -> Self {
+        let mut history = Self::default();
+        for path in paths.into_iter().rev() {
+            history.record(path, None);
+        }
+        history
+    }
+
+    /// Records a path and its open format, moving an existing entry to the front.
+    pub fn record(&mut self, path: PathBuf, format: Option<FileFormat>) {
+        let path = canonicalize_or_keep(path);
+        self.entries.retain(|entry| entry.path != path);
+        self.entries.insert(0, RecentFileEntry::new(path, format));
+        self.entries.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Removes a path and reports whether an entry was removed.
+    pub fn remove(&mut self, path: &std::path::Path) -> bool {
+        let path = canonicalize_or_keep(path.to_path_buf());
+        let old_len = self.entries.len();
+        self.entries.retain(|entry| entry.path != path);
+        self.entries.len() != old_len
+    }
+
+    /// Returns entries from newest to oldest.
+    pub fn entries(&self) -> &[RecentFileEntry] {
+        &self.entries
+    }
+
+    /// Returns paths from newest to oldest.
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.entries.iter().map(|e| e.path.clone()).collect()
+    }
+}
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
@@ -77,6 +151,25 @@ mod tests {
         history.record(PathBuf::from("older.ksy"));
 
         assert_eq!(history.paths(), &[PathBuf::from("older.ksy"), PathBuf::from("newer.ksy")]);
+    }
+
+    #[test]
+    fn file_history_records_and_updates_format() {
+        let mut history = FileHistory::default();
+        history.record(PathBuf::from("file.hex"), Some(FileFormat::IntelHex));
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.entries()[0].format, Some(FileFormat::IntelHex));
+
+        history.record(PathBuf::from("file.srec"), Some(FileFormat::MotorolaSrec));
+        assert_eq!(history.entries().len(), 2);
+        assert_eq!(history.entries()[0].path, PathBuf::from("file.srec"));
+        assert_eq!(history.entries()[0].format, Some(FileFormat::MotorolaSrec));
+
+        // Updating file.hex moves to front and updates format
+        history.record(PathBuf::from("file.hex"), Some(FileFormat::Binary));
+        assert_eq!(history.entries().len(), 2);
+        assert_eq!(history.entries()[0].path, PathBuf::from("file.hex"));
+        assert_eq!(history.entries()[0].format, Some(FileFormat::Binary));
     }
 
     #[test]

@@ -321,17 +321,15 @@ impl Workspace {
         .detach();
 
         cx.subscribe(&left_panel, |_, _, event: &FileTreeViewEvent, cx| match event {
-            FileTreeViewEvent::OpenFile(path) => {
-                cx.dispatch_action(&crate::actions::OpenFile {
-                    path: path.to_string_lossy().to_string(),
-                });
+            FileTreeViewEvent::OpenFile { path, format } => {
+                cx.dispatch_action(&crate::actions::OpenFile::with_format(path.to_string_lossy().to_string(), *format));
             }
         })
         .detach();
 
         let recent_history = cx.global::<crate::settings::RecentHistoryState>().clone();
         let recent_definition_paths = recent_history.definitions.paths().to_vec();
-        let recent_file_paths = recent_history.files.paths().to_vec();
+        let recent_file_entries = recent_history.files.entries().to_vec();
         let workspace = Self {
             pane_tree,
             title_bar,
@@ -349,7 +347,7 @@ impl Workspace {
 
         workspace.left_panel.update(cx, |panel, cx| {
             panel.set_structure_definition_history(&recent_definition_paths, cx);
-            panel.set_file_history(&recent_file_paths, cx);
+            panel.set_file_history(&recent_file_entries, cx);
         });
 
         workspace
@@ -365,10 +363,10 @@ impl Workspace {
 
     pub(crate) fn publish_recent_history(&mut self, cx: &mut Context<Self>) {
         let definition_paths = self.recent_definition_history.paths().to_vec();
-        let file_paths = self.recent_file_history.paths().to_vec();
+        let file_entries = self.recent_file_history.entries().to_vec();
         self.left_panel.update(cx, |panel, cx| {
             panel.set_structure_definition_history(&definition_paths, cx);
-            panel.set_file_history(&file_paths, cx);
+            panel.set_file_history(&file_entries, cx);
         });
 
         let definitions = self.recent_definition_history.clone();
@@ -380,8 +378,8 @@ impl Workspace {
         crate::settings::save_current(cx);
     }
 
-    pub(crate) fn record_recent_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.recent_file_history.record(path);
+    pub(crate) fn record_recent_file(&mut self, path: PathBuf, format: Option<crate::core::format::FileFormat>, cx: &mut Context<Self>) {
+        self.recent_file_history.record(path, format);
         self.publish_recent_history(cx);
     }
 
@@ -597,7 +595,7 @@ impl Workspace {
                                         Ok(document) => {
                                             let _ = window.update(|window, cx| {
                                                 view.update(cx, |this, cx| {
-                                                    this.record_recent_file(recent_path.clone(), cx);
+                                                    this.record_recent_file(recent_path.clone(), Some(crate::core::format::FileFormat::Binary), cx);
                                                     this.open_editor_panel(document, window, cx);
                                                 });
                                             });
@@ -824,9 +822,7 @@ impl Render for Workspace {
                         this.left_panel.update(cx, |panel, cx| {
                             panel.sync_file_history(cx);
                         });
-                        let action = crate::actions::OpenFile {
-                            path: path.to_string_lossy().to_string(),
-                        };
+                        let action = crate::actions::OpenFile::new(path.to_string_lossy().to_string());
                         this.on_action_open_file(&action, window, cx);
                     } else if path.is_dir() {
                         this.left_panel.update(cx, |p, cx| {

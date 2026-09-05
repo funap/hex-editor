@@ -212,7 +212,7 @@ pub fn format_text_repr(slice: &[u8], encoding: crate::core::encoding::Encoding)
             if !slice.len().is_multiple_of(2) {
                 "invalid UTF-16 LE".to_string()
             } else {
-                let u16s: Vec<u16> = slice.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let u16s: Vec<u16> = slice.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
                 match String::from_utf16(&u16s) {
                     Ok(s) => {
                         if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
@@ -229,7 +229,7 @@ pub fn format_text_repr(slice: &[u8], encoding: crate::core::encoding::Encoding)
             if !slice.len().is_multiple_of(2) {
                 "invalid UTF-16 BE".to_string()
             } else {
-                let u16s: Vec<u16> = slice.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let u16s: Vec<u16> = slice.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
                 match String::from_utf16(&u16s) {
                     Ok(s) => {
                         if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {

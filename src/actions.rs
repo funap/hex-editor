@@ -1,3 +1,4 @@
+use crate::core::format::FileFormat;
 use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -7,6 +8,21 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct OpenFile {
     pub path: String,
+    #[serde(default)]
+    pub format: Option<FileFormat>,
+}
+
+impl OpenFile {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            format: None,
+        }
+    }
+
+    pub fn with_format(path: impl Into<String>, format: Option<FileFormat>) -> Self {
+        Self { path: path.into(), format }
+    }
 }
 
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]

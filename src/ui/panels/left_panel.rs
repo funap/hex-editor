@@ -50,7 +50,10 @@ impl LeftPanel {
         let bookmark_panel = cx.new(|cx| BookmarkPanel::new(None, window, cx));
 
         cx.subscribe(&file_tree, |_, _, event: &FileTreeViewEvent, cx| match event {
-            FileTreeViewEvent::OpenFile(path) => cx.emit(FileTreeViewEvent::OpenFile(path.clone())),
+            FileTreeViewEvent::OpenFile { path, format } => cx.emit(FileTreeViewEvent::OpenFile {
+                path: path.clone(),
+                format: *format,
+            }),
         })
         .detach();
 
@@ -108,10 +111,10 @@ impl LeftPanel {
         });
     }
 
-    /// Updates the recent binary file paths shown by the Files panel.
-    pub fn set_file_history(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    /// Updates the recent binary file entries shown by the Files panel.
+    pub fn set_file_history(&mut self, entries: &[crate::core::structure::RecentFileEntry], cx: &mut Context<Self>) {
         self.file_tree.update(cx, |panel, cx| {
-            panel.set_recent_file_history(paths, cx);
+            panel.set_recent_file_history(entries, cx);
         });
     }
 

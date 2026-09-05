@@ -149,7 +149,7 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
                 result.push(u8::from_str_radix(token, 16).ok()?);
                 saw_hex = true;
             } else if token.len() > 2 && token.len().is_multiple_of(2) && is_hex(token) {
-                for pair in token.as_bytes().chunks_exact(2) {
+                for pair in token.as_bytes().as_chunks::<2>().0 {
                     result.push(u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?);
                 }
                 saw_hex = true;

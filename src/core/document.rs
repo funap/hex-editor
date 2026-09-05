@@ -4,6 +4,7 @@ use crate::core::address_map::AddressMap;
 use crate::core::bookmark::BookmarkStore;
 use crate::core::buffer::Buffer;
 use crate::core::command::{Command, EditDelta};
+use crate::core::format::FileFormat;
 use crate::core::history::History;
 use crate::core::layout::CustomLayoutRules;
 use crate::core::structure::{KsyDefinition, ParseResult};
@@ -45,6 +46,7 @@ pub struct Document {
     pub last_saved_version: usize,
     read_only: bool,
     pub address_map: AddressMap,
+    pub format: FileFormat,
     pub metadata: DocumentMetadata,
 }
 
@@ -57,6 +59,7 @@ impl Document {
             last_saved_version: 0,
             read_only: false,
             address_map: AddressMap::default(),
+            format: FileFormat::Binary,
             metadata: DocumentMetadata::default(),
         }
     }
@@ -66,6 +69,12 @@ impl Document {
         let mut document = Self::new(path, buffer);
         document.read_only = true;
         document
+    }
+
+    /// Sets the file format for this document and returns self.
+    pub fn with_format(mut self, format: FileFormat) -> Self {
+        self.format = format;
+        self
     }
 
     /// Sets the address map for this document and returns self.

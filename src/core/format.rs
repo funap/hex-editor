@@ -9,10 +9,64 @@ pub use raw_binary::*;
 pub use srec::*;
 
 use crate::core::address_map::{AddressMap, HexFormatOptions, MemorySegment};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Identifies the file format used when opening or importing a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileFormat {
+    /// Raw binary file (opened without record-format decoding).
+    #[default]
+    Binary,
+    /// Intel HEX file format.
+    IntelHex,
+    /// Motorola S-Record file format.
+    #[serde(alias = "motorola_s19", alias = "motorola_s28", alias = "motorola_s37")]
+    MotorolaSrec,
+    /// Generic / auto-detected Motorola S-Record or Intel HEX format.
+    HexOrMot,
+}
+
+impl FileFormat {
+    /// Returns true if this format represents an imported hex/record format rather than raw binary.
+    pub fn is_import(&self) -> bool {
+        matches!(self, Self::IntelHex | Self::MotorolaSrec | Self::HexOrMot)
+    }
+
+    /// Short badge label for displaying in lists (e.g. Recents).
+    pub fn badge_text(&self) -> &'static str {
+        match self {
+            Self::Binary => "",
+            Self::IntelHex => "HEX",
+            Self::MotorolaSrec => "SREC",
+            Self::HexOrMot => "HEX",
+        }
+    }
+
+    /// Human-readable label describing the format.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Binary => "Binary",
+            Self::IntelHex => "Intel HEX",
+            Self::MotorolaSrec => "Motorola S-Record",
+            Self::HexOrMot => "Motorola S-Record / Intel HEX",
+        }
+    }
+}
+
+impl From<HexFormat> for FileFormat {
+    fn from(format: HexFormat) -> Self {
+        match format {
+            HexFormat::MotorolaS19 | HexFormat::MotorolaS28 | HexFormat::MotorolaS37 => Self::MotorolaSrec,
+            HexFormat::IntelHex => Self::IntelHex,
+        }
+    }
+}
+
 /// Identifies the format of the parsed hex/mot file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum HexFormat {
     MotorolaS19,
     MotorolaS28,

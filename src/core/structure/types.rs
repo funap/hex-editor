@@ -38,13 +38,8 @@ impl FieldValue {
             FieldValue::I64(v) => *v,
             FieldValue::F32(v) => *v as i64,
             FieldValue::F64(v) => *v as i64,
-            FieldValue::Bool(v) => {
-                if *v {
-                    1
-                } else {
-                    0
-                }
-            }
+            FieldValue::Bool(true) => 1,
+            FieldValue::Bool(false) => 0,
             _ => 0,
         }
     }
@@ -61,13 +56,8 @@ impl FieldValue {
             FieldValue::I64(v) => *v as f64,
             FieldValue::F32(v) => *v as f64,
             FieldValue::F64(v) => *v,
-            FieldValue::Bool(v) => {
-                if *v {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            FieldValue::Bool(true) => 1.0,
+            FieldValue::Bool(false) => 0.0,
             _ => 0.0,
         }
     }

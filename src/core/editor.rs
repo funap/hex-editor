@@ -64,11 +64,8 @@ impl<'a> BookmarkSessionRef<'a> {
     }
 
     pub fn export_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let (items, doc_path) = {
-            let doc = self.document.read().expect("document read lock");
-            (doc.metadata.bookmarks.snapshot(), doc.path().to_path_buf())
-        };
-        crate::core::bookmark::BookmarkFile::save_to_path(path, &items, Some(&doc_path))
+        let doc = self.document.read().expect("document read lock");
+        doc.metadata.bookmarks.export_to_file(path, Some(doc.path()))
     }
 
     pub fn is_color_hidden(&self, color: BookmarkColor) -> bool {
@@ -162,11 +159,10 @@ impl<'a> BookmarkSessionMut<'a> {
     }
 
     pub fn import_from_file(&mut self, path: &Path) -> anyhow::Result<usize> {
-        let loaded = crate::core::bookmark::BookmarkFile::load_from_path(path)?;
         let mut doc = self.document.write().expect("document write lock");
         let total = doc.buffer.len();
         doc.bump_layout_version();
-        let count = doc.metadata.bookmarks.import_items(loaded, total);
+        let count = doc.metadata.bookmarks.import_from_file(path, total)?;
         self.layout.invalidate();
         Ok(count)
     }

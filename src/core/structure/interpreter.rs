@@ -1389,14 +1389,12 @@ impl KaitaiInterpreter {
                     }
                 }
             }
-            serde_yaml::Value::Number(_) | serde_yaml::Value::String(_) => {
-                if !Self::check_val_eq(valid, actual) {
-                    self.errors.borrow_mut().push(ParseError {
-                        message: format!("validation failed: value {:?} does not equal expected {:?}", actual, valid),
-                        offset,
-                    });
-                    ok = false;
-                }
+            serde_yaml::Value::Number(_) | serde_yaml::Value::String(_) if !Self::check_val_eq(valid, actual) => {
+                self.errors.borrow_mut().push(ParseError {
+                    message: format!("validation failed: value {:?} does not equal expected {:?}", actual, valid),
+                    offset,
+                });
+                ok = false;
             }
             _ => {}
         }

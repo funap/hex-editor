@@ -1049,8 +1049,8 @@ impl HexView {
     }
 
     fn edit_changed(&mut self, changed: bool, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         if changed {
-            self.pause_cursor_blink(cx);
             self.notify_document_changed(cx);
         }
         cx.notify();

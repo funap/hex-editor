@@ -770,11 +770,15 @@ impl Editor {
 
     /// Replaces a range and explicitly chooses the resulting cursor offset.
     pub fn replace_range_with_cursor(&mut self, range: Range<usize>, replacement: Vec<u8>, cursor_after: usize) -> bool {
+        if self.is_read_only() {
+            return false;
+        }
         let total = self.total_size();
         let start = range.start.min(total);
         let end = range.end.min(total).max(start);
         let old = self.document.read().expect("document read lock").buffer.get_range(start, end - start).to_vec();
         if old == replacement {
+            self.set_cursor_offset_exact(cursor_after);
             return false;
         }
 

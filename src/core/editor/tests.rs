@@ -781,6 +781,68 @@ fn test_overwrite_replacement_preserves_size_over_multibyte_utf8() {
 }
 
 #[test]
+fn test_replace_byte_identical_advances_cursor_without_dirtying_or_history() {
+    let mut editor = create_editor_with_content(b"abc");
+    assert_eq!(editor.cursor.offset, 0);
+
+    // Replacing byte at offset 0 with identical value 'a'
+    assert!(!editor.replace_byte(0, b'a'));
+    assert_eq!(editor.cursor.offset, 1);
+    assert_eq!(editor.document.read().unwrap().buffer.data(), b"abc");
+    assert!(!editor.document.read().unwrap().is_dirty());
+    assert!(!editor.undo());
+
+    // Replacing byte at offset 1 with identical value 'b'
+    assert!(!editor.replace_byte(1, b'b'));
+    assert_eq!(editor.cursor.offset, 2);
+    assert_eq!(editor.document.read().unwrap().buffer.data(), b"abc");
+    assert!(!editor.document.read().unwrap().is_dirty());
+    assert!(!editor.undo());
+}
+
+#[test]
+fn test_replace_range_identical_advances_cursor_and_clears_selection() {
+    let mut editor = create_editor_with_content(b"abcdef");
+    editor.set_selection(1, 3);
+    assert!(editor.has_selection());
+
+    // Replacing selection 1..3 with identical bytes b"bc"
+    assert!(!editor.replace_range(1..3, b"bc".to_vec()));
+    assert_eq!(editor.cursor.offset, 3);
+    assert!(!editor.has_selection());
+    assert_eq!(editor.document.read().unwrap().buffer.data(), b"abcdef");
+    assert!(!editor.document.read().unwrap().is_dirty());
+    assert!(!editor.undo());
+}
+
+#[test]
+fn test_replace_identical_read_only_does_not_advance_cursor() {
+    let document = Arc::new(RwLock::new(Document::new_read_only(
+        std::path::PathBuf::from("read-only.bin"),
+        crate::core::buffer::Buffer::new(b"abc".to_vec()),
+    )));
+    let mut editor = Editor::new(document);
+    editor.set_cursor_offset(0);
+
+    assert!(!editor.replace_byte(0, b'a'));
+    assert_eq!(editor.cursor.offset, 0);
+
+    assert!(!editor.replace_range(0..1, vec![b'a']));
+    assert_eq!(editor.cursor.offset, 0);
+}
+
+#[test]
+fn test_replace_byte_identical_at_end_of_buffer() {
+    let mut editor = create_editor_with_content(b"abc");
+    editor.set_cursor_offset(2);
+    assert_eq!(editor.cursor.offset, 2);
+
+    assert!(!editor.replace_byte(2, b'c'));
+    assert_eq!(editor.cursor.offset, 2);
+    assert_eq!(editor.document.read().unwrap().buffer.data(), b"abc");
+}
+
+#[test]
 fn test_insert_delete_and_selection_backspace_cursor() {
     let mut editor = create_editor_with_content(b"abcd");
     editor.set_cursor_offset(2);

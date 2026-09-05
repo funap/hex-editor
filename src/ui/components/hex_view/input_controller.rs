@@ -81,9 +81,7 @@ impl InputController {
             } else {
                 ed.replace_byte(position, value)
             };
-            if changed {
-                editor_cx.notify();
-            }
+            editor_cx.notify();
             changed
         });
         self.clear_pending();
@@ -116,9 +114,7 @@ impl InputController {
                 let range = position..position.saturating_add(replacement.len()).min(ed.total_size());
                 ed.replace_range(range, replacement)
             };
-            if changed {
-                editor_cx.notify();
-            }
+            editor_cx.notify();
             changed
         });
         Some(changed)

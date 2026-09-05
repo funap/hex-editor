@@ -53,11 +53,21 @@ impl Render for AppTitleBar {
                 .items_center()
                 .justify_end()
                 .gap_2()
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    // Stop propagation to avoid dragging the window.
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
                 .child(
                     Button::new("settings")
                         .ghost()
                         .icon(IconName::Settings)
                         .tooltip("Settings")
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            // Stop propagation to avoid dragging the window.
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .on_click(cx.listener(|_, _, _, cx| {
                             cx.emit(AppTitleBarEvent::OpenSettings);
                         })),
@@ -67,6 +77,11 @@ impl Render for AppTitleBar {
                         .ghost()
                         .icon(IconName::Info)
                         .tooltip("About")
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            // Stop propagation to avoid dragging the window.
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .on_click(cx.listener(|_, _, _, cx| {
                             cx.emit(AppTitleBarEvent::OpenAbout);
                         })),

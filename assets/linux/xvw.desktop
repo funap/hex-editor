@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=xvw
+Comment=A fast, GPU-accelerated binary & hex editor built with GPUI and Rust
+Exec=xvw %F
+Terminal=false
+Type=Application
+Icon=xvw
+Categories=Development;Utility;
+MimeType=application/octet-stream;
+StartupNotify=true

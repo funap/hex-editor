@@ -35,3 +35,6 @@ encoding_rs = "0.8.35"
 # deterministic core/layout logic and do not need optimized code or debug info.
 opt-level = 0
 debug = 0
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

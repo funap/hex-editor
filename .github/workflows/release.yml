@@ -63,7 +63,8 @@ jobs:
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
-            libssl-dev
+            libssl-dev \
+            rpm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -78,8 +79,8 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package artifacts (Unix)
-        if: runner.os != 'Windows'
+      - name: Package artifacts (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           ARCHIVE_NAME="xvw-${{ inputs.tag_name }}-${{ matrix.target }}"
@@ -89,9 +90,142 @@ jobs:
           [ -f README.md ] && cp README.md "${DIR}/"
           [ -f LICENSE ] && cp LICENSE "${DIR}/"
           
-          cd dist
-          tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
-          shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          # 1. Binary tar.gz archive
+          (cd dist && tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}")
+
+          VERSION_RAW="${{ inputs.tag_name }}"
+          VERSION="${VERSION_RAW#v}"
+
+          case "${{ matrix.target }}" in
+            x86_64*)
+              DEB_ARCH="amd64"
+              RPM_ARCH="x86_64"
+              ;;
+            aarch64*)
+              DEB_ARCH="arm64"
+              RPM_ARCH="aarch64"
+              ;;
+            *)
+              DEB_ARCH="amd64"
+              RPM_ARCH="x86_64"
+              ;;
+          esac
+
+          # 2. Debian / Ubuntu package (.deb)
+          DEB_DIR="xvw_${VERSION}_${DEB_ARCH}"
+          mkdir -p "${DEB_DIR}/DEBIAN"
+          mkdir -p "${DEB_DIR}/usr/bin"
+          mkdir -p "${DEB_DIR}/usr/share/applications"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${DEB_DIR}/usr/share/pixmaps"
+
+          cp "target/${{ matrix.target }}/release/xvw" "${DEB_DIR}/usr/bin/"
+          chmod 755 "${DEB_DIR}/usr/bin/xvw"
+          cp assets/linux/xvw.desktop "${DEB_DIR}/usr/share/applications/"
+          cp assets/icons/xvw.svg "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/"
+          cp assets/icons/xvw.svg "${DEB_DIR}/usr/share/pixmaps/"
+
+          {
+            echo "Package: xvw"
+            echo "Version: ${VERSION}"
+            echo "Section: utils"
+            echo "Priority: optional"
+            echo "Architecture: ${DEB_ARCH}"
+            echo "Maintainer: funap <https://github.com/funap/xvw>"
+            echo "Description: A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
+          } > "${DEB_DIR}/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "${DEB_DIR}" "dist/xvw_${VERSION}_${DEB_ARCH}.deb"
+          rm -rf "${DEB_DIR}"
+
+          # 3. Fedora / RHEL package (.rpm)
+          RPM_ROOT="${RUNNER_TEMP}/rpmbuild"
+          mkdir -p "${RPM_ROOT}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          BUILDROOT="${RPM_ROOT}/BUILDROOT/xvw-${VERSION}-1.${RPM_ARCH}"
+          mkdir -p "${BUILDROOT}/usr/bin"
+          mkdir -p "${BUILDROOT}/usr/share/applications"
+          mkdir -p "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${BUILDROOT}/usr/share/pixmaps"
+
+          cp "target/${{ matrix.target }}/release/xvw" "${BUILDROOT}/usr/bin/"
+          chmod 755 "${BUILDROOT}/usr/bin/xvw"
+          cp assets/linux/xvw.desktop "${BUILDROOT}/usr/share/applications/"
+          cp assets/icons/xvw.svg "${BUILDROOT}/usr/share/icons/hicolor/scalable/apps/"
+          cp assets/icons/xvw.svg "${BUILDROOT}/usr/share/pixmaps/"
+
+          {
+            echo "%global _build_id_links none"
+            echo "%global debug_package %{nil}"
+            echo "%global __os_install_post %{nil}"
+            echo ""
+            echo "Name:           xvw"
+            echo "Version:        ${VERSION}"
+            echo "Release:        1"
+            echo "Summary:        A fast, GPU-accelerated binary & hex editor built with GPUI and Rust"
+            echo "License:        MIT"
+            echo "URL:            https://github.com/funap/xvw"
+            echo ""
+            echo "%description"
+            echo "A fast, GPU-accelerated binary & hex editor built with GPUI and Rust."
+            echo ""
+            echo "%files"
+            echo "/usr/bin/xvw"
+            echo "/usr/share/applications/xvw.desktop"
+            echo "/usr/share/icons/hicolor/scalable/apps/xvw.svg"
+            echo "/usr/share/pixmaps/xvw.svg"
+            echo ""
+            echo "%changelog"
+          } > "${RPM_ROOT}/SPECS/xvw.spec"
+
+          rpmbuild -bb --target "${RPM_ARCH}" --define "_topdir ${RPM_ROOT}" --buildroot="${BUILDROOT}" "${RPM_ROOT}/SPECS/xvw.spec"
+          cp "${RPM_ROOT}/RPMS/${RPM_ARCH}/"*.rpm "dist/"
+          rm -rf "${RPM_ROOT}"
+
+      - name: Package artifacts (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ARCHIVE_NAME="xvw-${{ inputs.tag_name }}-${{ matrix.target }}"
+          DIR="dist/${ARCHIVE_NAME}"
+          mkdir -p "${DIR}"
+          cp "target/${{ matrix.target }}/release/xvw" "${DIR}/"
+          [ -f README.md ] && cp README.md "${DIR}/"
+          [ -f LICENSE ] && cp LICENSE "${DIR}/"
+          
+          # 1. Binary tar.gz archive
+          (cd dist && tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}")
+
+          VERSION_RAW="${{ inputs.tag_name }}"
+          VERSION="${VERSION_RAW#v}"
+
+          # 2. Build .app bundle
+          APP_BUNDLE="xvw.app"
+          mkdir -p "${APP_BUNDLE}/Contents/MacOS"
+          mkdir -p "${APP_BUNDLE}/Contents/Resources"
+
+          cp "target/${{ matrix.target }}/release/xvw" "${APP_BUNDLE}/Contents/MacOS/"
+          chmod +x "${APP_BUNDLE}/Contents/MacOS/xvw"
+
+          sed "s/__VERSION__/${VERSION}/g" assets/macos/Info.plist.in > "${APP_BUNDLE}/Contents/Info.plist"
+
+          if [ -f assets/icons/xvw.icns ]; then
+            cp assets/icons/xvw.icns "${APP_BUNDLE}/Contents/Resources/xvw.icns"
+          fi
+
+          # 3. Build .dmg disk image
+          DMG_STAGING="dmg_staging"
+          mkdir -p "${DMG_STAGING}"
+          cp -R "${APP_BUNDLE}" "${DMG_STAGING}/"
+          ln -s /Applications "${DMG_STAGING}/Applications"
+
+          hdiutil create \
+            -volname "xvw" \
+            -srcfolder "${DMG_STAGING}" \
+            -ov \
+            -format UDZO \
+            "dist/${ARCHIVE_NAME}.dmg"
+
+          rm -rf "${DMG_STAGING}" "${APP_BUNDLE}"
 
       - name: Package artifacts (Windows)
         if: runner.os == 'Windows'
@@ -106,7 +240,6 @@ jobs:
           
           cd dist
           7z a "${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME}"
-          sha256sum "${ARCHIVE_NAME}.zip" > "${ARCHIVE_NAME}.zip.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -115,7 +248,9 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
-            dist/*.sha256
+            dist/*.dmg
+            dist/*.deb
+            dist/*.rpm
           if-no-files-found: error
 
   create-release:
@@ -132,13 +267,6 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate consolidated checksums
-        shell: bash
-        run: |
-          cd artifacts
-          cat *.sha256 > SHA256SUMS.txt || true
-          ls -la
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -150,5 +278,7 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
-            artifacts/*.sha256
-            artifacts/SHA256SUMS.txt
+            artifacts/*.dmg
+            artifacts/*.deb
+            artifacts/*.rpm
+

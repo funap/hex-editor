@@ -132,7 +132,7 @@ impl NewFileModal {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Icon::new(IconName::File).size(px(18.0)).text_color(theme.accent))
+                    .child(Icon::new(IconName::File).size(px(18.0)).text_color(theme.primary))
                     .child(
                         div()
                             .text_sm()

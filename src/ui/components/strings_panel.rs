@@ -9,6 +9,7 @@ use gpui::*;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{self, Input, InputState};
 use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::theme::Theme;
 use gpui_kit::component::{ActiveTheme as _, Disableable, Sizable, Size, h_flex, v_flex};
 use std::collections::HashMap;
 
@@ -563,6 +564,49 @@ impl StringsPanel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StringsRowColors {
+    pub bg_color: Hsla,
+    pub border_color: Hsla,
+    pub hover_bg: Hsla,
+    pub address_color: Hsla,
+    pub size_color: Hsla,
+    pub value_color: Hsla,
+}
+
+pub(crate) fn strings_row_colors(is_selected: bool, is_table_focused: bool, theme: &Theme) -> StringsRowColors {
+    if is_selected {
+        if is_table_focused {
+            StringsRowColors {
+                bg_color: theme.selection,
+                border_color: theme.accent,
+                hover_bg: theme.selection.opacity(0.7),
+                address_color: theme.accent_foreground,
+                size_color: theme.accent_foreground,
+                value_color: theme.accent_foreground,
+            }
+        } else {
+            StringsRowColors {
+                bg_color: theme.muted,
+                border_color: theme.muted_foreground.opacity(0.4),
+                hover_bg: theme.muted.opacity(0.8),
+                address_color: theme.foreground,
+                size_color: theme.muted_foreground,
+                value_color: theme.foreground,
+            }
+        }
+    } else {
+        StringsRowColors {
+            bg_color: theme.sidebar,
+            border_color: theme.border.opacity(0.5),
+            hover_bg: theme.selection.opacity(0.3),
+            address_color: theme.foreground,
+            size_color: theme.muted_foreground,
+            value_color: theme.foreground,
+        }
+    }
+}
+
 impl Render for StringsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let table_overlay = VirtualTable::render_table_overlay(&self.table_state, cx, |this| &mut this.table_state);
@@ -727,25 +771,7 @@ impl Render for StringsPanel {
                             && let Some(item) = this.results.get(index)
                         {
                             let is_selected = this.selected_index == Some(index);
-                            let offset_color = if is_selected { theme.foreground } else { theme.accent };
-                            let (bg_color, border_color, _text_color) = if is_selected {
-                                if is_table_focused {
-                                    (theme.selection, theme.accent, theme.accent_foreground)
-                                } else {
-                                    (theme.muted, theme.muted_foreground.opacity(0.4), theme.muted_foreground)
-                                }
-                            } else {
-                                (theme.sidebar, theme.border.opacity(0.5), theme.muted_foreground)
-                            };
-                            let hover_bg = if is_selected {
-                                if is_table_focused {
-                                    theme.selection.opacity(0.7)
-                                } else {
-                                    theme.muted.opacity(0.8)
-                                }
-                            } else {
-                                theme.selection.opacity(0.3)
-                            };
+                            let colors = strings_row_colors(is_selected, is_table_focused, theme);
 
                             let preview = preview_text(&item.text);
                             let offset = item.offset;
@@ -759,10 +785,10 @@ impl Render for StringsPanel {
                                 .flex_shrink_0()
                                 .overflow_hidden()
                                 .border_b_1()
-                                .border_color(border_color)
-                                .bg(bg_color)
+                                .border_color(colors.border_color)
+                                .bg(colors.bg_color)
                                 .cursor_pointer()
-                                .hover(move |style| style.bg(hover_bg))
+                                .hover(move |style| style.bg(colors.hover_bg))
                                 .on_click(window.listener_for(&list_view, move |this, _, window, cx| {
                                     if let Some(handle) = &this.table_state.focus_handle {
                                         handle.focus(window, cx);
@@ -789,19 +815,19 @@ impl Render for StringsPanel {
                                                 0 => div()
                                                     .text_xs()
                                                     .font_family(font_family.clone())
-                                                    .text_color(offset_color)
+                                                    .text_color(colors.address_color)
                                                     .child(offset_value.clone())
                                                     .into_any_element(),
                                                 1 => div()
                                                     .text_xs()
                                                     .font_family(font_family.clone())
-                                                    .text_color(theme.muted_foreground)
+                                                    .text_color(colors.size_color)
                                                     .child(byte_len.to_string())
                                                     .into_any_element(),
                                                 2 => div()
                                                     .text_xs()
                                                     .font_family(font_family.clone())
-                                                    .text_color(theme.foreground)
+                                                    .text_color(colors.value_color)
                                                     .child(preview.clone())
                                                     .into_any_element(),
                                                 _ => div().into_any_element(),
@@ -989,5 +1015,84 @@ mod tests {
         assert_eq!(page_up(4), 0);
         assert_eq!(page_down(5), 15);
         assert_eq!(page_down(15), 19);
+    }
+
+    #[test]
+    fn test_strings_row_colors_unselected() {
+        use super::strings_row_colors;
+        let theme = super::Theme::default();
+        let colors = strings_row_colors(false, false, &theme);
+        assert_eq!(colors.bg_color, theme.sidebar);
+        assert_eq!(colors.border_color, theme.border.opacity(0.5));
+        assert_eq!(colors.address_color, theme.foreground);
+        assert_eq!(colors.size_color, theme.muted_foreground);
+        assert_eq!(colors.value_color, theme.foreground);
+    }
+
+    #[test]
+    fn test_strings_row_colors_selected_focused() {
+        use super::strings_row_colors;
+        let theme = super::Theme::default();
+        let colors = strings_row_colors(true, true, &theme);
+        assert_eq!(colors.bg_color, theme.selection);
+        assert_eq!(colors.border_color, theme.accent);
+        assert_eq!(colors.address_color, theme.accent_foreground);
+        assert_eq!(colors.size_color, theme.accent_foreground);
+        assert_eq!(colors.value_color, theme.accent_foreground);
+    }
+
+    #[test]
+    fn test_strings_row_colors_selected_unfocused() {
+        use super::strings_row_colors;
+        let theme = super::Theme::default();
+        let colors = strings_row_colors(true, false, &theme);
+        assert_eq!(colors.bg_color, theme.muted);
+        assert_eq!(colors.border_color, theme.muted_foreground.opacity(0.4));
+        assert_eq!(colors.address_color, theme.foreground);
+        assert_eq!(colors.size_color, theme.muted_foreground);
+        assert_eq!(colors.value_color, theme.foreground);
+    }
+
+    #[test]
+    fn test_strings_address_contrast_across_all_embedded_themes() {
+        use super::strings_row_colors;
+        use crate::assets::Assets;
+        use crate::theme::EmbeddedThemes;
+
+        let embedded = EmbeddedThemes::load_from_assets(&Assets);
+        assert!(!embedded.theme_names().is_empty());
+
+        fn channel_to_linear(c: f32) -> f32 {
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        }
+
+        fn rel_luminance(c: gpui::Hsla) -> f32 {
+            let rgba = gpui::Rgba::from(c);
+            0.2126 * channel_to_linear(rgba.r) + 0.7152 * channel_to_linear(rgba.g) + 0.0722 * channel_to_linear(rgba.b)
+        }
+
+        fn contrast_ratio(c1: gpui::Hsla, c2: gpui::Hsla) -> f32 {
+            let l1 = rel_luminance(c1);
+            let l2 = rel_luminance(c2);
+            let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+            (lighter + 0.05) / (darker + 0.05)
+        }
+
+        for name in embedded.theme_names() {
+            let config = embedded.get(&name).unwrap();
+            let mut theme = super::Theme::default();
+            theme.apply_config(&config);
+
+            let colors = strings_row_colors(false, false, &theme);
+            let ratio = contrast_ratio(colors.address_color, colors.bg_color);
+
+            // WCAG 2.1 Level AA requirement for normal text is 4.5:1
+            assert!(
+                ratio >= 4.5,
+                "Theme '{}' failed WCAG AA contrast for address: ratio was {:.2}:1 (expected >= 4.5:1)",
+                name,
+                ratio
+            );
+        }
     }
 }

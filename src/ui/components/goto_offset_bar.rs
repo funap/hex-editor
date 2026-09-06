@@ -129,7 +129,7 @@ impl Render for GotoOffsetBar {
                     .items_center()
                     .gap_1()
                     .text_sm()
-                    .text_color(if parsed.is_out_of_bounds { theme.yellow } else { theme.accent })
+                    .text_color(if parsed.is_out_of_bounds { theme.yellow } else { theme.foreground })
                     .child(text)
                     .when(!warning.is_empty(), |el| el.child(div().text_color(theme.yellow).child(warning)))
             }

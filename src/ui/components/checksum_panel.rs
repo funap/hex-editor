@@ -405,7 +405,7 @@ impl Render for ChecksumPanel {
                 .items_center()
                 .pt_8()
                 .p_4()
-                .child(div().text_sm().text_color(theme.accent).child("Calculating sums..."))
+                .child(div().text_sm().text_color(theme.foreground).child("Calculating sums..."))
                 .into_any_element()
         } else if let Some(res) = &self.results {
             let all_opt = all_formatted.clone();

@@ -1130,7 +1130,7 @@ impl StructTreeView {
                                 .bg(theme.accent.opacity(0.14))
                                 .text_xs()
                                 .font_family(font_family.clone())
-                                .text_color(theme.accent)
+                                .text_color(theme.accent_foreground)
                                 .child(type_label.clone())
                                 .into_any_element(),
                             3 => div()

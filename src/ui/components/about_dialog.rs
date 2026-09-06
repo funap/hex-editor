@@ -50,7 +50,7 @@ pub fn open_about_dialog(window: &mut Window, cx: &mut App) {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(Icon::new(IconName::Binary).size(px(20.0)).text_color(theme.accent))
+                    .child(Icon::new(IconName::Binary).size(px(20.0)).text_color(theme.primary))
                     .child(
                         div()
                             .text_base()
@@ -79,7 +79,7 @@ pub fn open_about_dialog(window: &mut Window, cx: &mut App) {
                                         .bg(theme.accent.opacity(0.12))
                                         .border_1()
                                         .border_color(theme.accent.opacity(0.3))
-                                        .child(Icon::new(IconName::Binary).size(px(28.0)).text_color(theme.accent)),
+                                        .child(Icon::new(IconName::Binary).size(px(28.0)).text_color(theme.primary)),
                                 )
                                 .child(
                                     v_flex()
@@ -130,7 +130,7 @@ pub fn open_about_dialog(window: &mut Window, cx: &mut App) {
                                                 .items_center()
                                                 .gap_1()
                                                 .cursor_pointer()
-                                                .text_color(theme.accent)
+                                                .text_color(theme.link)
                                                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                                     cx.open_url(APP_REPOSITORY);
                                                 })

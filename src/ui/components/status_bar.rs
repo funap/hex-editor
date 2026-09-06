@@ -210,7 +210,7 @@ impl Render for StatusBar {
                             .font_medium()
                             .text_color(theme.foreground)
                             .cursor_pointer()
-                            .hover(|s| s.text_color(theme.accent))
+                            .hover(|s| s.text_color(theme.primary))
                             .tooltip(|_window, cx| cx.new(|_| gpui_kit::component::tooltip::Tooltip::new("Click to copy address")).into())
                             .on_mouse_down(MouseButton::Left, {
                                 let copy_str = position_copy_val.clone();

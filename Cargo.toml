@@ -11,7 +11,7 @@ keywords = ["hex-editor", "binary", "gpui", "kaitai-struct", "reverse-engineerin
 categories = ["development-tools", "gui"]
 
 [dependencies]
-dirs = "6.0.0"
+dirs = "7.0.0"
 gpui = { package = "gpui-pre", version = "0.3.1" }
 gpui-kit = "0.6.0"
 rust-embed = "8.12.0"

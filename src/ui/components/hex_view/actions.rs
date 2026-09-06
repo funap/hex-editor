@@ -119,8 +119,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-g", SearchNext, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-g", SearchNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", SearchPrev, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-g", SearchPrev, Some(CONTEXT)),
@@ -129,6 +127,7 @@ pub fn init(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-l", ToggleGoToAddress, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-l", ToggleGoToAddress, Some(CONTEXT)),
         KeyBinding::new("ctrl-g", ToggleGoToAddress, Some(CONTEXT)),
         // Custom line breaks & joins
         KeyBinding::new("enter", AddCustomBreak, Some(CONTEXT)),
